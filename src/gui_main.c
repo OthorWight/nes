@@ -19,18 +19,38 @@ static uint8_t controller_state = 0;
 static uint8_t controller_shift = 0;
 static char loaded_rom_name[256] = "";
 
+static bool rebinding = false;
+static SDL_Keycode control_mappings[8] = {
+    SDLK_z,      // Button A (bit 0)
+    SDLK_x,      // Button B (bit 1)
+    SDLK_SPACE,  // Select   (bit 2)
+    SDLK_RETURN, // Start    (bit 3)
+    SDLK_UP,     // Up       (bit 4)
+    SDLK_DOWN,   // Down     (bit 5)
+    SDLK_LEFT,   // Left     (bit 6)
+    SDLK_RIGHT   // Right    (bit 7)
+};
+static const SDL_Keycode default_control_mappings[8] = {
+    SDLK_z, SDLK_x, SDLK_SPACE, SDLK_RETURN, SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT
+};
+static const char *button_names[8] = {
+    "Button A", "Button B", "Select", "Start",
+    "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right"
+};
+
 typedef enum {
     GUI_STATE_MENU_MAIN,
     GUI_STATE_MENU_LOAD_ROM,
     GUI_STATE_MENU_SAVE_STATE,
     GUI_STATE_MENU_LOAD_STATE,
     GUI_STATE_MENU_SETTINGS,
+    GUI_STATE_MENU_CONTROLS,
     GUI_STATE_GAMEPLAY
 } GUIState;
 
 static GUIState current_state = GUI_STATE_MENU_MAIN;
 static int menu_selection = 1;
-static int window_scale = 3;
+static int window_scale = 5; // Default to Maximized (5)
 static bool audio_muted = false;
 static bool fullscreen = false;
 
@@ -400,13 +420,23 @@ int main(int argc, char *argv[]) {
     }
 
     SDL_Window *window = SDL_CreateWindow(
-        "Gemini NES Emulator",
+        "NES Emulator",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         256 * window_scale, 240 * window_scale,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     SDL_RenderSetLogicalSize(renderer, 256, 240);
+
+    if (window_scale == 5) {
+        SDL_MaximizeWindow(window);
+        SDL_Rect usable_bounds;
+        int display_idx = SDL_GetWindowDisplayIndex(window);
+        if (display_idx < 0) display_idx = 0;
+        if (SDL_GetDisplayUsableBounds(display_idx, &usable_bounds) == 0) {
+            SDL_SetWindowSize(window, usable_bounds.w, usable_bounds.h);
+        }
+    }
 
     SDL_Texture *texture = SDL_CreateTexture(
         renderer,
@@ -439,6 +469,7 @@ int main(int argc, char *argv[]) {
             }
 
             SDL_UpdateTexture(texture, NULL, nes_ppu.screen_buffer, 256 * sizeof(uint32_t));
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderClear(renderer);
             SDL_Rect src_rect = { 8, 0, 240, 240 };
             SDL_RenderCopy(renderer, texture, &src_rect, NULL);
@@ -463,8 +494,8 @@ int main(int argc, char *argv[]) {
             SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
             SDL_RenderClear(renderer);
 
-            draw_string(renderer, "GEMINI NES SYSTEM", 64, 20, 0x00FF00);
-            draw_string(renderer, "=================", 64, 30, 0x00FF00);
+            draw_string(renderer, "NES SYSTEM", 64, 20, 0x00FF00);
+            draw_string(renderer, "==========", 64, 30, 0x00FF00);
 
             if (current_state == GUI_STATE_MENU_MAIN) {
                 const char *options[] = {
@@ -472,10 +503,11 @@ int main(int argc, char *argv[]) {
                     "2. Load ROM",
                     "3. Save State Submenu",
                     "4. Load State Submenu",
-                    "5. Settings",
-                    "6. Exit Emulator"
+                    "5. Controls",
+                    "6. Settings",
+                    "7. Exit Emulator"
                 };
-                for (int i = 0; i < 6; i++) {
+                for (int i = 0; i < 7; i++) {
                     uint32_t col;
                     if ((i == 0 || i == 2 || i == 3) && loaded_cartridge == NULL) {
                         col = 0x444444; // Disabled dark gray
@@ -489,6 +521,34 @@ int main(int argc, char *argv[]) {
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
+            } else if (current_state == GUI_STATE_MENU_CONTROLS) {
+                // draw_string(renderer, "REBIND CONTROLS", 68, 30, 0xFFFF00);
+                draw_string(renderer, "NES Button  ->  Keyboard Key", 16, 45, 0x00FFFF);
+                draw_string(renderer, "-----------------------------", 16, 55, 0x00FFFF);
+                for (int i = 0; i < 8; i++) {
+                    char buf[64];
+                    const char *key_name = SDL_GetKeyName(control_mappings[i]);
+                    if (rebinding && i == menu_selection) {
+                        snprintf(buf, sizeof(buf), "%-11s -> [PRESS KEY...]", button_names[i]);
+                    } else {
+                        snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], key_name);
+                    }
+                    uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
+                    draw_string(renderer, buf, 24, 70 + i * 14, col);
+                    if (i == menu_selection) {
+                        SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+                        SDL_Rect box = { 16, 68 + i * 14, 224, 11 };
+                        SDL_RenderDrawRect(renderer, &box);
+                    }
+                }
+                uint32_t def_col = (menu_selection == 8) ? 0xFFFFFF : 0x888888;
+                draw_string(renderer, "Restore Defaults", 24, 70 + 8 * 14, def_col);
+                if (menu_selection == 8) {
+                    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+                    SDL_Rect box = { 16, 68 + 8 * 14, 224, 11 };
+                    SDL_RenderDrawRect(renderer, &box);
+                }
+                draw_string(renderer, "ENTER: Select/Reset | ESC: Return", 16, 215, 0x888888);
             } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
                 draw_string(renderer, "SELECT ROM TO LAUNCH:", 40, 50, 0xFFFF00);
                 if (rom_file_count == 0) {
@@ -540,7 +600,11 @@ int main(int argc, char *argv[]) {
                 draw_string(renderer, "UP/DN: Navigate | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                 char scale_buf[64], mute_buf[64], fs_buf[64];
-                sprintf(scale_buf, "1. Window Scale: %dx", window_scale);
+                if (window_scale == 5) {
+                    sprintf(scale_buf, "1. Window Scale: Maximized");
+                } else {
+                    sprintf(scale_buf, "1. Window Scale: %dx", window_scale);
+                }
                 sprintf(mute_buf,  "2. Audio Muted:  %s", audio_muted ? "ON" : "OFF");
                 sprintf(fs_buf,    "3. Fullscreen:   %s", fullscreen ? "ON" : "OFF");
 
@@ -556,7 +620,7 @@ int main(int argc, char *argv[]) {
                 SDL_Rect box = { 32, 68 + menu_selection * 20, 190, 11 };
                 SDL_RenderDrawRect(renderer, &box);
 
-                draw_string(renderer, "Press Enter to Toggle setting", 40, 150, 0xFFFF00);
+                draw_string(renderer, "Press Enter to Toggle setting", 20, 150, 0xFFFF00);
             }
 
             SDL_RenderPresent(renderer);
@@ -567,6 +631,14 @@ int main(int argc, char *argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN) {
+
+                if (rebinding) {
+                    if (event.key.keysym.sym != SDLK_ESCAPE) {
+                        control_mappings[menu_selection] = event.key.keysym.sym;
+                    }
+                    rebinding = false;
+                    break;
+                }
 
                 if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_F1) {
                     if (current_state == GUI_STATE_GAMEPLAY) {
@@ -589,20 +661,22 @@ int main(int argc, char *argv[]) {
                             do {
                                 menu_selection--;
                                 if (menu_selection < 0) {
-                                    if (current_state == GUI_STATE_MENU_MAIN) menu_selection = 5;
+                                    if (current_state == GUI_STATE_MENU_MAIN) menu_selection = 6;
                                     else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = 9;
                                     else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 2;
+                                    else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = 8;
                                 }
                             } while (current_state == GUI_STATE_MENU_MAIN && loaded_cartridge == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
                         case SDLK_DOWN:
                             do {
                                 menu_selection++;
-                                if (current_state == GUI_STATE_MENU_MAIN && menu_selection > 5) menu_selection = 0;
+                                if (current_state == GUI_STATE_MENU_MAIN && menu_selection > 6) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
                                 else if ((current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE) && menu_selection > 9) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 2) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > 8) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && loaded_cartridge == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
                         case SDLK_BACKSPACE:
@@ -632,10 +706,21 @@ int main(int argc, char *argv[]) {
                                         menu_selection = 0;
                                     }
                                 } else if (menu_selection == 4) {
-                                    current_state = GUI_STATE_MENU_SETTINGS;
+                                    current_state = GUI_STATE_MENU_CONTROLS;
                                     menu_selection = 0;
                                 } else if (menu_selection == 5) {
+                                    current_state = GUI_STATE_MENU_SETTINGS;
+                                    menu_selection = 0;
+                                } else if (menu_selection == 6) {
                                     running = false;
+                                }
+                            } else if (current_state == GUI_STATE_MENU_CONTROLS) {
+                                if (menu_selection == 8) {
+                                    for (int i = 0; i < 8; i++) {
+                                        control_mappings[i] = default_control_mappings[i];
+                                    }
+                                } else {
+                                    rebinding = true;
                                 }
                             } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
                                 if (rom_file_count > 0) {
@@ -669,8 +754,20 @@ int main(int argc, char *argv[]) {
                             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                                 if (menu_selection == 0) {
                                     window_scale++;
-                                    if (window_scale > 4) window_scale = 1;
-                                    SDL_SetWindowSize(window, 256 * window_scale, 240 * window_scale);
+                                    if (window_scale > 5) window_scale = 1;
+                                    if (window_scale == 5) {
+                                        SDL_RestoreWindow(window);
+                                        SDL_MaximizeWindow(window);
+                                        SDL_Rect usable_bounds;
+                                        int display_idx = SDL_GetWindowDisplayIndex(window);
+                                        if (display_idx < 0) display_idx = 0;
+                                        if (SDL_GetDisplayUsableBounds(display_idx, &usable_bounds) == 0) {
+                                            SDL_SetWindowSize(window, usable_bounds.w, usable_bounds.h);
+                                        }
+                                    } else {
+                                        SDL_RestoreWindow(window);
+                                        SDL_SetWindowSize(window, 256 * window_scale, 240 * window_scale);
+                                    }
                                 } else if (menu_selection == 1) {
                                     audio_muted = !audio_muted;
                                 } else if (menu_selection == 2) {
@@ -706,28 +803,21 @@ int main(int argc, char *argv[]) {
                             load_emulator_state(&cpu, "quick.state");
                             break;
                         }
-                        case SDLK_UP:     controller_state |= (1 << 4); break;
-                        case SDLK_DOWN:   controller_state |= (1 << 5); break;
-                        case SDLK_LEFT:   controller_state |= (1 << 6); break;
-                        case SDLK_RIGHT:  controller_state |= (1 << 7); break;
-                        case SDLK_RETURN: controller_state |= (1 << 3); break;
-                        case SDLK_SPACE:  controller_state |= (1 << 2); break;
-                        case SDLK_z:      controller_state |= (1 << 0); break;
-                        case SDLK_x:      controller_state |= (1 << 1); break;
-                        default: break;
+                        default: {
+                            for (int i = 0; i < 8; i++) {
+                                if (event.key.keysym.sym == control_mappings[i]) {
+                                    controller_state |= (1 << i);
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             } else if (event.type == SDL_KEYUP && current_state == GUI_STATE_GAMEPLAY) {
-                switch (event.key.keysym.sym) {
-                    case SDLK_UP:     controller_state &= ~(1 << 4); break;
-                    case SDLK_DOWN:   controller_state &= ~(1 << 5); break;
-                    case SDLK_LEFT:   controller_state &= ~(1 << 6); break;
-                    case SDLK_RIGHT:  controller_state &= ~(1 << 7); break;
-                    case SDLK_RETURN: controller_state &= ~(1 << 3); break;
-                    case SDLK_SPACE:  controller_state &= ~(1 << 2); break;
-                    case SDLK_z:      controller_state &= ~(1 << 0); break;
-                    case SDLK_x:      controller_state &= ~(1 << 1); break;
-                    default: break;
+                for (int i = 0; i < 8; i++) {
+                    if (event.key.keysym.sym == control_mappings[i]) {
+                        controller_state &= ~(1 << i);
+                    }
                 }
             }
         }
