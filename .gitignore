@@ -1,0 +1,15 @@
+# Build outputs and executables
+build/*.nes
+#build/ i want to keep executables in github to share with a friend
+
+# Third-party dependencies
+SDL2/
+
+# Emulator Save States and Battery Saves
+*.state
+*.sav
+
+# Build & OS artifacts
+*.o
+*.obj
+.DS_Store
