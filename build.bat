@@ -40,11 +40,10 @@ if not exist "%SDL_ARCH_DIR%" (
 if not exist "build" mkdir "build"
 
 echo Compiling 6502 CPU Emulator Core and GUI for Windows...
-gcc -Wall -Wextra -std=c11 -O2 -Isrc -I"%SDL_ARCH_DIR%\include" src/cpu6502.c src/cartridge.c src/ppu2c02.c src/apu2a03.c src/gui_main.c -o build/nes_emulator.exe -L"%SDL_ARCH_DIR%\lib" -lmingw32 -lSDL2main -lSDL2
+gcc -Wall -Wextra -std=c11 -O2 -Isrc -I"%SDL_ARCH_DIR%\include" src/cpu6502.c src/cartridge.c src/ppu2c02.c src/apu2a03.c src/gui_main.c -o build/nes_emulator.exe -L"%SDL_ARCH_DIR%\lib" -static -lmingw32 -lSDL2main -lSDL2 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 -lshell32 -lsetupapi -lversion -luuid
 
 if %ERRORLEVEL% equ 0 (
     echo Compilation successful!
-    copy "%SDL_ARCH_DIR%\bin\SDL2.dll" "build\SDL2.dll" /y >nul
     echo Launching NES Emulator...
     cd build
     nes_emulator.exe
