@@ -1,3 +1,4 @@
+/* cpu6502.h */
 #ifndef CPU6502_H
 #define CPU6502_H
 
@@ -15,12 +16,6 @@ enum {
     FLAG_NEGATIVE          = 1 << 7
 };
 
-typedef enum {
-    CPU_MODEL_NMOS = 0,
-    CPU_MODEL_RICOH_2A03,
-    CPU_MODEL_CMOS_65C02
-} CPUModel;
-
 typedef struct {
     uint8_t  accumulator;
     uint8_t  index_x;
@@ -30,39 +25,28 @@ typedef struct {
     uint8_t  status_flags;
     uint64_t cycle_count;
 
-    // Hardware lines & latch states
-    uint8_t  irq_lines;
-    bool     nmi_line;
-    bool     nmi_edge;
-    bool     reset_pending;
-    bool     rdy;
-    uint8_t  open_bus;
-
-    // Configuration
-    CPUModel model;
+    bool nmi_pending;
+    bool irq_pending;
+    bool reset_pending;
+    bool page_crossed;
+    bool decimal_mode;
 } CPU6502;
 
 typedef uint8_t (*CPUReadCallback)(void *bus_context, uint16_t address);
 typedef void    (*CPUWriteCallback)(void *bus_context, uint16_t address, uint8_t data);
-typedef void    (*CPUTickCallback)(void *bus_context);
 
 typedef struct {
     void *bus_context;
     CPUReadCallback  read;
     CPUWriteCallback write;
-    CPUTickCallback  tick;
 } CPUBus;
 
-void cpu_init(CPU6502 *cpu, CPUModel model);
+void cpu_init(CPU6502 *cpu);
 void cpu_reset(CPU6502 *cpu, CPUBus *bus);
 int  cpu_step(CPU6502 *cpu, CPUBus *bus);
-
-void cpu_set_irq_line(CPU6502 *cpu, uint8_t source_id, bool active);
-void cpu_set_nmi_line(CPU6502 *cpu, bool active);
-void cpu_pulse_nmi(CPU6502 *cpu);
+void cpu_trigger_nmi(CPU6502 *cpu);
 void cpu_trigger_irq(CPU6502 *cpu);
 void cpu_trigger_reset(CPU6502 *cpu);
-void cpu_set_rdy(CPU6502 *cpu, bool rdy);
-void cpu_pulse_so(CPU6502 *cpu);
+bool cpu_is_opcode_implemented(uint8_t opcode);
 
 #endif

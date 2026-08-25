@@ -13,71 +13,6 @@ static const uint32_t NES_PALETTE[64] = {
     0xFFF8D878, 0xFFD8F878, 0xFFB8F8B8, 0xFFB8F8D8, 0xFF00FCFC, 0xFFF8D8F8, 0xFF000000, 0xFF000000
 };
 
-static uint8_t ppu_read_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address);
-static void ppu_write_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data);
-
-static void ppu_set_a12(PPU2C02 *ppu, bool high, Cartridge *cart, CPU6502 *cpu) {
-    if (high) {
-        if (!ppu->a12_state) {
-            if (ppu->a12_low_counter >= 15) {
-                if (cart && cart->clock_irq) {
-                    cart->clock_irq(cart, cpu);
-                } // Missing brace added here
-            }
-        }
-        ppu->a12_state = true;
-        ppu->a12_low_counter = 0;
-    } else {
-        ppu->a12_state = false;
-    }
-}
-
-static bool ppu_get_rendering_a12(PPU2C02 *ppu) {
-    bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
-    if (!rendering_enabled) {
-        return (ppu->v & 0x1000) != 0;
-    }
-    if (ppu->scanline >= 240 && ppu->scanline != 261) {
-        return (ppu->v & 0x1000) != 0;
-    }
-
-    if ((ppu->cycle >= 1 && ppu->cycle <= 256) || (ppu->cycle >= 321 && ppu->cycle <= 336)) {
-        uint16_t step = (ppu->cycle - 1) % 8;
-        if (step < 4) {
-            return false;
-        } else {
-            return (ppu->ppu_ctrl & 0x10) != 0;
-        }
-    }
-
-    if (ppu->cycle >= 257 && ppu->cycle <= 320) {
-        int sprite_idx = (ppu->cycle - 257) / 8;
-        int step = (ppu->cycle - 257) % 8;
-        if (step >= 4) {
-            if (sprite_idx < ppu->scanline_sprite_count) {
-                ScanlineSprite *spr = &ppu->scanline_sprites[sprite_idx];
-                uint8_t sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
-                if (sprite_height == 8) {
-                    return (ppu->ppu_ctrl & 0x08) != 0;
-                } else {
-                    uint8_t tile_id = ppu->oam_ram[spr->sprite_index * 4 + 1];
-                    return (tile_id & 0x01) != 0;
-                }
-            } else {
-                uint8_t sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
-                if (sprite_height == 8) {
-                    return (ppu->ppu_ctrl & 0x08) != 0;
-                } else {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    return false;
-}
-
 static void ppu_increment_scroll_x(PPU2C02 *ppu) {
     if ((ppu->v & 0x001F) == 31) {
         ppu->v &= ~0x001F;
@@ -108,7 +43,6 @@ static void ppu_increment_scroll_y(PPU2C02 *ppu) {
 static void ppu_evaluate_sprites(PPU2C02 *ppu, Cartridge *cart, int target_scanline) {
     ppu->scanline_sprite_count = 0;
     if (target_scanline < 0 || target_scanline >= 240) return;
-    if (!(ppu->ppu_mask & 0x10)) return;
     int sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
 
     if (cart != NULL) {
@@ -178,20 +112,9 @@ void ppu_init(PPU2C02 *ppu) {
     ppu->bg_tile_low = 0;
     ppu->bg_tile_high = 0;
     ppu->bg_palette_index = 0;
-    ppu->bg_shifter_pattern_low = 0;
-    ppu->bg_shifter_pattern_high = 0;
-    ppu->bg_shifter_attrib_low = 0;
-    ppu->bg_shifter_attrib_high = 0;
-    ppu->bg_next_tile_id = 0;
-    ppu->bg_next_tile_attrib = 0;
-    ppu->bg_next_tile_lsb = 0;
-    ppu->bg_next_tile_msb = 0;
-    ppu->odd_frame = false;
-    ppu->a12_state = false;
-    ppu->a12_low_counter = 0;
 }
 
-uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *cpu) {
+uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address) {
     uint8_t data = 0;
     switch (address & 0x2007) {
         case 0x2002:
@@ -208,7 +131,17 @@ uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *c
             if (vram_addr <= 0x1FFF && cart != NULL) {
                 ppu->buffered_data = cart->read_chr(cart, vram_addr);
             } else if (vram_addr >= 0x2000 && vram_addr <= 0x3EFF) {
-                ppu->buffered_data = ppu_read_nametable_byte(ppu, cart, vram_addr);
+                uint16_t mirrored_addr = vram_addr & 0x0FFF;
+                if (cart->mirroring == MIRROR_VERTICAL) {
+                    mirrored_addr &= 0x07FF;
+                } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                    mirrored_addr = (uint16_t)((mirrored_addr & 0x03FF) | ((mirrored_addr & 0x0800) >> 1));
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                    mirrored_addr &= 0x03FF;
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                    mirrored_addr = 0x0400 | (mirrored_addr & 0x03FF);
+                }
+                ppu->buffered_data = ppu->vram[mirrored_addr];
             }
             
             if (vram_addr >= 0x3F00) {
@@ -220,15 +153,12 @@ uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *c
             }
 
             ppu->v += (ppu->ppu_ctrl & 0x04) ? 32 : 1;
-            if (cart && cart->mapper_id == 4) {
-                ppu_set_a12(ppu, (ppu->v & 0x1000) != 0, cart, cpu);
-            }
             break;
     }
     return data;
 }
 
-void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data, CPU6502 *cpu) {
+void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data) {
     switch (address & 0x2007) {
         case 0x2000:
             ppu->ppu_ctrl = data;
@@ -265,9 +195,6 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
                 ppu->t = (uint16_t)((ppu->t & 0xFF00) | data);
                 ppu->v = ppu->t;
                 ppu->w = 0;
-                if (cart && cart->mapper_id == 4) {
-                    ppu_set_a12(ppu, (ppu->v & 0x1000) != 0, cart, cpu);
-                }
             }
             break;
         case 0x2007: {
@@ -277,7 +204,17 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
                     cart->write_chr(cart, vram_write_addr, data);
                 }
             } else if (vram_write_addr >= 0x2000 && vram_write_addr <= 0x3EFF) {
-                ppu_write_nametable_byte(ppu, cart, vram_write_addr, data);
+                uint16_t mirrored_addr = vram_write_addr & 0x0FFF;
+                if (cart->mirroring == MIRROR_VERTICAL) {
+                    mirrored_addr &= 0x07FF;
+                } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                    mirrored_addr = (uint16_t)((mirrored_addr & 0x03FF) | ((mirrored_addr & 0x0800) >> 1));
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                    mirrored_addr &= 0x03FF;
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                    mirrored_addr = 0x0400 | (mirrored_addr & 0x03FF);
+                }
+                ppu->vram[mirrored_addr] = data;
             } else if (vram_write_addr >= 0x3F00 && vram_write_addr <= 0x3FFF) {
                 uint16_t palette_addr = vram_write_addr & 0x001F;
                 if ((palette_addr & 0x0013) == 0x0010) {
@@ -286,168 +223,99 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
                 ppu->palette_ram[palette_addr] = data;
             }
             ppu->v += (ppu->ppu_ctrl & 0x04) ? 32 : 1;
-            if (cart && cart->mapper_id == 4) {
-                ppu_set_a12(ppu, (ppu->v & 0x1000) != 0, cart, cpu);
-            }
             break;
         }
     }
 }
 
-static uint8_t ppu_read_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address) {
-    uint16_t nt_addr = address & 0x0FFF;
-    if (cart != NULL) {
-        if (cart->mapper_id == 5) {
-            uint8_t select = (address >> 10) & 0x03;
-            uint8_t mode = (cart->mmc5_nametable_ctrl >> (select * 2)) & 0x03;
-            if (mode == 0) {
-                return ppu->vram[nt_addr & 0x03FF];
-            } else if (mode == 1) {
-                return ppu->vram[0x0400 | (nt_addr & 0x03FF)];
-            } else if (mode == 2) {
-                if (cart->mmc5_exram_mode <= 1) {
-                    return cart->exram[nt_addr & 0x03FF];
-                }
-                return 0;
-            } else {
-                if ((address & 0x03FF) >= 0x03C0) {
-                    return cart->mmc5_fill_attr;
-                }
-                return cart->mmc5_fill_tile;
-            }
-        }
-
-        if (cart->mirroring == MIRROR_VERTICAL) {
-            nt_addr &= 0x07FF;
-        } else if (cart->mirroring == MIRROR_HORIZONTAL) {
-            nt_addr = (uint16_t)((nt_addr & 0x03FF) | ((nt_addr & 0x0800) >> 1));
-        } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
-            nt_addr &= 0x03FF;
-        } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
-            nt_addr = 0x0400 | (nt_addr & 0x03FF);
-        }
-    }
-    return ppu->vram[nt_addr & 0x07FF];
-}
-
-static void ppu_write_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data) {
-    uint16_t nt_addr = address & 0x0FFF;
-    if (cart != NULL && cart->mapper_id == 5) {
-        uint8_t select = (address >> 10) & 0x03;
-        uint8_t mode = (cart->mmc5_nametable_ctrl >> (select * 2)) & 0x03;
-        if (mode == 0) {
-            ppu->vram[nt_addr & 0x03FF] = data;
-        } else if (mode == 1) {
-            ppu->vram[0x0400 | (nt_addr & 0x03FF)] = data;
-        } else if (mode == 2) {
-            if (cart->mmc5_exram_mode <= 1) {
-                cart->exram[nt_addr & 0x03FF] = data;
-            }
-        }
-        return;
-    }
-    if (cart != NULL) {
-        if (cart->mirroring == MIRROR_VERTICAL) {
-            nt_addr &= 0x07FF;
-        } else if (cart->mirroring == MIRROR_HORIZONTAL) {
-            nt_addr = (uint16_t)((nt_addr & 0x03FF) | ((nt_addr & 0x0800) >> 1));
-        } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
-            nt_addr &= 0x03FF;
-        } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
-            nt_addr = 0x0400 | (nt_addr & 0x03FF);
-        }
-    }
-    ppu->vram[nt_addr & 0x07FF] = data;
-}
-
 void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
+    (void)cpu;
     bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
 
-    if (rendering_enabled) {
-        if (ppu->scanline < 240 || ppu->scanline == 261) {
-            // Shift on both active scanline cycles and next-scanline prefetch cycles
-            if ((ppu->cycle >= 1 && ppu->cycle <= 256) || (ppu->cycle >= 321 && ppu->cycle <= 336)) {
-                ppu->bg_shifter_pattern_low <<= 1;
-                ppu->bg_shifter_pattern_high <<= 1;
-                ppu->bg_shifter_attrib_low <<= 1;
-                ppu->bg_shifter_attrib_high <<= 1;
-
-                switch ((ppu->cycle - 1) % 8) {
-                    case 0: {
-                        uint16_t nt_addr = 0x2000 | (ppu->v & 0x0FFF);
-                        ppu->bg_next_tile_id = ppu_read_nametable_byte(ppu, cart, nt_addr);
-                        break;
-                    }
-                    case 2: {
-                        if (cart && cart->mapper_id == 5 && cart->mmc5_exram_mode == 1) {
-                            uint8_t ex_byte = cart->exram[ppu->v & 0x03FF];
-                            ppu->bg_next_tile_attrib = (ex_byte >> 6) & 0x03;
-                        } else {
-                            uint16_t attr_addr = (uint16_t)(0x23C0 | (ppu->v & 0x0C00) | ((ppu->v >> 4) & 0x38) | ((ppu->v >> 2) & 0x07));
-                            uint8_t attr_byte = ppu_read_nametable_byte(ppu, cart, attr_addr);
-                            uint8_t coarse_x = (uint8_t)(ppu->v & 0x001F);
-                            uint8_t coarse_y = (uint8_t)((ppu->v & 0x03E0) >> 5);
-                            uint8_t palette_shift = (uint8_t)(((coarse_y & 0x02) ? 4 : 0) | ((coarse_x & 0x02) ? 2 : 0));
-                            ppu->bg_next_tile_attrib = (uint8_t)((attr_byte >> palette_shift) & 0x03);
-                        }
-                        break;
-                    }
-                    case 4: {
-                        uint8_t fine_y = (uint8_t)((ppu->v & 0x7000) >> 12);
-                        if (cart && cart->mapper_id == 5 && cart->mmc5_exram_mode == 1) {
-                            uint8_t ex_byte = cart->exram[ppu->v & 0x03FF];
-                            uint32_t bank = (ex_byte & 0x3F) | ((uint32_t)(cart->mmc5_chr_high & 0x03) << 6);
-                            uint32_t offset = (bank * 4096) + ((uint32_t)ppu->bg_next_tile_id * 16) + fine_y;
-                            ppu->bg_next_tile_lsb = (cart->chr_rom_size > 0) ? cart->chr_rom[offset % cart->chr_rom_size] : 0;
-                        } else {
-                            uint8_t bg_table = (ppu->ppu_ctrl & 0x10) ? 1 : 0;
-                            uint16_t pattern_addr = (uint16_t)((bg_table << 12) | (ppu->bg_next_tile_id << 4) | fine_y);
-                            ppu->bg_next_tile_lsb = cart->read_chr(cart, pattern_addr);
-                        }
-                        break;
-                    }
-                    case 6: {
-                        uint8_t fine_y = (uint8_t)((ppu->v & 0x7000) >> 12);
-                        if (cart && cart->mapper_id == 5 && cart->mmc5_exram_mode == 1) {
-                            uint8_t ex_byte = cart->exram[ppu->v & 0x03FF];
-                            uint32_t bank = (ex_byte & 0x3F) | ((uint32_t)(cart->mmc5_chr_high & 0x03) << 6);
-                            uint32_t offset = (bank * 4096) + ((uint32_t)ppu->bg_next_tile_id * 16) + fine_y + 8;
-                            ppu->bg_next_tile_msb = (cart->chr_rom_size > 0) ? cart->chr_rom[offset % cart->chr_rom_size] : 0;
-                        } else {
-                            uint8_t bg_table = (ppu->ppu_ctrl & 0x10) ? 1 : 0;
-                            uint16_t pattern_addr = (uint16_t)((bg_table << 12) | (ppu->bg_next_tile_id << 4) | fine_y);
-                            ppu->bg_next_tile_msb = cart->read_chr(cart, (uint16_t)(pattern_addr + 8));
-                        }
-                        break;
-                    }
-                    case 7: {
-                        ppu->bg_shifter_pattern_low = (uint16_t)((ppu->bg_shifter_pattern_low & 0xFF00) | ppu->bg_next_tile_lsb);
-                        ppu->bg_shifter_pattern_high = (uint16_t)((ppu->bg_shifter_pattern_high & 0xFF00) | ppu->bg_next_tile_msb);
-                        ppu->bg_shifter_attrib_low = (uint16_t)((ppu->bg_shifter_attrib_low & 0xFF00) | ((ppu->bg_next_tile_attrib & 0x01) ? 0xFF : 0x00));
-                        ppu->bg_shifter_attrib_high = (uint16_t)((ppu->bg_shifter_attrib_high & 0xFF00) | ((ppu->bg_next_tile_attrib & 0x02) ? 0xFF : 0x00));
-                        ppu_increment_scroll_x(ppu);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // Remaining rendering, sprite evaluation, and scanline timing unchanged...
     if ((ppu->scanline < 240 || ppu->scanline == 261) && ppu->cycle < 256) {
         uint8_t bg_color_idx = 0;
         uint16_t bg_palette_idx = 0;
+        uint8_t fine_x = (uint8_t)((ppu->x + (ppu->cycle & 0x07)) & 0x07);
 
+        // Fetch background tile exactly once per 8-pixel span
         if (rendering_enabled && (ppu->ppu_mask & 0x08)) {
-            uint16_t bit_mux = (uint16_t)(0x8000 >> ppu->x);
+            if (ppu->cycle == 0 || ((ppu->cycle + ppu->x) & 0x07) == 0) {
+                uint16_t v_fetch = ppu->v;
+                if ((ppu->x + (ppu->cycle & 0x07)) >= 8) {
+                    if ((v_fetch & 0x001F) == 31) {
+                        v_fetch &= ~0x001F;
+                        v_fetch ^= 0x0400;
+                    } else {
+                        v_fetch++;
+                    }
+                }
 
-            uint8_t p0 = (ppu->bg_shifter_pattern_low & bit_mux) ? 1 : 0;
-            uint8_t p1 = (ppu->bg_shifter_pattern_high & bit_mux) ? 1 : 0;
-            bg_color_idx = (uint8_t)(p0 | (p1 << 1));
+                uint16_t nt_addr = 0x2000 | (v_fetch & 0x0FFF);
+                uint16_t mirrored_nt = nt_addr & 0x0FFF;
+                if (cart->mirroring == MIRROR_VERTICAL) {
+                    mirrored_nt &= 0x07FF;
+                } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                    mirrored_nt = (uint16_t)((mirrored_nt & 0x03FF) | ((mirrored_nt & 0x0800) >> 1));
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                    mirrored_nt &= 0x03FF;
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                    mirrored_nt = 0x0400 | (mirrored_nt & 0x03FF);
+                }
+                uint8_t tile_id = ppu->vram[mirrored_nt];
 
-            uint8_t a0 = (ppu->bg_shifter_attrib_low & bit_mux) ? 1 : 0;
-            uint8_t a1 = (ppu->bg_shifter_attrib_high & bit_mux) ? 1 : 0;
-            ppu->bg_palette_index = (uint8_t)(a0 | (a1 << 1));
+                uint16_t attr_addr = (uint16_t)(0x23C0 | (v_fetch & 0x0C00) | ((v_fetch >> 4) & 0x38) | ((v_fetch >> 2) & 0x07));
+                uint16_t mirrored_attr = attr_addr & 0x0FFF;
+                if (cart->mirroring == MIRROR_VERTICAL) {
+                    mirrored_attr &= 0x07FF;
+                } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                    mirrored_attr = (uint16_t)((mirrored_attr & 0x03FF) | ((mirrored_attr & 0x0800) >> 1));
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                    mirrored_attr &= 0x03FF;
+                } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                    mirrored_attr = 0x0400 | (mirrored_attr & 0x03FF);
+                }
+                uint8_t attr_byte = ppu->vram[mirrored_attr];
+
+                uint8_t coarse_x = (uint8_t)(v_fetch & 0x001F);
+                uint8_t coarse_y = (uint8_t)((v_fetch & 0x03E0) >> 5);
+                uint8_t palette_shift = (uint8_t)(((coarse_y & 0x02) ? 4 : 0) | ((coarse_x & 0x02) ? 2 : 0));
+                ppu->bg_palette_index = (uint8_t)((attr_byte >> palette_shift) & 0x03);
+
+                uint8_t fine_y = (uint8_t)((v_fetch & 0x7000) >> 12);
+                uint8_t bg_table = (ppu->ppu_ctrl & 0x10) ? 1 : 0;
+                uint16_t pattern_addr = (uint16_t)((bg_table << 12) | (tile_id << 4) | fine_y);
+                ppu->bg_tile_low = cart->read_chr(cart, pattern_addr);
+                ppu->bg_tile_high = cart->read_chr(cart, (uint16_t)(pattern_addr + 8));
+
+                            // MMC2 Lookahead trigger: Latch state must be that of the NEXT tile (1-tile pipeline lookahead)
+                            if (cart && cart->read_chr && (cart->mapper_id == 9 || cart->mapper_id == 10)) {
+                                uint16_t v_next = v_fetch;
+                                if ((v_next & 0x001F) == 31) {
+                                    v_next &= ~0x001F;
+                                    v_next ^= 0x0400;
+                                } else {
+                                    v_next++;
+                                }
+                                uint16_t nt_next = 0x2000 | (v_next & 0x0FFF);
+                                uint16_t mirrored_nt_next = nt_next & 0x0FFF;
+                                if (cart->mirroring == MIRROR_VERTICAL) {
+                                    mirrored_nt_next &= 0x07FF;
+                                } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                                    mirrored_nt_next = (uint16_t)((mirrored_nt_next & 0x03FF) | ((mirrored_nt_next & 0x0800) >> 1));
+                                } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                                    mirrored_nt_next &= 0x03FF;
+                                } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                                    mirrored_nt_next = 0x0400 | (mirrored_nt_next & 0x03FF);
+                                }
+                                uint8_t tile_id_next = ppu->vram[mirrored_nt_next];
+                                uint8_t fine_y_next = (uint8_t)((v_next & 0x7000) >> 12);
+                                uint16_t pattern_addr_next = (uint16_t)((bg_table << 12) | (tile_id_next << 4) | fine_y_next);
+                                cart->read_chr(cart, (uint16_t)(pattern_addr_next + 8));
+                            }
+            }
+
+            uint8_t shift = (uint8_t)(7 - fine_x);
+            bg_color_idx = (uint8_t)(((ppu->bg_tile_low >> shift) & 0x01) | (((ppu->bg_tile_high >> shift) & 0x01) << 1));
 
             uint16_t final_palette_addr = (uint16_t)(0x3F00 | (ppu->bg_palette_index << 2) | bg_color_idx);
             if (bg_color_idx == 0) {
@@ -502,7 +370,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
             bool left_clipped = (ppu->cycle < 8) && (!(ppu->ppu_mask & 0x02) || !(ppu->ppu_mask & 0x04));
             if (sprite_0_active && (ppu->ppu_mask & 0x08) && (ppu->ppu_mask & 0x10) && ppu->cycle < 255 && !left_clipped) {
                 if (!(ppu->ppu_status & 0x40)) {
-                    ppu->ppu_status |= 0x40;
+                    ppu->ppu_status |= 0x40; // Sprite 0 Hit
                 }
             }
             if (sprite_priority == 0) {
@@ -527,6 +395,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
         }
     }
 
+    // Prefetch sprites for next scanline at cycle 257 (after scanline background fetch completes)
     if (ppu->cycle == 257) {
         if (ppu->scanline == 261) {
             ppu_evaluate_sprites(ppu, cart, 0);
@@ -537,52 +406,39 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
         }
     }
 
-    if (cart && cart->mapper_id == 4) {
-        bool current_a12 = ppu_get_rendering_a12(ppu);
-        ppu_set_a12(ppu, current_a12, cart, cpu);
-        if (!ppu->a12_state) {
-            if (ppu->a12_low_counter < 100) {
-                ppu->a12_low_counter++;
-            }
-        }
-    }
-
     ppu->cycle++;
-
-    if (ppu->scanline == 261 && ppu->cycle == 339 && rendering_enabled && ppu->odd_frame) {
-        ppu->cycle = 340;
-    }
-
     if (ppu->cycle >= 341) {
         ppu->cycle = 0;
         ppu->scanline++;
-
-        if (ppu->scanline < 240 && rendering_enabled) {
-            if (cart && cart->mapper_id == 5 && cart->clock_irq) {
-                cart->clock_irq(cart, cpu);
-            }
-        }
 
         if (ppu->scanline == 241) {
             ppu->ppu_status |= 0x80;
             ppu->frame_complete = true;
             if (ppu->ppu_ctrl & 0x80) {
-                cpu_pulse_nmi(cpu);
+                cpu_trigger_nmi(cpu);
             }
         } else if (ppu->scanline == 261) {
             ppu->ppu_status &= ~0x80;
             ppu->ppu_status &= ~0x40;
-            if (cart && cart->reset_irq) {
+            if (cart && cart->reset_irq != NULL) {
                 cart->reset_irq(cart);
             }
         } else if (ppu->scanline >= 262) {
             ppu->scanline = 0;
-            ppu->odd_frame = !ppu->odd_frame;
         }
     }
 
     if (rendering_enabled) {
+        if (ppu->cycle == 260 && ppu->scanline < 240) {
+            if (cart && cart->clock_irq != NULL) {
+                cart->clock_irq(cart, cpu);
+            }
+        }
+
         if (ppu->scanline < 240 || ppu->scanline == 261) {
+            if (ppu->cycle > 0 && ppu->cycle <= 256 && (ppu->cycle & 0x07) == 0) {
+                ppu_increment_scroll_x(ppu);
+            }
             if (ppu->cycle == 256) {
                 ppu_increment_scroll_y(ppu);
             }
@@ -592,6 +448,37 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
             if (ppu->scanline == 261 && ppu->cycle >= 280 && ppu->cycle <= 304) {
                 ppu->v = (ppu->v & 0x841F) | (ppu->t & 0x7BE0);
             }
+
+                // MMC2 / Mapper 9 prefetch simulation at cycles 321 and 329
+                if (cart && cart->read_chr && (cart->mapper_id == 9 || cart->mapper_id == 10) && (ppu->cycle == 321 || ppu->cycle == 329)) {
+                    int offset = (ppu->cycle == 321) ? 0 : 1;
+                    uint16_t v_fetch = ppu->v;
+                    for (int i = 0; i < offset; i++) {
+                        if ((v_fetch & 0x001F) == 31) {
+                            v_fetch &= ~0x001F;
+                            v_fetch ^= 0x0400;
+                        } else {
+                            v_fetch++;
+                        }
+                    }
+                    uint16_t nt_addr = 0x2000 | (v_fetch & 0x0FFF);
+                    uint16_t mirrored_nt = nt_addr & 0x0FFF;
+                    if (cart->mirroring == MIRROR_VERTICAL) {
+                        mirrored_nt &= 0x07FF;
+                    } else if (cart->mirroring == MIRROR_HORIZONTAL) {
+                        mirrored_nt = (uint16_t)((mirrored_nt & 0x03FF) | ((mirrored_nt & 0x0800) >> 1));
+                    } else if (cart->mirroring == MIRROR_ONE_SCREEN_LOW) {
+                        mirrored_nt &= 0x03FF;
+                    } else if (cart->mirroring == MIRROR_ONE_SCREEN_HIGH) {
+                        mirrored_nt = 0x0400 | (mirrored_nt & 0x03FF);
+                    }
+                    uint8_t tile_id = ppu->vram[mirrored_nt];
+                    uint8_t fine_y = (uint8_t)((v_fetch & 0x7000) >> 12);
+                    uint8_t bg_table = (ppu->ppu_ctrl & 0x10) ? 1 : 0;
+                    uint16_t pattern_addr = (uint16_t)((bg_table << 12) | (tile_id << 4) | fine_y);
+                    cart->read_chr(cart, pattern_addr);
+                    cart->read_chr(cart, (uint16_t)(pattern_addr + 8));
+                }
         }
     }
 }

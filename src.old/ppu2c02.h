@@ -35,19 +35,6 @@ typedef struct {
     bool nmi_occurred;
     bool frame_complete;
 
-    // 16-bit shift registers for background rendering
-    uint16_t bg_shifter_pattern_low;
-    uint16_t bg_shifter_pattern_high;
-    uint16_t bg_shifter_attrib_low;
-    uint16_t bg_shifter_attrib_high;
-    uint8_t  bg_next_tile_id;
-    uint8_t  bg_next_tile_attrib;
-    uint8_t  bg_next_tile_lsb;
-    uint8_t  bg_next_tile_msb;
-    bool     odd_frame;
-    bool     a12_state;
-    int      a12_low_counter;
-
     // Background tile cache for active 8-pixel span
     uint8_t bg_tile_low;
     uint8_t bg_tile_high;
@@ -60,8 +47,8 @@ typedef struct {
 } PPU2C02;
 
 void ppu_init(PPU2C02 *ppu);
-uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *cpu); 
-void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data, CPU6502 *cpu); 
+uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address);
+void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data);
 void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart);
 
 #endif
