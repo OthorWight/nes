@@ -106,8 +106,7 @@ static uint8_t mmc1_read_prg(void *cart, uint16_t address) {
             uint32_t bank = prg_bank % total_banks;
             offset = bank * 16384 + (address - 0x8000);
         } else {
-            uint32_t last_bank_offset = c->prg_rom_size - 16384;
-            offset = last_bank_offset + (address - 0xC000);
+            offset = (c->prg_rom_size - 16384) + (address - 0xC000);
         }
     }
 
@@ -216,7 +215,7 @@ static uint8_t cnrom_read_prg(void *cart, uint16_t address) {
 static void cnrom_write_prg(void *cart, uint16_t address, uint8_t data) {
     Cartridge *c = (Cartridge*)cart;
     if (address >= 0x8000) {
-        c->mapper_state[0] = data & 0x03; // Active CHR bank select (low 2 bits)
+        c->mapper_state[0] = data & 0x03;
     } else if (address >= 0x6000 && address <= 0x7FFF && c->prg_ram) {
         c->prg_ram[address - 0x6000] = data;
     }
@@ -245,7 +244,7 @@ static uint8_t axrom_read_prg(void *cart, uint16_t address) {
 static void axrom_write_prg(void *cart, uint16_t address, uint8_t data) {
     Cartridge *c = (Cartridge*)cart;
     if (address >= 0x8000) {
-        c->mapper_state[0] = data & 0x07; // Switch 32KB PRG bank
+        c->mapper_state[0] = data & 0x07;
         c->mirroring = (data & 0x10) ? MIRROR_ONE_SCREEN_HIGH : MIRROR_ONE_SCREEN_LOW;
     } else if (address >= 0x6000 && address <= 0x7FFF && c->prg_ram) {
         c->prg_ram[address - 0x6000] = data;
@@ -576,19 +575,21 @@ static void mmc2_write_chr(void *cart, uint16_t address, uint8_t data) {
     c->chr_rom[offset % c->chr_rom_size] = data;
 }
 
+// ==========================================
+// MAPPER 69: SUNSOFT FME-7
+// ==========================================
+
 static uint8_t fme7_read_prg(void *cart, uint16_t address) {
     Cartridge *c = (Cartridge*)cart;
     uint32_t total_banks = c->prg_rom_size / 8192;
     if (total_banks == 0) return 0;
 
     if (address >= 0x6000 && address <= 0x7FFF) {
-        uint8_t reg = c->mapper_state[9]; // Reg $08
+        uint8_t reg = c->mapper_state[9];
         if (!(reg & 0x80)) {
-            // Bit 7 = 0: PRG-ROM mode
             uint32_t bank = (reg & 0x3F) % total_banks;
             return c->prg_rom[bank * 8192 + (address - 0x6000)];
         } else {
-            // Bit 7 = 1: PRG-RAM mode
             if ((reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
                 return c->prg_ram[(address - 0x6000) % c->prg_ram_size];
             }
@@ -598,11 +599,11 @@ static uint8_t fme7_read_prg(void *cart, uint16_t address) {
 
     uint32_t bank = 0;
     if (address >= 0x8000 && address <= 0x9FFF) {
-        bank = c->mapper_state[10] & 0x3F; // Reg $09
+        bank = c->mapper_state[10] & 0x3F;
     } else if (address >= 0xA000 && address <= 0xBFFF) {
-        bank = c->mapper_state[11] & 0x3F; // Reg $0A
+        bank = c->mapper_state[11] & 0x3F;
     } else if (address >= 0xC000 && address <= 0xDFFF) {
-        bank = c->mapper_state[12] & 0x3F; // Reg $0B
+        bank = c->mapper_state[12] & 0x3F;
     } else if (address >= 0xE000) {
         bank = total_banks - 1;
     }
@@ -614,8 +615,7 @@ static uint8_t fme7_read_prg(void *cart, uint16_t address) {
 static void fme7_write_prg(void *cart, uint16_t address, uint8_t data) {
     Cartridge *c = (Cartridge*)cart;
     if (address >= 0x6000 && address <= 0x7FFF) {
-        uint8_t reg = c->mapper_state[9]; // Reg $08
-        // Bit 7 = 1 (RAM mode) and Bit 6 = 1 (RAM write enable)
+        uint8_t reg = c->mapper_state[9];
         if ((reg & 0x80) && (reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
             c->prg_ram[(address - 0x6000) % c->prg_ram_size] = data;
         }
@@ -686,7 +686,7 @@ static void fme7_clock_irq(void *cart, void *cpu) {
     }
 
     uint8_t control = c->mapper_state[14];
-    if (control & 0x80) { // Counter Enabled
+    if (control & 0x80) {
         uint16_t counter = c->mapper_state[15] | (c->mapper_state[16] << 8);
         uint16_t prev_counter = counter;
         counter--;
@@ -694,8 +694,8 @@ static void fme7_clock_irq(void *cart, void *cpu) {
         c->mapper_state[16] = (counter >> 8) & 0xFF;
 
         if (prev_counter == 0 && counter == 0xFFFF) {
-            if (control & 0x01) { // IRQ Enabled
-                c->mapper_state[17] = 1; // Pending
+            if (control & 0x01) {
+                c->mapper_state[17] = 1;
                 if (cpu_ptr) {
                     cpu_set_irq_line(cpu_ptr, 0, true);
                 }
@@ -706,7 +706,7 @@ static void fme7_clock_irq(void *cart, void *cpu) {
 
 static void fme7_reset_irq(void *cart) {
     Cartridge *c = (Cartridge*)cart;
-    c->mapper_state[17] = 0; // Clear IRQ Pending
+    c->mapper_state[17] = 0;
     CPU6502 *cpu = (CPU6502*)c->cpu_context;
     if (cpu) {
         cpu_set_irq_line(cpu, 0, false);
@@ -1002,6 +1002,76 @@ static void mmc5_reset_irq(void *cart) {
 }
 
 // ==========================================
+// MAPPER 227: Multicart (1200-in-1 / 42-in-1)
+// ==========================================
+
+static void m227_update_banks(Cartridge *c, uint16_t addr) {
+    uint16_t prg_bank = ((addr >> 2) & 0x1F) | ((addr & 0x0100) >> 3);
+    bool s_flag   = (addr & 0x0001) != 0;
+    bool l_flag   = (addr & 0x0200) != 0;
+    bool prg_mode = (addr & 0x0080) != 0;
+
+    uint32_t bank0 = 0;
+    uint32_t bank1 = 0;
+
+    if (prg_mode) {
+        if (s_flag) {
+            bank0 = prg_bank & 0xFE;
+            bank1 = (prg_bank & 0xFE) | 1;
+        } else {
+            bank0 = prg_bank;
+            bank1 = prg_bank;
+        }
+    } else {
+        if (s_flag) {
+            bank0 = prg_bank & 0x3E;
+            bank1 = l_flag ? (prg_bank | 0x07) : (prg_bank & 0x38);
+        } else {
+            bank0 = prg_bank;
+            bank1 = l_flag ? (prg_bank | 0x07) : (prg_bank & 0x38);
+        }
+    }
+
+    uint32_t total_banks = c->prg_rom_size / 16384;
+    if (total_banks > 0) {
+        bank0 %= total_banks;
+        bank1 %= total_banks;
+    }
+
+    c->mapper_state[2] = (uint8_t)bank0;
+    c->mapper_state[3] = (uint8_t)bank1;
+    c->mirroring = (addr & 0x0002) ? MIRROR_HORIZONTAL : MIRROR_VERTICAL;
+}
+
+static uint8_t m227_read_prg(void *cart, uint16_t address) {
+    Cartridge *c = (Cartridge*)cart;
+    if (address >= 0x6000 && address <= 0x7FFF) {
+        return c->prg_ram ? c->prg_ram[address - 0x6000] : 0;
+    }
+    if (address >= 0x8000 && address <= 0xBFFF) {
+        uint32_t bank = c->mapper_state[2];
+        return c->prg_rom[bank * 16384 + (address & 0x3FFF)];
+    }
+    if (address >= 0xC000) {
+        uint32_t bank = c->mapper_state[3];
+        return c->prg_rom[bank * 16384 + (address & 0x3FFF)];
+    }
+    return 0;
+}
+
+static void m227_write_prg(void *cart, uint16_t address, uint8_t data) {
+    (void)data;
+    Cartridge *c = (Cartridge*)cart;
+    if (address >= 0x6000 && address <= 0x7FFF) {
+        if (c->prg_ram) c->prg_ram[address - 0x6000] = data;
+        return;
+    }
+    if (address >= 0x8000) {
+        m227_update_banks(c, address);
+    }
+}
+
+// ==========================================
 // LOADER & LIFECYCLE
 // ==========================================
 
@@ -1205,9 +1275,16 @@ Cartridge* cartridge_load(const char *filepath) {
             cart->mapper_state[10] = 0;
             cart->mapper_state[11] = 1;
             cart->mapper_state[12] = (total_banks >= 2) ? (total_banks - 2) : 0;
-            cart->mapper_state[9] = 0x00; // PRG-ROM bank 0 (bit 7 = 0)
+            cart->mapper_state[9] = 0x00;
             cart->cpu_clocked_irq = true;
         }
+    } else if (cart->mapper_id == 227) {
+        cart->read_prg = m227_read_prg;
+        cart->write_prg = m227_write_prg;
+        cart->read_chr = nrom_read_chr;
+        cart->write_chr = nrom_write_chr;
+        memset(cart->mapper_state, 0, sizeof(cart->mapper_state));
+        m227_update_banks(cart, 0x0000);
     } else {
         fprintf(stderr, "Error: Unsupported mapper ID %u\n", cart->mapper_id);
         cartridge_free(cart);
