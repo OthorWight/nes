@@ -3,6 +3,11 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
+#ifdef _WIN32
+#include <direct.h> // For _mkdir
+#else
+#include <sys/stat.h> // For mkdir
+#endif
 #include <inttypes.h>
 #include "cpu6502.h"
 #include "cartridge.h"
@@ -27,6 +32,7 @@ static uint8_t controller_state = 0;
 static uint8_t controller_shift = 0;
 static uint8_t controller_strobe = 0;
 static char loaded_rom_name[256] = "";
+static char save_state_dir[512] = ""; // New global variable for per-ROM save states
 
 static int mouse_x = 0;
 static int mouse_y = 0;
@@ -226,8 +232,8 @@ static void scan_rom_directory(void) {
 }
 
 static void get_state_slot_info(int slot, char *out_buf, size_t max_len, bool is_save_menu) {
-    char filepath[64];
-    snprintf(filepath, sizeof(filepath), "slot%d.state", slot);
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/slot%d.state", save_state_dir, slot);
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         if (is_save_menu) {
@@ -711,10 +717,12 @@ static void test_bus_write(void *context, uint16_t address, uint8_t data) {
     }
 }
 
-static void save_emulator_state(const CPU6502 *cpu, const char *filepath) {
+static void save_emulator_state(const CPU6502 *cpu, const char *dir, const char *filename) {
     if (!loaded_cartridge) return;
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
     FILE *f = fopen(filepath, "wb");
-    if (!f) return;
+    if (!f) { fprintf(stderr, "Error: Could not open save state file '%s'\n", filepath); return; }
     uint32_t magic = 0x53544154;
     fwrite(&magic, sizeof(magic), 1, f);
 
@@ -777,10 +785,12 @@ static void save_emulator_state(const CPU6502 *cpu, const char *filepath) {
     fclose(f);
 }
 
-static void load_emulator_state(CPU6502 *cpu, const char *filepath) {
+static void load_emulator_state(CPU6502 *cpu, const char *dir, const char *filename) {
     if (!loaded_cartridge) return;
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
     FILE *f = fopen(filepath, "rb");
-    if (!f) return;
+    if (!f) { fprintf(stderr, "Error: Could not open save state file '%s'\n", filepath); return; }
     uint32_t magic = 0;
     if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != 0x53544154) {
         fclose(f);
@@ -847,6 +857,13 @@ static void load_emulator_state(CPU6502 *cpu, const char *filepath) {
     }
     fclose(f);
 }
+
+#ifdef _WIN32
+#define MKDIR(path) _mkdir(path)
+#else
+#define MKDIR(path) mkdir(path, 0777)
+#endif
+
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
@@ -1221,6 +1238,32 @@ int main(int argc, char *argv[]) {
                                         if (loaded_cartridge) cartridge_free(loaded_cartridge);
                                         loaded_cartridge = cart;
                                         strncpy(loaded_rom_name, rom_files[menu_selection], sizeof(loaded_rom_name) - 1);
+
+                                        // Create save state directory for the ROM
+                                        char rom_name_clean[256];
+                                        strncpy(rom_name_clean, rom_files[menu_selection], sizeof(rom_name_clean) - 1);
+                                        rom_name_clean[sizeof(rom_name_clean) - 1] = '\0';
+                                        char *ext = strrchr(rom_name_clean, '.');
+                                        if (ext) *ext = '\0'; // Remove extension
+
+                                        char *base_path = SDL_GetBasePath();
+                                        if (base_path) {
+                                            snprintf(save_state_dir, sizeof(save_state_dir), "%s%s/%s", base_path, "saves", rom_name_clean);
+                                            SDL_free(base_path);
+                                        } else {
+                                            // Fallback if SDL_GetBasePath fails, use current directory
+                                            snprintf(save_state_dir, sizeof(save_state_dir), "%s/%s", "saves", rom_name_clean);
+                                        }
+
+                                        // Create the 'saves' root directory if it doesn't exist
+                                        char saves_root_dir[512];
+                                        strncpy(saves_root_dir, save_state_dir, sizeof(saves_root_dir) - 1);
+                                        saves_root_dir[sizeof(saves_root_dir) - 1] = '\0';
+                                        char *last_slash = strrchr(saves_root_dir, '/');
+                                        if (last_slash) *last_slash = '\0';
+                                        MKDIR(saves_root_dir);
+                                        MKDIR(save_state_dir); // Create the ROM-specific save state directory
+
                                         loaded_rom_name[sizeof(loaded_rom_name) - 1] = '\0';
                                         memset(nes_ram, 0, sizeof(nes_ram));
                                         ppu_init(&nes_ppu);
@@ -1235,13 +1278,13 @@ int main(int argc, char *argv[]) {
                             } else if (current_state == GUI_STATE_MENU_SAVE_STATE) {
                                 char name_buf[64];
                                 sprintf(name_buf, "slot%d.state", menu_selection);
-                                save_emulator_state(&cpu, name_buf);
+                                save_emulator_state(&cpu, save_state_dir, name_buf);
                                 current_state = GUI_STATE_GAMEPLAY;
                             } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
                                 char name_buf[64];
                                 sprintf(name_buf, "slot%d.state", menu_selection);
-                                load_emulator_state(&cpu, name_buf);
-                                current_state = GUI_STATE_GAMEPLAY;
+                                load_emulator_state(&cpu, save_state_dir, name_buf);
+                                current_state = GUI_STATE_GAMEPLAY; // Re-enter gameplay after loading state
                             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                                 if (menu_selection == 0) {
                                     window_scale++;
@@ -1300,11 +1343,11 @@ int main(int argc, char *argv[]) {
                             break;
                         }
                         case SDLK_F5: {
-                            save_emulator_state(&cpu, "quick.state");
+                            save_emulator_state(&cpu, save_state_dir, "quick.state");
                             break;
                         }
                         case SDLK_F8: {
-                            load_emulator_state(&cpu, "quick.state");
+                            load_emulator_state(&cpu, save_state_dir, "quick.state");
                             break;
                         }
                         default: {
