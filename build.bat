@@ -92,7 +92,7 @@ if "%COMPILER_TYPE%"=="gcc" (
         set "SDL_ARCH_DIR=%SDL_DIR%\i686-w64-mingw32"
     )
 
-    gcc -Wall -Wextra -std=c11 -O2 -Isrc -I"!SDL_ARCH_DIR!\include" src/cpu6502.c src/cartridge.c src/ppu2c02.c src/apu2a03.c src/gui_main.c -o build/nes_emulator.exe -L"!SDL_ARCH_DIR!\lib" -static -lmingw32 -lSDL2main -lSDL2 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 -lshell32 -lsetupapi -lversion -luuid
+    gcc -Wall -Wextra -std=c11 -O2 -Isrc -I"!SDL_ARCH_DIR!\include" src/*.c -o build/nes_emulator.exe -L"!SDL_ARCH_DIR!\lib" -static -lmingw32 -lSDL2main -lSDL2 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 -lshell32 -lsetupapi -lversion -luuid
 )
 
 if %ERRORLEVEL% equ 0 (

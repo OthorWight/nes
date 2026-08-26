@@ -36,7 +36,7 @@ install_dependencies
 
 echo "Compiling 6502 CPU Emulator Core and Test Runner..."
 mkdir -p build
-gcc -Wall -Wextra -std=c11 -O2 -Isrc src/cpu6502.c src/cartridge.c src/ppu2c02.c src/apu2a03.c src/gui_main.c -o build/nes_emulator $(pkg-config --cflags --libs sdl2 || echo "-lSDL2")
+gcc -Wall -Wextra -std=c11 -O2 -Isrc src/*.c -o build/nes_emulator $(pkg-config --cflags --libs sdl2 || echo "-lSDL2")
 
 echo "Compilation successful!"
 echo "Launching NES Emulator..."
