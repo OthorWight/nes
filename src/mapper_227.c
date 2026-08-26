@@ -2,30 +2,26 @@
 #include <string.h>
 
 static void m227_update_banks(Cartridge *c, uint16_t addr) {
-    uint32_t bank = ((addr >> 2) & 0x1F) | ((addr & 0x0100) >> 3);
-
-    bool s_flag   = (addr & 0x0001) != 0;
-    bool prg_mode = (addr & 0x0080) != 0;
-    bool l_flag   = (addr & 0x0200) != 0;
+    uint32_t prg = ((addr >> 2) & 0x1F) | ((addr & 0x0100) >> 3);
 
     uint32_t bank0 = 0;
     uint32_t bank1 = 0;
 
-    if (prg_mode) {
-        if (s_flag) {
-            bank0 = bank;
-            bank1 = l_flag ? ((bank & 0x38) | 7) : (bank & 0x38);
-        } else {
-            bank0 = bank;
-            bank1 = bank;
+    if (addr & 0x0080) { // Mode 1 (A7 = 1)
+        if (addr & 0x0001) { // S = 1 (A0 = 1)
+            bank0 = prg;
+            bank1 = (prg & 0x38) | ((addr & 0x0200) ? 7 : 0);
+        } else { // S = 0 (A0 = 0)
+            bank0 = prg;
+            bank1 = prg;
         }
-    } else {
-        if (s_flag) {
-            bank0 = bank & ~1;
-            bank1 = (bank & ~1) | 1;
-        } else {
-            bank0 = bank;
-            bank1 = l_flag ? ((bank & 0x38) | 7) : (bank & 0x38);
+    } else { // Mode 0 (A7 = 0)
+        if (addr & 0x0001) { // S = 1 (A0 = 1) -> 32 KB mode
+            bank0 = prg & ~1;
+            bank1 = (prg & ~1) | 1;
+        } else { // S = 0 (A0 = 0) -> 16 KB mode with fixed bank
+            bank0 = prg;
+            bank1 = (prg & 0x38) | ((addr & 0x0200) ? 7 : 0);
         }
     }
 
