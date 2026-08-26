@@ -137,14 +137,12 @@ Cartridge* cartridge_load(const char *filepath) {
 
     if (cart->mapper_id == 0) {
         mapper_000_init(cart);
-    } else if (cart->mapper_id == 3) {
-        mapper_003_init(cart);
-    } else if (cart->mapper_id == 7) {
-        mapper_007_init(cart); // Declared / implemented inside mapper_007.c
     } else if (cart->mapper_id == 1) {
         mapper_001_init(cart);
     } else if (cart->mapper_id == 2) {
         mapper_002_init(cart);
+    } else if (cart->mapper_id == 3) {
+        mapper_003_init(cart);
     } else if (cart->mapper_id == 4) {
         mapper_004_init(cart);
     } else if (cart->mapper_id == 5) {
@@ -152,12 +150,24 @@ Cartridge* cartridge_load(const char *filepath) {
         free(cart->prg_ram);
         cart->prg_ram = calloc(1, cart->prg_ram_size);
         mapper_005_init(cart);
+    } else if (cart->mapper_id == 7) {
+        mapper_007_init(cart);
     } else if (cart->mapper_id == 9) {
         mapper_009_init(cart);
     } else if (cart->mapper_id == 10) {
         mapper_010_init(cart);
+    } else if (cart->mapper_id == 11) {
+        mapper_011_init(cart);
+    } else if (cart->mapper_id == 34) {
+        mapper_034_init(cart);
+    } else if (cart->mapper_id == 66) {
+        mapper_066_init(cart);
     } else if (cart->mapper_id == 69) {
         mapper_069_init(cart);
+    } else if (cart->mapper_id == 71) {
+        mapper_071_init(cart);
+    } else if (cart->mapper_id == 206) {
+        mapper_206_init(cart);
     } else if (cart->mapper_id == 227) {
         mapper_227_init(cart);
     } else {
