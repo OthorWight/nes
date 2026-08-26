@@ -12,7 +12,7 @@ static uint8_t m206_read_prg(void *cart, uint16_t address) {
     } else if (address >= 0xA000 && address <= 0xBFFF) {
         bank = c->mapper_state[7] & 0x3F;
     } else if (address >= 0xC000 && address <= 0xDFFF) {
-        bank = total_banks - 2;
+        bank = (total_banks >= 2) ? total_banks - 2 : 0;
     } else if (address >= 0xE000) {
         bank = total_banks - 1;
     }
@@ -23,11 +23,11 @@ static uint8_t m206_read_prg(void *cart, uint16_t address) {
 
 static void m206_write_prg(void *cart, uint16_t address, uint8_t data) {
     Cartridge *c = (Cartridge*)cart;
-    if (address >= 0x8000 && address <= 0x9FFF) {
+    if (address >= 0x8000) {
         if ((address & 1) == 0) {
             c->mapper_state[8] = data & 0x07;
         } else {
-            uint8_t target = c->mapper_state[8];
+            uint8_t target = c->mapper_state[8] & 0x07;
             c->mapper_state[target] = data;
         }
     }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
+#include <inttypes.h>
 #include "cpu6502.h"
 #include "cartridge.h"
 #include "ppu2c02.h"
@@ -508,7 +509,7 @@ static void update_console_debug(CPU6502 *cpu) {
     printf("%c", (cpu->status_flags & FLAG_INTERRUPT_DISABLE) ? 'I' : '.');
     printf("%c", (cpu->status_flags & FLAG_ZERO) ? 'Z' : '.');
     printf("%c", (cpu->status_flags & FLAG_CARRY) ? 'C' : '.');
-    printf("]   Cycles: %lu\033[K\n", cpu->cycle_count);
+    printf("]   Cycles: %" PRIu64 "\033[K\n", cpu->cycle_count);
     printf("\033[K\n");
 
     printf("\033[1;33m--- Execution Context ---\033[0m\033[K\n");

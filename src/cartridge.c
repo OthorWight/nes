@@ -158,14 +158,16 @@ Cartridge* cartridge_load(const char *filepath) {
         mapper_010_init(cart);
     } else if (cart->mapper_id == 11) {
         mapper_011_init(cart);
-    } else if (cart->mapper_id == 34) {
+    } else if (cart->mapper_id == 19) {
+        mapper_019_init(cart);
+    } else if (cart->mapper_id == 23) {
+        mapper_023_init(cart);
+    }else if (cart->mapper_id == 34) {
         mapper_034_init(cart);
     } else if (cart->mapper_id == 66) {
         mapper_066_init(cart);
     } else if (cart->mapper_id == 69) {
         mapper_069_init(cart);
-    } else if (cart->mapper_id == 71) {
-        mapper_071_init(cart);
     } else if (cart->mapper_id == 206) {
         mapper_206_init(cart);
     } else if (cart->mapper_id == 227) {

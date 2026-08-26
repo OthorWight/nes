@@ -297,6 +297,19 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
 static uint8_t ppu_read_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address) {
     uint16_t nt_addr = address & 0x0FFF;
     if (cart != NULL) {
+        if (cart->mapper_id == 19) {
+            uint8_t slot = (address >> 10) & 0x03;
+            uint8_t bank = cart->mapper_state[8 + slot];
+            if (bank >= 0xE0) {
+                return ppu->vram[((bank & 0x01) << 10) | (nt_addr & 0x03FF)];
+            }
+            if (cart->chr_rom_size > 0) {
+                uint32_t total_banks = cart->chr_rom_size / 1024;
+                return cart->chr_rom[(bank % total_banks) * 1024 + (nt_addr & 0x03FF)];
+            }
+            return 0;
+        }
+
         if (cart->mapper_id == 5) {
             uint8_t select = (address >> 10) & 0x03;
             uint8_t mode = (cart->mmc5_nametable_ctrl >> (select * 2)) & 0x03;
@@ -317,7 +330,13 @@ static uint8_t ppu_read_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t a
             }
         }
 
-        if (cart->mirroring == MIRROR_VERTICAL) {
+        if (cart->mirroring == MIRROR_FOUR_SCREEN) {
+            if (nt_addr < 0x0800) {
+                return ppu->vram[nt_addr];
+            } else if (cart->prg_ram) {
+                return cart->prg_ram[nt_addr - 0x0800];
+            }
+        } else if (cart->mirroring == MIRROR_VERTICAL) {
             nt_addr &= 0x07FF;
         } else if (cart->mirroring == MIRROR_HORIZONTAL) {
             nt_addr = (uint16_t)((nt_addr & 0x03FF) | ((nt_addr & 0x0800) >> 1));
@@ -332,22 +351,42 @@ static uint8_t ppu_read_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t a
 
 static void ppu_write_nametable_byte(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data) {
     uint16_t nt_addr = address & 0x0FFF;
-    if (cart != NULL && cart->mapper_id == 5) {
-        uint8_t select = (address >> 10) & 0x03;
-        uint8_t mode = (cart->mmc5_nametable_ctrl >> (select * 2)) & 0x03;
-        if (mode == 0) {
-            ppu->vram[nt_addr & 0x03FF] = data;
-        } else if (mode == 1) {
-            ppu->vram[0x0400 | (nt_addr & 0x03FF)] = data;
-        } else if (mode == 2) {
-            if (cart->mmc5_exram_mode <= 1) {
-                cart->exram[nt_addr & 0x03FF] = data;
-            }
-        }
-        return;
-    }
     if (cart != NULL) {
-        if (cart->mirroring == MIRROR_VERTICAL) {
+        if (cart->mapper_id == 19) {
+            uint8_t slot = (address >> 10) & 0x03;
+            uint8_t bank = cart->mapper_state[8 + slot];
+            if (bank >= 0xE0) {
+                ppu->vram[((bank & 0x01) << 10) | (nt_addr & 0x03FF)] = data;
+            } else if (cart->chr_rom_size > 0) {
+                uint32_t total_banks = cart->chr_rom_size / 1024;
+                cart->chr_rom[(bank % total_banks) * 1024 + (nt_addr & 0x03FF)] = data;
+            }
+            return;
+        }
+
+        if (cart->mapper_id == 5) {
+            uint8_t select = (address >> 10) & 0x03;
+            uint8_t mode = (cart->mmc5_nametable_ctrl >> (select * 2)) & 0x03;
+            if (mode == 0) {
+                ppu->vram[nt_addr & 0x03FF] = data;
+            } else if (mode == 1) {
+                ppu->vram[0x0400 | (nt_addr & 0x03FF)] = data;
+            } else if (mode == 2) {
+                if (cart->mmc5_exram_mode <= 1) {
+                    cart->exram[nt_addr & 0x03FF] = data;
+                }
+            }
+            return;
+        }
+
+        if (cart->mirroring == MIRROR_FOUR_SCREEN) {
+            if (nt_addr < 0x0800) {
+                ppu->vram[nt_addr] = data;
+            } else if (cart->prg_ram) {
+                cart->prg_ram[nt_addr - 0x0800] = data;
+            }
+            return;
+        } else if (cart->mirroring == MIRROR_VERTICAL) {
             nt_addr &= 0x07FF;
         } else if (cart->mirroring == MIRROR_HORIZONTAL) {
             nt_addr = (uint16_t)((nt_addr & 0x03FF) | ((nt_addr & 0x0800) >> 1));
