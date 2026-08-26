@@ -21,6 +21,10 @@ static uint8_t controller_state = 0;
 static uint8_t controller_shift = 0;
 static char loaded_rom_name[256] = "";
 
+static int mouse_x = 0;
+static int mouse_y = 0;
+static bool mouse_left_pressed = false;
+
 static bool rebinding = false;
 static SDL_Keycode control_mappings[8] = {
     SDLK_z,      // Button A (bit 0)
@@ -57,7 +61,7 @@ static int window_scale = 5;
 static bool audio_muted = false;
 static bool fullscreen = false;
 
-static char rom_files[64][256];
+static char rom_files[512][256];
 static int rom_file_count = 0;
 
 static const uint8_t font8x8[95][8] = {
@@ -196,11 +200,11 @@ static void scan_rom_directory(void) {
     if (d) {
         while ((dir = readdir(d)) != NULL) {
             size_t len = strlen(dir->d_name);
-            if (len > 4 && strcmp(dir->d_name + len - 4, ".nes") == 0) {
+            if (len > 4 && (strcmp(dir->d_name + len - 4, ".nes") == 0 || strcmp(dir->d_name + len - 4, ".NES") == 0)) {
                 strncpy(rom_files[rom_file_count], dir->d_name, 255);
                 rom_files[rom_file_count][255] = '\0';
                 rom_file_count++;
-                if (rom_file_count >= 64) break;
+                if (rom_file_count >= 512) break;
             }
         }
         closedir(d);
@@ -235,10 +239,23 @@ static void get_state_slot_info(int slot, char *out_buf, size_t max_len, bool is
     fclose(f);
 
     char *ext = strrchr(rom_meta, '.');
-    if (ext && strcmp(ext, ".nes") == 0) {
+    if (ext && (strcmp(ext, ".nes") == 0 || strcmp(ext, ".NES") == 0)) {
         *ext = '\0';
     }
     snprintf(out_buf, max_len, "Slot %d: %-10.10s %s", slot, rom_meta, time_meta);
+}
+
+static bool is_zapper_sensing_light(void) {
+    if (mouse_x < 8 || mouse_x >= 248 || mouse_y < 8 || mouse_y >= 232) {
+        return false;
+    }
+    // Read current pixel color from the logical screen buffer
+    uint32_t pixel = nes_ppu.screen_buffer[mouse_y * 256 + mouse_x];
+    uint8_t r = (pixel >> 16) & 0xFF;
+    uint8_t g = (pixel >> 8) & 0xFF;
+    uint8_t b = pixel & 0xFF;
+    // Consider colors with high brightness as "white target boxes"
+    return (r > 200 && g > 200 && b > 200);
 }
 
 static void test_bus_tick(void *context) {
@@ -265,6 +282,15 @@ static uint8_t test_bus_read(void *context, uint16_t address) {
             uint8_t value = controller_shift & 1;
             controller_shift >>= 1;
             controller_shift |= 0x80;
+            return value;
+        } else if (address == 0x4017) {
+            uint8_t value = 0x00;
+            if (!is_zapper_sensing_light()) {
+                value |= (1 << 3); // Bit 3 is 1 when NO light is detected
+            }
+            if (mouse_left_pressed) {
+                value |= (1 << 4); // Bit 4 is 1 when the trigger is pulled
+            }
             return value;
         } else if (address >= 0x4000 && address <= 0x4015) {
             return apu_read_reg(&nes_apu, address, global_cpu);
@@ -687,6 +713,18 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_MOUSEMOTION) {
+                // SDL scaled coordinates to match logical screen size automatically
+                mouse_x = event.motion.x;
+                mouse_y = event.motion.y;
+            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    mouse_left_pressed = true;
+                }
+            } else if (event.type == SDL_MOUSEBUTTONUP) {
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    mouse_left_pressed = false;
+                }
             } else if (event.type == SDL_KEYDOWN) {
                 if (rebinding) {
                     if (event.key.keysym.sym != SDLK_ESCAPE) {

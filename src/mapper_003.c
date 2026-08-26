@@ -1,4 +1,5 @@
 #include "mappers.h"
+#include <stddef.h>
 
 static uint8_t cnrom_read_prg(void *cart, uint16_t address) {
     Cartridge *c = (Cartridge*)cart;

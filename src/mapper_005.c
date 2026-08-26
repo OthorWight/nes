@@ -32,10 +32,7 @@ static uint8_t mmc5_read_prg(void *cart, uint16_t address) {
     }
 
     if (address >= 0x5C00 && address <= 0x5FFF) {
-        if (c->mmc5_exram_mode <= 2) {
-            return c->exram[address - 0x5C00];
-        }
-        return 0;
+        return c->exram[address - 0x5C00];
     }
 
     if (address >= 0x6000 && address <= 0x7FFF) {
@@ -135,12 +132,10 @@ static void mmc5_write_prg(void *cart, uint16_t address, uint8_t data) {
             case 0x5120: case 0x5121: case 0x5122: case 0x5123:
             case 0x5124: case 0x5125: case 0x5126: case 0x5127:
                 c->mmc5_chr_regs_a[address - 0x5120] = (uint16_t)data | ((uint16_t)(c->mmc5_chr_high & 0x03) << 8);
-                c->mmc5_last_chr_a = true;
                 break;
 
             case 0x5128: case 0x5129: case 0x512A: case 0x512B:
                 c->mmc5_chr_regs_b[address - 0x5128] = (uint16_t)data | ((uint16_t)(c->mmc5_chr_high & 0x03) << 8);
-                c->mmc5_last_chr_a = false;
                 break;
 
             case 0x5130: c->mmc5_chr_high = data & 0x03; break;
@@ -159,7 +154,7 @@ static void mmc5_write_prg(void *cart, uint16_t address, uint8_t data) {
     }
 
     if (address >= 0x5C00 && address <= 0x5FFF) {
-        if (c->mmc5_exram_mode <= 2) {
+        if (c->mmc5_exram_mode != 3) {
             c->exram[address - 0x5C00] = data;
         }
         return;
@@ -188,7 +183,7 @@ static uint8_t mmc5_read_chr(void *cart, uint16_t address) {
     Cartridge *c = (Cartridge*)cart;
     if (c->chr_rom_size == 0) return 0;
 
-    bool use_set_a = c->ppu_sprite_size_8x16 ? c->ppu_sprite_fetch : c->mmc5_last_chr_a;
+    bool use_set_a = !c->ppu_sprite_size_8x16 || c->ppu_sprite_fetch;
     uint32_t bank = 0;
     uint16_t sub_addr = 0;
     uint32_t base_size = 1024;
@@ -218,9 +213,28 @@ static uint8_t mmc5_read_chr(void *cart, uint16_t address) {
                 break;
         }
     } else {
-        // Implementation fallback to bank Set B logic
-        bank = c->mmc5_chr_regs_b[(address / 1024) % 4];
-        sub_addr = address & 0x03FF;
+        switch (mode) {
+            case 0:
+                bank = c->mmc5_chr_regs_b[3];
+                sub_addr = address & 0x1FFF;
+                base_size = 8192;
+                break;
+            case 1:
+                bank = c->mmc5_chr_regs_b[3];
+                sub_addr = address & 0x0FFF;
+                base_size = 4096;
+                break;
+            case 2:
+                bank = c->mmc5_chr_regs_b[((address / 2048) & 1) ? 3 : 1];
+                sub_addr = address & 0x07FF;
+                base_size = 2048;
+                break;
+            case 3:
+                bank = c->mmc5_chr_regs_b[(address / 1024) % 4];
+                sub_addr = address & 0x03FF;
+                base_size = 1024;
+                break;
+        }
     }
 
     uint32_t total_banks = c->chr_rom_size / base_size;
@@ -277,7 +291,6 @@ void mapper_005_init(Cartridge *cart) {
     cart->mmc5_chr_mode = 0;
     cart->mmc5_ram_protect[0] = 0x02;
     cart->mmc5_ram_protect[1] = 0x01;
-    cart->mmc5_last_chr_a = true;
     cart->mmc5_nametable_ctrl = 0x00;
     cart->mmc5_prg_regs[0] = 0x00;
     cart->mmc5_prg_regs[1] = 0xFF;
