@@ -22,7 +22,7 @@ static void ppu_set_a12(PPU2C02 *ppu, bool high, Cartridge *cart, CPU6502 *cpu) 
             if (ppu->a12_low_counter >= 15) {
                 if (cart && cart->clock_irq) {
                     cart->clock_irq(cart, cpu);
-                } // Missing brace added here
+                }
             }
         }
         ppu->a12_state = true;

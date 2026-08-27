@@ -9,6 +9,7 @@
 #include "apu2a03.h"
 
 extern bool debugger_active;
+extern bool debugger_logging_active;
 extern bool breakpoints[65536];
 extern uint16_t debugger_view_pc;
 extern int debugger_selected_line;

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 bool debugger_active = false;
+bool debugger_logging_active = false;
 
 bool breakpoints[65536] = {false};
 uint16_t debugger_view_pc = 0;
@@ -398,6 +399,10 @@ static void get_mapper_irq_status(Cartridge *c, int *counter, bool *enabled) {
 }
 
 void debugger_log_instruction(CPU6502 *cpu) {
+    if (!debugger_logging_active) {
+        return;
+    }
+
     if (log_buffer_count >= 800) {
         process_log_buffer(false);
     }
@@ -513,6 +518,9 @@ void debugger_render(SDL_Renderer *renderer, CPU6502 *cpu) {
     snprintf(buf, sizeof(buf), "Stack: [ %02X %02X %02X %02X ]", s1, s2, s3, s4);
     draw_string(renderer, buf, 8, 210, 0x00FF00);
 
-    draw_string(renderer, "F10:Step | F9:Resume | F7:Breakpoint", 8, 222, 0xFF00FF);
-    draw_string(renderer, "UP/DOWN:Navigate | ESC:Main Menu", 8, 231, 0xFF00FF);
+    char log_status_str[64];
+    snprintf(log_status_str, sizeof(log_status_str), "F10:Step|F9:Run|F6:Log:%s", debugger_logging_active ? "ON" : "OFF");
+    draw_string(renderer, log_status_str, 8, 222, 0xFF00FF);
+
+    draw_string(renderer, "F7:BRK | UP/DN:Nav | ESC:Menu", 8, 231, 0xFF00FF);
 }

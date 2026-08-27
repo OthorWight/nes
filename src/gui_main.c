@@ -802,6 +802,7 @@ int main(int argc, char *argv[]) {
                 debugger_render(renderer, &cpu);
                 SDL_RenderPresent(renderer);
                 SDL_Delay(16);
+                update_console_debug(&cpu);
             } else {
                 uint64_t frame_start_tick = SDL_GetPerformanceCounter();
 
@@ -814,7 +815,7 @@ int main(int argc, char *argv[]) {
                         clear_view_history(debugger_view_pc);
                         break;
                     }
-                    if (console_debug_enabled) {
+                    if (debugger_logging_active) {
                         debugger_log_instruction(&cpu);
                     }
                     cpu_step(&cpu, &nes_bus);
@@ -1163,6 +1164,7 @@ int main(int argc, char *argv[]) {
                                         cpu_trigger_reset(&cpu);
                                         cpu_step(&cpu, &nes_bus);
                                         debugger_active = console_debug_enabled;
+                                        debugger_logging_active = false;
                                         if (debugger_active) {
                                             debugger_view_pc = cpu.program_counter;
                                             debugger_selected_line = 0;
@@ -1298,6 +1300,12 @@ int main(int argc, char *argv[]) {
                             if (debugger_active) {
                                 uint16_t target_pc = debugger_line_pcs[debugger_selected_line];
                                 breakpoints[target_pc] = !breakpoints[target_pc];
+                            }
+                            break;
+                        }
+                        case SDLK_F6: {
+                            if (debugger_active) {
+                                debugger_logging_active = !debugger_logging_active;
                             }
                             break;
                         }
