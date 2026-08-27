@@ -500,7 +500,7 @@ static void ppu_fetch_bg_data(PPU2C02 *ppu, Cartridge *cart) {
     }
 }
 
-static void ppu_render_pixel(PPU2C02 *ppu, Cartridge *cart) {
+static void ppu_render_pixel(PPU2C02 *ppu) {
     bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
     uint8_t bg_color_idx = 0;
     uint16_t bg_palette_idx = 0;
@@ -608,7 +608,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
     }
 
     if ((ppu->scanline < SCANLINE_VISIBLE_MAX || ppu->scanline == SCANLINE_PRERENDER) && ppu->cycle < CYCLE_RENDER_END) {
-        ppu_render_pixel(ppu, cart);
+        ppu_render_pixel(ppu);
     }
 
     if (ppu->cycle == 257) {
