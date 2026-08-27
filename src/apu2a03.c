@@ -1,6 +1,14 @@
 #include "apu2a03.h"
 #include <string.h>
 
+/* APU Constants */
+#define CPU_CLOCK_RATE      1789773.0
+#define AUDIO_SAMPLE_RATE   44100.0
+#define AUDIO_BUFFER_SIZE   4096
+#define MIX_PULSE_DIVISOR   8128.0f
+#define MIX_TND_DIVISOR     100.0f
+
+/* Length counter lookup table */
 static const uint8_t LENGTH_TABLE[32] = {
     10, 254, 20,  2, 40,  4, 80,  6, 30,  8, 60, 10, 14, 12, 26, 14,
     12,  16, 24, 18, 48, 20, 96, 22, 72, 24, 80, 26, 16, 28, 30, 30
@@ -29,12 +37,13 @@ static const uint16_t DMC_RATE_TABLE[16] = {
 static bool is_sweep_muting(APU2A03 *apu, int ch) {
     uint16_t period = apu->pulse_timer_reload[ch];
     if (period < 8 || period > 0x07FF) return true;
+    
     int16_t change = period >> apu->pulse_sweep_shift[ch];
     int16_t target;
     if (apu->pulse_sweep_negate[ch]) {
         target = period - change;
         if (ch == 0) {
-            target -= 1;
+            target -= 1; /* Pulse 1 sweeps negate using one's complement */
         }
     } else {
         target = period + change;
@@ -58,7 +67,7 @@ static void dmc_fetch(APU2A03 *apu, CPUBus *bus) {
 }
 
 static void apu_clock_quarter_frame(APU2A03 *apu) {
-    // Linear counter (Triangle)
+    /* Clock Linear counter (Triangle) */
     if (apu->triangle_linear_reload_flag) {
         apu->triangle_linear_counter = apu->triangle_linear_reload;
     } else if (apu->triangle_linear_counter > 0) {
@@ -68,7 +77,7 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
         apu->triangle_linear_reload_flag = false;
     }
 
-    // Envelopes (Pulse 1 & 2)
+    /* Clock Envelopes (Pulse 1 & 2) */
     for (int ch = 0; ch < 2; ch++) {
         if (apu->pulse_envelope_start[ch]) {
             apu->pulse_envelope_decay[ch] = 15;
@@ -86,7 +95,7 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
         }
     }
 
-    // Envelope (Noise)
+    /* Clock Envelope (Noise) */
     if (apu->noise_envelope_start) {
         apu->noise_envelope_decay = 15;
         apu->noise_envelope_divider = apu->noise_volume;
@@ -106,7 +115,7 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
 static void apu_clock_half_frame(APU2A03 *apu) {
     apu_clock_quarter_frame(apu);
 
-    // Pulse channel lengths and sweeps
+    /* Clock Pulse channel lengths and sweeps */
     for (int ch = 0; ch < 2; ch++) {
         if (!apu->pulse_halt[ch] && apu->pulse_length_counter[ch] > 0) {
             apu->pulse_length_counter[ch]--;
@@ -135,12 +144,12 @@ static void apu_clock_half_frame(APU2A03 *apu) {
         }
     }
 
-    // Triangle length
+    /* Clock Triangle length */
     if (apu->triangle_length_counter > 0 && !apu->triangle_control_flag) {
         apu->triangle_length_counter--;
     }
 
-    // Noise length
+    /* Clock Noise length */
     if (apu->noise_length_counter > 0 && !apu->noise_halt) {
         apu->noise_length_counter--;
     }
@@ -156,63 +165,40 @@ void apu_init(APU2A03 *apu) {
     apu->audio_buffer_idx = 0;
 }
 
+static void apu_write_pulse_reg(APU2A03 *apu, int ch, uint16_t offset, uint8_t data) {
+    switch (offset) {
+        case 0:
+            apu->pulse_duty[ch] = (data >> 6) & 0x03;
+            apu->pulse_halt[ch] = (data & 0x20) != 0;
+            apu->pulse_constant_volume[ch] = (data & 0x10) != 0;
+            apu->pulse_volume[ch] = data & 0x0F;
+            break;
+        case 1:
+            apu->pulse_sweep_enabled[ch] = (data & 0x80) != 0;
+            apu->pulse_sweep_period[ch] = (data >> 4) & 0x07;
+            apu->pulse_sweep_negate[ch] = (data & 0x08) != 0;
+            apu->pulse_sweep_shift[ch] = data & 0x07;
+            apu->pulse_sweep_reload[ch] = true;
+            break;
+        case 2:
+            apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x0700) | data;
+            break;
+        case 3:
+            apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x00FF) | ((uint16_t)(data & 0x07) << 8);
+            if (apu->pulse_enabled[ch]) {
+                apu->pulse_length_counter[ch] = LENGTH_TABLE[data >> 3];
+            }
+            apu->pulse_sequence_idx[ch] = 0;
+            apu->pulse_envelope_start[ch] = true;
+            break;
+    }
+}
+
 void apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu) {
     if (address >= 0x4000 && address <= 0x4003) {
-        int ch = 0;
-        switch (address & 0x03) {
-            case 0:
-                apu->pulse_duty[ch] = (data >> 6) & 0x03;
-                apu->pulse_halt[ch] = (data & 0x20) != 0;
-                apu->pulse_constant_volume[ch] = (data & 0x10) != 0;
-                apu->pulse_volume[ch] = data & 0x0F;
-                break;
-            case 1:
-                apu->pulse_sweep_enabled[ch] = (data & 0x80) != 0;
-                apu->pulse_sweep_period[ch] = (data >> 4) & 0x07;
-                apu->pulse_sweep_negate[ch] = (data & 0x08) != 0;
-                apu->pulse_sweep_shift[ch] = data & 0x07;
-                apu->pulse_sweep_reload[ch] = true;
-                break;
-            case 2:
-                apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x0700) | data;
-                break;
-            case 3:
-                apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x00FF) | ((uint16_t)(data & 0x07) << 8);
-                if (apu->pulse_enabled[ch]) {
-                    apu->pulse_length_counter[ch] = LENGTH_TABLE[data >> 3];
-                }
-                apu->pulse_sequence_idx[ch] = 0;
-                apu->pulse_envelope_start[ch] = true;
-                break;
-        }
+        apu_write_pulse_reg(apu, 0, address & 0x03, data);
     } else if (address >= 0x4004 && address <= 0x4007) {
-        int ch = 1;
-        switch (address & 0x03) {
-            case 0:
-                apu->pulse_duty[ch] = (data >> 6) & 0x03;
-                apu->pulse_halt[ch] = (data & 0x20) != 0;
-                apu->pulse_constant_volume[ch] = (data & 0x10) != 0;
-                apu->pulse_volume[ch] = data & 0x0F;
-                break;
-            case 1:
-                apu->pulse_sweep_enabled[ch] = (data & 0x80) != 0;
-                apu->pulse_sweep_period[ch] = (data >> 4) & 0x07;
-                apu->pulse_sweep_negate[ch] = (data & 0x08) != 0;
-                apu->pulse_sweep_shift[ch] = data & 0x07;
-                apu->pulse_sweep_reload[ch] = true;
-                break;
-            case 2:
-                apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x0700) | data;
-                break;
-            case 3:
-                apu->pulse_timer_reload[ch] = (apu->pulse_timer_reload[ch] & 0x00FF) | ((uint16_t)(data & 0x07) << 8);
-                if (apu->pulse_enabled[ch]) {
-                    apu->pulse_length_counter[ch] = LENGTH_TABLE[data >> 3];
-                }
-                apu->pulse_sequence_idx[ch] = 0;
-                apu->pulse_envelope_start[ch] = true;
-                break;
-        }
+        apu_write_pulse_reg(apu, 1, address & 0x03, data);
     } else if (address >= 0x4008 && address <= 0x400B) {
         switch (address & 0x03) {
             case 0:
@@ -340,12 +326,9 @@ uint8_t apu_read_reg(APU2A03 *apu, uint16_t address, CPU6502 *cpu) {
     return 0;
 }
 
-void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
-    apu->frame_cycles++;
-
-    // Frame Sequencer
+static void apu_step_frame_sequencer(APU2A03 *apu, CPU6502 *cpu) {
     if (!apu->frame_mode) {
-        // 4-Step Mode (240 Hz)
+        /* 4-Step Mode (240 Hz) */
         if (apu->frame_cycles == 7457) {
             apu_clock_quarter_frame(apu);
         } else if (apu->frame_cycles == 14913) {
@@ -364,7 +347,7 @@ void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
             apu->frame_cycles = 0;
         }
     } else {
-        // 5-Step Mode (192 Hz)
+        /* 5-Step Mode (192 Hz) */
         if (apu->frame_cycles == 7457) {
             apu_clock_quarter_frame(apu);
         } else if (apu->frame_cycles == 14913) {
@@ -377,8 +360,9 @@ void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
             apu->frame_cycles = 0;
         }
     }
+}
 
-    // DMC Channel Clock (Every CPU Cycle)
+static void apu_step_dmc(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
     if (apu->dmc_enabled) {
         if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining > 0) {
             dmc_fetch(apu, bus);
@@ -417,8 +401,10 @@ void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
             apu->dmc_timer--;
         }
     }
+}
 
-    // Triangle Channel Timer (Every CPU Cycle)
+static void apu_step_timers(APU2A03 *apu) {
+    /* Triangle Channel Timer (Every CPU Cycle) */
     if (apu->triangle_enabled && apu->triangle_length_counter > 0 && apu->triangle_linear_counter > 0) {
         if (apu->triangle_timer == 0) {
             apu->triangle_timer = apu->triangle_timer_reload;
@@ -430,7 +416,7 @@ void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
         }
     }
 
-    // Pulse & Noise Timers (Clocked on CPU / 2)
+    /* Pulse & Noise Timers (Clocked on CPU / 2) */
     apu->clock_toggle = !apu->clock_toggle;
     if (apu->clock_toggle) {
         for (int ch = 0; ch < 2; ch++) {
@@ -453,49 +439,61 @@ void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
             }
         }
     }
+}
 
-    // Audio Output Downsampling (1.789773 MHz -> 44.1 kHz)
-    apu->audio_accumulator += (44100.0 / 1789773.0);
-    if (apu->audio_accumulator >= 1.0) {
-        apu->audio_accumulator -= 1.0;
+static void apu_mix_audio_output(APU2A03 *apu) {
+    float pulse_out = 0.0f;
+    float tnd_out = 0.0f;
+    float ch_out[2] = {0.0f, 0.0f};
+    float tri_out = 0.0f;
+    float noise_out = 0.0f;
+    float dmc_out = (float)apu->dmc_value;
 
-        float pulse_out = 0.0f;
-        float tnd_out = 0.0f;
-        float ch_out[2] = {0.0f, 0.0f};
-        float tri_out = 0.0f;
-        float noise_out = 0.0f;
-        float dmc_out = (float)apu->dmc_value;
-
-        for (int ch = 0; ch < 2; ch++) {
-            if (apu->pulse_length_counter[ch] > 0 && !is_sweep_muting(apu, ch)) {
-                if (DUTY_TABLE[apu->pulse_duty[ch]][apu->pulse_sequence_idx[ch]]) {
-                    ch_out[ch] = apu->pulse_constant_volume[ch]
-                        ? (float)apu->pulse_volume[ch]
-                        : (float)apu->pulse_envelope_decay[ch];
-                }
+    for (int ch = 0; ch < 2; ch++) {
+        if (apu->pulse_length_counter[ch] > 0 && !is_sweep_muting(apu, ch)) {
+            if (DUTY_TABLE[apu->pulse_duty[ch]][apu->pulse_sequence_idx[ch]]) {
+                ch_out[ch] = apu->pulse_constant_volume[ch]
+                    ? (float)apu->pulse_volume[ch]
+                    : (float)apu->pulse_envelope_decay[ch];
             }
         }
+    }
 
-        if (apu->triangle_enabled && apu->triangle_length_counter > 0 && apu->triangle_linear_counter > 0) {
-            tri_out = (float)TRIANGLE_TABLE[apu->triangle_sequence_idx];
-        }
+    if (apu->triangle_enabled && apu->triangle_length_counter > 0 && apu->triangle_linear_counter > 0) {
+        tri_out = (float)TRIANGLE_TABLE[apu->triangle_sequence_idx];
+    }
 
-        if (apu->noise_enabled && apu->noise_length_counter > 0 && !(apu->noise_shift_reg & 1)) {
-            noise_out = apu->noise_constant_volume
-                ? (float)apu->noise_volume
-                : (float)apu->noise_envelope_decay;
-        }
+    if (apu->noise_enabled && apu->noise_length_counter > 0 && !(apu->noise_shift_reg & 1)) {
+        noise_out = apu->noise_constant_volume
+            ? (float)apu->noise_volume
+            : (float)apu->noise_envelope_decay;
+    }
 
-        if (ch_out[0] != 0.0f || ch_out[1] != 0.0f) {
-            pulse_out = 95.88f / ((8128.0f / (ch_out[0] + ch_out[1])) + 100.0f);
-        }
+    /* Standard linear approximation formulas for channel mixing */
+    if (ch_out[0] != 0.0f || ch_out[1] != 0.0f) {
+        pulse_out = 95.88f / ((MIX_PULSE_DIVISOR / (ch_out[0] + ch_out[1])) + 100.0f);
+    }
 
-        if (tri_out != 0.0f || noise_out != 0.0f || dmc_out != 0.0f) {
-            tnd_out = 159.79f / ((1.0f / ((tri_out / 8227.0f) + (noise_out / 12241.0f) + (dmc_out / 22638.0f))) + 100.0f);
-        }
+    if (tri_out != 0.0f || noise_out != 0.0f || dmc_out != 0.0f) {
+        tnd_out = 159.79f / ((1.0f / ((tri_out / 8227.0f) + (noise_out / 12241.0f) + (dmc_out / 22638.0f))) + 100.0f);
+    }
 
-        if (apu->audio_buffer_idx < 4096) {
-            apu->audio_buffer[apu->audio_buffer_idx++] = pulse_out + tnd_out;
-        }
+    if (apu->audio_buffer_idx < AUDIO_BUFFER_SIZE) {
+        apu->audio_buffer[apu->audio_buffer_idx++] = pulse_out + tnd_out;
+    }
+}
+
+void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
+    apu->frame_cycles++;
+
+    apu_step_frame_sequencer(apu, cpu);
+    apu_step_dmc(apu, bus, cpu);
+    apu_step_timers(apu);
+
+    /* Audio Output Downsampling (1.789773 MHz -> 44.1 kHz) */
+    apu->audio_accumulator += (AUDIO_SAMPLE_RATE / CPU_CLOCK_RATE);
+    if (apu->audio_accumulator >= 1.0) {
+        apu->audio_accumulator -= 1.0;
+        apu_mix_audio_output(apu);
     }
 }

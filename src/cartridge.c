@@ -5,6 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* iNES Header constants and defaults */
+#define INES_SIGNATURE_N      'N'
+#define INES_SIGNATURE_E      'E'
+#define INES_SIGNATURE_S      'S'
+#define INES_SIGNATURE_EOF    0x1A  /* MS-DOS EOF control character */
+
+#define PRG_CHUNK_SIZE        16384
+#define CHR_CHUNK_SIZE        8192
+#define TRAINER_SIZE          512
+
+#define PRG_RAM_DEFAULT_SIZE  8192
+#define MMC5_PRG_RAM_SIZE     65536
+
 // ==========================================
 // POWER-OF-TWO PADDING & MIRRORING HELPER
 // ==========================================
@@ -37,6 +50,75 @@ static void pad_and_mirror_rom(uint8_t **rom_data, uint32_t *rom_size) {
     *rom_size = padded_size;
 }
 
+/* iNES Header decoding helper functions */
+static inline bool validate_ines_header(const uint8_t *header) {
+    return (header[0] == INES_SIGNATURE_N &&
+            header[1] == INES_SIGNATURE_E &&
+            header[2] == INES_SIGNATURE_S &&
+            header[3] == INES_SIGNATURE_EOF);
+}
+
+static inline bool ines_has_trainer(uint8_t flags6) {
+    return (flags6 & 0x04) != 0;
+}
+
+static inline bool ines_has_battery(uint8_t flags6) {
+    return (flags6 & 0x02) != 0;
+}
+
+static inline uint8_t ines_get_mapper_id(uint8_t flags6, uint8_t flags7) {
+    return (uint8_t)((flags7 & 0xF0) | (flags6 >> 4));
+}
+
+static inline MirroringMode ines_get_mirroring(uint8_t flags6) {
+    if (flags6 & 0x08) {
+        return MIRROR_FOUR_SCREEN;
+    }
+    return (flags6 & 0x01) ? MIRROR_VERTICAL : MIRROR_HORIZONTAL;
+}
+
+static void generate_save_filepath(char *dest, const char *src, size_t max_len) {
+    strncpy(dest, src, max_len - 5);
+    dest[max_len - 5] = '\0';
+    char *ext = strrchr(dest, '.');
+    if (ext) {
+        strcpy(ext, ".sav");
+    } else {
+        strcat(dest, ".sav");
+    }
+}
+
+static bool initialize_mapper(Cartridge *cart) {
+    switch (cart->mapper_id) {
+        case 0:   mapper_000_init(cart); break;
+        case 1:   mapper_001_init(cart); break;
+        case 2:   mapper_002_init(cart); break;
+        case 3:   mapper_003_init(cart); break;
+        case 4:   mapper_004_init(cart); break;
+        case 5:
+            cart->prg_ram_size = MMC5_PRG_RAM_SIZE;
+            free(cart->prg_ram);
+            cart->prg_ram = calloc(1, cart->prg_ram_size);
+            mapper_005_init(cart);
+            break;
+        case 7:   mapper_007_init(cart); break;
+        case 9:   mapper_009_init(cart); break;
+        case 10:  mapper_010_init(cart); break;
+        case 11:  mapper_011_init(cart); break;
+        case 19:  mapper_019_init(cart); break;
+        case 23:  mapper_023_init(cart); break;
+        case 34:  mapper_034_init(cart); break;
+        case 66:  mapper_066_init(cart); break;
+        case 69:  mapper_069_init(cart); break;
+        case 206: mapper_206_init(cart); break;
+        case 227: mapper_227_init(cart); break;
+        default:
+            fprintf(stderr, "Error: Unsupported mapper ID %u\n", cart->mapper_id);
+            return false;
+    }
+    return true;
+}
+
 // ==========================================
 // LOADER & LIFECYCLE
 // ==========================================
@@ -55,7 +137,7 @@ Cartridge* cartridge_load(const char *filepath) {
         return NULL;
     }
 
-    if (header[0] != 'N' || header[1] != 'E' || header[2] != 'S' || header[3] != 0x1A) {
+    if (!validate_ines_header(header)) {
         fprintf(stderr, "Error: Invalid iNES header signature in '%s'\n", filepath);
         fclose(f);
         return NULL;
@@ -72,20 +154,13 @@ Cartridge* cartridge_load(const char *filepath) {
     uint8_t flags6 = header[6];
     uint8_t flags7 = header[7];
 
-    cart->prg_rom_size = prg_rom_chunks * 16384;
-    cart->chr_rom_size = chr_rom_chunks * 8192;
-    cart->mapper_id = (uint8_t)((flags7 & 0xF0) | (flags6 >> 4));
+    cart->prg_rom_size = prg_rom_chunks * PRG_CHUNK_SIZE;
+    cart->chr_rom_size = chr_rom_chunks * CHR_CHUNK_SIZE;
+    cart->mapper_id = ines_get_mapper_id(flags6, flags7);
+    cart->mirroring = ines_get_mirroring(flags6);
 
-    if (flags6 & 0x08) {
-        cart->mirroring = MIRROR_FOUR_SCREEN;
-    } else if (flags6 & 0x01) {
-        cart->mirroring = MIRROR_VERTICAL;
-    } else {
-        cart->mirroring = MIRROR_HORIZONTAL;
-    }
-
-    if (flags6 & 0x04) {
-        fseek(f, 512, SEEK_CUR);
+    if (ines_has_trainer(flags6)) {
+        fseek(f, TRAINER_SIZE, SEEK_CUR);
     }
 
     cart->prg_rom = malloc(cart->prg_rom_size);
@@ -107,26 +182,18 @@ Cartridge* cartridge_load(const char *filepath) {
         }
         pad_and_mirror_rom(&cart->chr_rom, &cart->chr_rom_size);
     } else {
-        cart->chr_rom_size = 8192;
-        cart->chr_rom = calloc(1, 8192);
+        cart->chr_rom_size = CHR_CHUNK_SIZE;
+        cart->chr_rom = calloc(1, CHR_CHUNK_SIZE);
     }
 
     fclose(f);
 
-    cart->prg_ram_size = 8192;
+    cart->prg_ram_size = PRG_RAM_DEFAULT_SIZE;
     cart->prg_ram = calloc(1, cart->prg_ram_size);
 
-    bool battery = (flags6 & 0x02) != 0;
-    cart->has_battery = battery;
-    if (battery) {
-        strncpy(cart->save_filepath, filepath, sizeof(cart->save_filepath) - 5);
-        cart->save_filepath[sizeof(cart->save_filepath) - 5] = '\0';
-        char *ext = strrchr(cart->save_filepath, '.');
-        if (ext) {
-            strcpy(ext, ".sav");
-        } else {
-            strcat(cart->save_filepath, ".sav");
-        }
+    cart->has_battery = ines_has_battery(flags6);
+    if (cart->has_battery) {
+        generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath));
         FILE *sf = fopen(cart->save_filepath, "rb");
         if (sf) {
             fread(cart->prg_ram, 1, cart->prg_ram_size, sf);
@@ -135,45 +202,7 @@ Cartridge* cartridge_load(const char *filepath) {
         }
     }
 
-    if (cart->mapper_id == 0) {
-        mapper_000_init(cart);
-    } else if (cart->mapper_id == 1) {
-        mapper_001_init(cart);
-    } else if (cart->mapper_id == 2) {
-        mapper_002_init(cart);
-    } else if (cart->mapper_id == 3) {
-        mapper_003_init(cart);
-    } else if (cart->mapper_id == 4) {
-        mapper_004_init(cart);
-    } else if (cart->mapper_id == 5) {
-        cart->prg_ram_size = 65536;
-        free(cart->prg_ram);
-        cart->prg_ram = calloc(1, cart->prg_ram_size);
-        mapper_005_init(cart);
-    } else if (cart->mapper_id == 7) {
-        mapper_007_init(cart);
-    } else if (cart->mapper_id == 9) {
-        mapper_009_init(cart);
-    } else if (cart->mapper_id == 10) {
-        mapper_010_init(cart);
-    } else if (cart->mapper_id == 11) {
-        mapper_011_init(cart);
-    } else if (cart->mapper_id == 19) {
-        mapper_019_init(cart);
-    } else if (cart->mapper_id == 23) {
-        mapper_023_init(cart);
-    }else if (cart->mapper_id == 34) {
-        mapper_034_init(cart);
-    } else if (cart->mapper_id == 66) {
-        mapper_066_init(cart);
-    } else if (cart->mapper_id == 69) {
-        mapper_069_init(cart);
-    } else if (cart->mapper_id == 206) {
-        mapper_206_init(cart);
-    } else if (cart->mapper_id == 227) {
-        mapper_227_init(cart);
-    } else {
-        fprintf(stderr, "Error: Unsupported mapper ID %u\n", cart->mapper_id);
+    if (!initialize_mapper(cart)) {
         cartridge_free(cart);
         return NULL;
     }
