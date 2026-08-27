@@ -1,5 +1,7 @@
 # Build outputs and executables
 build/*.nes
+build/*.log
+build/*.py
 #build/ i want to keep executables in github to share with a friend
 
 # Third-party dependencies

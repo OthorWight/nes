@@ -14,25 +14,57 @@
 #include "ppu2c02.h"
 #include "apu2a03.h"
 #include <SDL2/SDL.h>
+#include "debugger.h"
 
-static uint8_t nes_ram[2048];
-static uint8_t mock_apu_io[24];
-static Cartridge *loaded_cartridge = NULL;
+uint8_t nes_ram[2048];
+uint8_t mock_apu_io[24];
+Cartridge *loaded_cartridge = NULL;
 static CPU6502 *global_cpu = NULL;
-static CPUBus nes_bus;
-static PPU2C02 nes_ppu;
-static APU2A03 nes_apu;
+CPUBus nes_bus;
+PPU2C02 nes_ppu;
+APU2A03 nes_apu;
 
 static uint8_t test_bus_read(void *context, uint16_t address);
 static void test_bus_write(void *context, uint16_t address, uint8_t data);
 static void test_bus_tick(void *context);
-static uint8_t test_bus_peek(uint16_t address);
 
 static uint8_t controller_state = 0;
 static uint8_t controller_shift = 0;
 static uint8_t controller_strobe = 0;
 static char loaded_rom_name[256] = "";
 static char save_state_dir[512] = ""; // New global variable for per-ROM save states
+
+#define VIEW_HISTORY_MAX 256
+static uint16_t view_history[VIEW_HISTORY_MAX];
+static int view_history_count = 0;
+
+static void push_view_history(uint16_t pc) {
+    if (view_history_count > 0 && view_history[view_history_count - 1] == pc) {
+        return;
+    }
+    if (view_history_count < VIEW_HISTORY_MAX) {
+        view_history[view_history_count++] = pc;
+    } else {
+        memmove(view_history, view_history + 1, (VIEW_HISTORY_MAX - 1) * sizeof(uint16_t));
+        view_history[VIEW_HISTORY_MAX - 1] = pc;
+    }
+}
+
+static uint16_t pop_view_history(void) {
+    if (view_history_count > 1) {
+        view_history_count--;
+        return view_history[view_history_count - 1];
+    }
+    if (view_history_count == 1) {
+        return view_history[0];
+    }
+    return 0;
+}
+
+static void clear_view_history(uint16_t initial_pc) {
+    view_history_count = 0;
+    push_view_history(initial_pc);
+}
 
 static int mouse_x = 0;
 static int mouse_y = 0;
@@ -197,7 +229,7 @@ static void draw_character(SDL_Renderer *renderer, char c, int x, int y, uint32_
     }
 }
 
-static void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t color) {
+void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t color) {
     int cur_x = x;
     while (*str) {
         draw_character(renderer, *str, cur_x, y, color);
@@ -263,165 +295,6 @@ static void get_state_slot_info(int slot, char *out_buf, size_t max_len, bool is
         *ext = '\0';
     }
     snprintf(out_buf, max_len, "Slot %d: %-10.10s %s", slot, rom_meta, time_meta);
-}
-
-static const char* op_names[256] = {
-    "BRK", "ORA", "JAM", "SLO", "NOP", "ORA", "ASL", "SLO", "PHP", "ORA", "ASL", "ANC", "NOP", "ORA", "ASL", "SLO",
-    "BPL", "ORA", "JAM", "SLO", "NOP", "ORA", "ASL", "SLO", "CLC", "ORA", "NOP", "SLO", "NOP", "ORA", "ASL", "SLO",
-    "JSR", "AND", "JAM", "RLA", "BIT", "AND", "ROL", "RLA", "PLP", "AND", "ROL", "ANC", "BIT", "AND", "ROL", "RLA",
-    "BMI", "AND", "JAM", "RLA", "NOP", "AND", "ROL", "RLA", "SEC", "AND", "NOP", "RLA", "NOP", "AND", "ROL", "RLA",
-    "RTI", "EOR", "JAM", "SRE", "NOP", "EOR", "LSR", "SRE", "PHA", "EOR", "LSR", "ALR", "JMP", "EOR", "LSR", "SRE",
-    "BVC", "EOR", "JAM", "SRE", "NOP", "EOR", "LSR", "SRE", "CLI", "EOR", "NOP", "SRE", "NOP", "EOR", "LSR", "SRE",
-    "RTS", "ADC", "JAM", "RRA", "NOP", "ADC", "ROR", "RRA", "PLA", "ADC", "ROR", "ARR", "JMP", "ADC", "ROR", "RRA",
-    "BVS", "ADC", "JAM", "RRA", "NOP", "ADC", "ROR", "RRA", "SEI", "ADC", "NOP", "RRA", "NOP", "ADC", "ROR", "RRA",
-    "NOP", "STA", "NOP", "SAX", "STY", "STA", "STX", "SAX", "DEY", "NOP", "TXA", "XAA", "STY", "STA", "STX", "SAX",
-    "BCC", "STA", "JAM", "SHA", "STY", "STA", "STX", "SAX", "TYA", "STA", "TXS", "TAS", "SHY", "STA", "SHX", "SHA",
-    "LDY", "LDA", "LDX", "LAX", "LDY", "LDA", "LDX", "LAX", "TAY", "LDA", "TAX", "ATX", "LDY", "LDA", "LDX", "LAX",
-    "BCS", "LDA", "JAM", "LAX", "LDY", "LDA", "LDX", "LAX", "CLV", "LDA", "TSX", "LAS", "LDY", "LDA", "LDX", "LAX",
-    "CPY", "CMP", "NOP", "DCP", "CPY", "CMP", "DEC", "DCP", "INY", "CMP", "DEX", "AXS", "CPY", "CMP", "DEC", "DCP",
-    "BNE", "CMP", "JAM", "DCP", "NOP", "CMP", "DEC", "DCP", "CLD", "CMP", "NOP", "DCP", "NOP", "CMP", "DEC", "DCP",
-    "CPX", "SBC", "NOP", "ISC", "CPX", "SBC", "INC", "ISC", "INX", "SBC", "NOP", "SBC", "CPX", "SBC", "INC", "ISC",
-    "BEQ", "SBC", "JAM", "ISC", "NOP", "SBC", "INC", "ISC", "SED", "SBC", "NOP", "ISC", "NOP", "SBC", "INC", "ISC"
-};
-
-static const uint8_t op_bytes[256] = {
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    3, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    1, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    1, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
-    2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
-    2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3
-};
-
-typedef enum {
-    MODE_IMP, MODE_IMM, MODE_ZP, MODE_ZPX, MODE_ZPY,
-    MODE_ABS, MODE_ABSX, MODE_ABSY, MODE_IND, MODE_INDX,
-    MODE_INDY, MODE_REL
-} AddrMode;
-
-static const uint8_t op_modes[256] = {
-    MODE_IMP, MODE_INDX, MODE_IMP, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX,
-    MODE_ABS, MODE_INDX, MODE_IMP, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX,
-    MODE_IMP, MODE_INDX, MODE_IMP, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX,
-    MODE_IMP, MODE_INDX, MODE_IMP, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_IND, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX,
-    MODE_IMM, MODE_INDX, MODE_IMM, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPY, MODE_ZPY, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSY, MODE_ABSY,
-    MODE_IMM, MODE_INDX, MODE_IMM, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPY, MODE_ZPY, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSY, MODE_ABSY,
-    MODE_IMM, MODE_INDX, MODE_IMM, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX,
-    MODE_IMM, MODE_INDX, MODE_IMM, MODE_INDX, MODE_ZP, MODE_ZP, MODE_ZP, MODE_ZP, MODE_IMP, MODE_IMM, MODE_IMP, MODE_IMM, MODE_ABS, MODE_ABS, MODE_ABS, MODE_ABS,
-    MODE_REL, MODE_INDY, MODE_IMP, MODE_INDY, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_ZPX, MODE_IMP, MODE_ABSY, MODE_IMP, MODE_ABSY, MODE_ABSX, MODE_ABSX, MODE_ABSX, MODE_ABSX
-};
-
-static uint8_t test_bus_peek(uint16_t address) {
-    if (address <= 0x1FFF) {
-        return nes_ram[address & 0x07FF];
-    } else if (address >= 0x2000 && address <= 0x3FFF) {
-        return nes_ppu.buffered_data;
-    } else if (address >= 0x4000 && address <= 0x4017) {
-        return mock_apu_io[address - 0x4000];
-    } else if (address >= 0x4018 && loaded_cartridge != NULL) {
-        return loaded_cartridge->read_prg(loaded_cartridge, address);
-    }
-    return 0;
-}
-
-static void disassemble_instruction(uint16_t pc, char *out_buf, size_t max_len, CPU6502 *cpu) {
-    uint8_t op = test_bus_peek(pc);
-    uint8_t b1 = test_bus_peek(pc + 1);
-    uint8_t b2 = test_bus_peek(pc + 2);
-    uint16_t operand = b1 | (b2 << 8);
-
-    char hex_str[16];
-    if (op_bytes[op] == 1) {
-        snprintf(hex_str, sizeof(hex_str), "%02X      ", op);
-    } else if (op_bytes[op] == 2) {
-        snprintf(hex_str, sizeof(hex_str), "%02X %02X   ", op, b1);
-    } else {
-        snprintf(hex_str, sizeof(hex_str), "%02X %02X %02X", op, b1, b2);
-    }
-
-    char asm_str[64];
-    switch (op_modes[op]) {
-        case MODE_IMP:
-            snprintf(asm_str, sizeof(asm_str), "%s", op_names[op]);
-            break;
-        case MODE_IMM:
-            snprintf(asm_str, sizeof(asm_str), "%s #$%02X", op_names[op], b1);
-            break;
-        case MODE_ZP:
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X = #$%02X", op_names[op], b1, test_bus_peek(b1));
-            break;
-        case MODE_ZPX: {
-            uint8_t addr = (b1 + cpu->index_x) & 0xFF;
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X,X @ $%02X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_ZPY: {
-            uint8_t addr = (b1 + cpu->index_y) & 0xFF;
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X,Y @ $%02X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_ABS: {
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X = #$%02X", op_names[op], operand, test_bus_peek(operand));
-            break;
-        }
-        case MODE_ABSX: {
-            uint16_t addr = operand + cpu->index_x;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X,X @ $%04X = #$%02X", op_names[op], operand, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_ABSY: {
-            uint16_t addr = operand + cpu->index_y;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X,Y @ $%04X = #$%02X", op_names[op], operand, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_IND: {
-            uint16_t target;
-            if ((operand & 0x00FF) == 0x00FF) {
-                uint8_t low = test_bus_peek(operand);
-                uint8_t high = test_bus_peek(operand & 0xFF00);
-                target = low | (high << 8);
-            } else {
-                target = test_bus_peek(operand) | (test_bus_peek(operand + 1) << 8);
-            }
-            snprintf(asm_str, sizeof(asm_str), "%s ($%04X) = $%04X", op_names[op], operand, target);
-            break;
-        }
-        case MODE_INDX: {
-            uint8_t ptr = (b1 + cpu->index_x) & 0xFF;
-            uint16_t addr = test_bus_peek(ptr) | (test_bus_peek((ptr + 1) & 0xFF) << 8);
-            snprintf(asm_str, sizeof(asm_str), "%s ($%02X,X) @ $%04X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_INDY: {
-            uint16_t base = test_bus_peek(b1) | (test_bus_peek((b1 + 1) & 0xFF) << 8);
-            uint16_t addr = base + cpu->index_y;
-            snprintf(asm_str, sizeof(asm_str), "%s ($%02X),Y @ $%04X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
-        case MODE_REL: {
-            uint16_t target = pc + 2 + (int8_t)b1;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X", op_names[op], target);
-            break;
-        }
-    }
-    snprintf(out_buf, max_len, "%s  %s", hex_str, asm_str);
 }
 
 static void update_console_debug(CPU6502 *cpu) {
@@ -925,29 +798,53 @@ int main(int argc, char *argv[]) {
 
     while (running) {
         if (current_state == GUI_STATE_GAMEPLAY && loaded_cartridge != NULL) {
-            uint64_t frame_start_tick = SDL_GetPerformanceCounter();
+            if (debugger_active) {
+                debugger_render(renderer, &cpu);
+                SDL_RenderPresent(renderer);
+                SDL_Delay(16);
+            } else {
+                uint64_t frame_start_tick = SDL_GetPerformanceCounter();
 
-            nes_ppu.frame_complete = false;
-            while (!nes_ppu.frame_complete) {
-                cpu_step(&cpu, &nes_bus);
-            }
-
-            uint64_t emu_end_tick = SDL_GetPerformanceCounter();
-            debug_emu_ticks += (emu_end_tick - frame_start_tick);
-
-            SDL_UpdateTexture(texture, NULL, nes_ppu.screen_buffer, 256 * sizeof(uint32_t));
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-            SDL_RenderClear(renderer);
-            SDL_Rect src_rect = { 8, 8, 240, 224 };
-            SDL_RenderCopy(renderer, texture, &src_rect, NULL);
-            SDL_RenderPresent(renderer);
-
-            if (audio_device != 0 && nes_apu.audio_buffer_idx > 0) {
-                if (!audio_muted) {
-                    SDL_QueueAudio(audio_device, nes_apu.audio_buffer, nes_apu.audio_buffer_idx * sizeof(float));
-                    while (SDL_GetQueuedAudioSize(audio_device) > 4096 * sizeof(float)) {
-                        SDL_Delay(1);
+                nes_ppu.frame_complete = false;
+                while (!nes_ppu.frame_complete) {
+                    if (breakpoints[cpu.program_counter]) {
+                        debugger_active = true;
+                        debugger_view_pc = cpu.program_counter;
+                        debugger_selected_line = 0;
+                        clear_view_history(debugger_view_pc);
+                        break;
                     }
+                    if (console_debug_enabled) {
+                        debugger_log_instruction(&cpu);
+                    }
+                    cpu_step(&cpu, &nes_bus);
+                }
+
+                uint64_t emu_end_tick = SDL_GetPerformanceCounter();
+                debug_emu_ticks += (emu_end_tick - frame_start_tick);
+
+                SDL_UpdateTexture(texture, NULL, nes_ppu.screen_buffer, 256 * sizeof(uint32_t));
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                SDL_Rect src_rect = { 8, 8, 240, 224 };
+                SDL_RenderCopy(renderer, texture, &src_rect, NULL);
+                SDL_RenderPresent(renderer);
+
+                if (audio_device != 0 && nes_apu.audio_buffer_idx > 0) {
+                    if (!audio_muted) {
+                        SDL_QueueAudio(audio_device, nes_apu.audio_buffer, nes_apu.audio_buffer_idx * sizeof(float));
+                        while (SDL_GetQueuedAudioSize(audio_device) > 4096 * sizeof(float)) {
+                            SDL_Delay(1);
+                        }
+                    } else {
+                        static uint32_t last_frame_time = 0;
+                        uint32_t now = SDL_GetTicks();
+                        if (now < last_frame_time + 16) {
+                            SDL_Delay((last_frame_time + 16) - now);
+                        }
+                        last_frame_time = SDL_GetTicks();
+                    }
+                    nes_apu.audio_buffer_idx = 0;
                 } else {
                     static uint32_t last_frame_time = 0;
                     uint32_t now = SDL_GetTicks();
@@ -956,20 +853,12 @@ int main(int argc, char *argv[]) {
                     }
                     last_frame_time = SDL_GetTicks();
                 }
-                nes_apu.audio_buffer_idx = 0;
-            } else {
-                static uint32_t last_frame_time = 0;
-                uint32_t now = SDL_GetTicks();
-                if (now < last_frame_time + 16) {
-                    SDL_Delay((last_frame_time + 16) - now);
-                }
-                last_frame_time = SDL_GetTicks();
+
+                uint64_t frame_end_tick = SDL_GetPerformanceCounter();
+                debug_total_ticks += (frame_end_tick - frame_start_tick);
+
+                update_console_debug(&cpu);
             }
-
-            uint64_t frame_end_tick = SDL_GetPerformanceCounter();
-            debug_total_ticks += (frame_end_tick - frame_start_tick);
-
-            update_console_debug(&cpu);
         } else {
             SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
             SDL_RenderClear(renderer);
@@ -1269,9 +1158,16 @@ int main(int argc, char *argv[]) {
                                         ppu_init(&nes_ppu);
                                         apu_init(&nes_apu);
                                         memset(mock_apu_io, 0, sizeof(mock_apu_io));
+                                        debugger_init();
                                         cpu_init(&cpu, CPU_MODEL_RICOH_2A03);
                                         cpu_trigger_reset(&cpu);
                                         cpu_step(&cpu, &nes_bus);
+                                        debugger_active = console_debug_enabled;
+                                        if (debugger_active) {
+                                            debugger_view_pc = cpu.program_counter;
+                                            debugger_selected_line = 0;
+                                            clear_view_history(debugger_view_pc);
+                                        }
                                         current_state = GUI_STATE_GAMEPLAY;
                                     }
                                 }
@@ -1350,10 +1246,98 @@ int main(int argc, char *argv[]) {
                             load_emulator_state(&cpu, save_state_dir, "quick.state");
                             break;
                         }
+                        case SDLK_UP: {
+                            if (debugger_active) {
+                                debugger_selected_line--;
+                                if (debugger_selected_line < 0) {
+                                    debugger_selected_line = 0;
+                                    if (view_history_count > 1) {
+                                        debugger_view_pc = pop_view_history();
+                                    } else {
+                                        uint16_t target = debugger_view_pc;
+                                        if (target >= 1 && op_bytes[test_bus_peek(target - 1)] == 1) {
+                                            debugger_view_pc = target - 1;
+                                        } else if (target >= 2 && op_bytes[test_bus_peek(target - 2)] == 2) {
+                                            debugger_view_pc = target - 2;
+                                        } else if (target >= 3 && op_bytes[test_bus_peek(target - 3)] == 3) {
+                                            debugger_view_pc = target - 3;
+                                        } else {
+                                            debugger_view_pc--;
+                                        }
+                                        clear_view_history(debugger_view_pc);
+                                    }
+                                }
+                            } else {
+                                for (int i = 0; i < 8; i++) {
+                                    if (event.key.keysym.sym == control_mappings[i]) {
+                                        controller_state |= (1 << i);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case SDLK_DOWN: {
+                            if (debugger_active) {
+                                debugger_selected_line++;
+                                if (debugger_selected_line >= 12) {
+                                    debugger_selected_line = 11;
+                                    uint8_t op = test_bus_peek(debugger_view_pc);
+                                    debugger_view_pc += op_bytes[op] ? op_bytes[op] : 1;
+                                    push_view_history(debugger_view_pc);
+                                }
+                            } else {
+                                for (int i = 0; i < 8; i++) {
+                                    if (event.key.keysym.sym == control_mappings[i]) {
+                                        controller_state |= (1 << i);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case SDLK_F7: {
+                            if (debugger_active) {
+                                uint16_t target_pc = debugger_line_pcs[debugger_selected_line];
+                                breakpoints[target_pc] = !breakpoints[target_pc];
+                            }
+                            break;
+                        }
+                        case SDLK_F10: {
+                            if (debugger_active) {
+                                debugger_step_instruction(&cpu, &nes_bus);
+                                clear_view_history(debugger_view_pc);
+                            } else {
+                                debugger_active = true;
+                                debugger_view_pc = cpu.program_counter;
+                                debugger_selected_line = 0;
+                                clear_view_history(debugger_view_pc);
+                            }
+                            break;
+                        }
+                        case SDLK_F9: {
+                            if (debugger_active) {
+                                debugger_step_instruction(&cpu, &nes_bus);
+                                debugger_active = false;
+                            } else {
+                                debugger_active = true;
+                                debugger_view_pc = cpu.program_counter;
+                                debugger_selected_line = 0;
+                                clear_view_history(debugger_view_pc);
+                            }
+                            break;
+                        }
+                        case SDLK_F12: {
+                            if (debugger_active) {
+                                cpu_trigger_reset(&cpu);
+                                cpu_step(&cpu, &nes_bus);
+                            }
+                            break;
+                        }
                         default: {
-                            for (int i = 0; i < 8; i++) {
-                                if (event.key.keysym.sym == control_mappings[i]) {
-                                    controller_state |= (1 << i);
+                            if (!debugger_active) {
+                                for (int i = 0; i < 8; i++) {
+                                    if (event.key.keysym.sym == control_mappings[i]) {
+                                        controller_state |= (1 << i);
+                                    }
                                 }
                             }
                             break;
