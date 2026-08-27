@@ -252,13 +252,20 @@ uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *c
 
 void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data, CPU6502 *cpu) {
     switch (address & 0x2007) {
-        case 0x2000:
+        case 0x2000: {
+            uint8_t old_ctrl = ppu->ppu_ctrl;
             ppu->ppu_ctrl = data;
             if (cart != NULL) {
                 cart->ppu_sprite_size_8x16 = (data & 0x20) != 0;
             }
             ppu->t = (uint16_t)((ppu->t & 0xF3FF) | (((uint16_t)data & 0x03) << 10));
+            if ((data & 0x80) && !(old_ctrl & 0x80) && (ppu->ppu_status & 0x80)) {
+                if (cpu != NULL) {
+                    cpu_pulse_nmi(cpu);
+                }
+            }
             break;
+        }
         case 0x2001:
             ppu->ppu_mask = data;
             break;
