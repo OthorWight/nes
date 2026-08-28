@@ -569,12 +569,12 @@ static void test_bus_write(void *context, uint16_t address, uint8_t data) {
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
             }
+            uint8_t oam_start_addr = nes_ppu.oam_addr; // Store OAMADDR before DMA
             for (int i = 0; i < 256; i++) {
                 uint8_t val = test_bus_read(context, (uint16_t)(dma_addr + i));
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
-
-                nes_ppu.oam_ram[(nes_ppu.oam_addr + i) & 0xFF] = val;
+                nes_ppu.oam_ram[(oam_start_addr + i) & 0xFF] = val; // DMA writes directly to OAM RAM, OAMADDR is not incremented
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
             }

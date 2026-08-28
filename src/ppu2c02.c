@@ -129,46 +129,52 @@ static void ppu_increment_scroll_y(PPU2C02 *ppu) {
 
 static void ppu_evaluate_sprites(PPU2C02 *ppu, Cartridge *cart, int target_scanline) {
     ppu->scanline_sprite_count = 0;
-    if (target_scanline < 0 || target_scanline >= 240) return;
-    if (!(ppu->ppu_mask & 0x10)) return;
+    if (target_scanline < 0) return; // Only prevent negative scanlines
+    bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
+    if (!rendering_enabled) return;
     int sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
 
     if (cart != NULL) {
         cart->ppu_sprite_fetch = true;
     }
 
-    for (int i = 0; i < 64 && ppu->scanline_sprite_count < 8; i++) {
+    for (int i = 0; i < 64; i++) {
         int sprite_y = (int)ppu->oam_ram[i * 4] + 1;
         if (target_scanline >= sprite_y && target_scanline < sprite_y + sprite_height) {
-            uint8_t tile_id  = ppu->oam_ram[i * 4 + 1];
-            uint8_t attr     = ppu->oam_ram[i * 4 + 2];
-            uint8_t sprite_x = ppu->oam_ram[i * 4 + 3];
+            if (ppu->scanline_sprite_count < 8) {
+                uint8_t tile_id  = ppu->oam_ram[i * 4 + 1];
+                uint8_t attr     = ppu->oam_ram[i * 4 + 2];
+                uint8_t sprite_x = ppu->oam_ram[i * 4 + 3];
 
-            int row = target_scanline - sprite_y;
-            if (attr & 0x80) {
-                row = (sprite_height - 1) - row;
-            }
-
-            uint16_t pattern_addr;
-            if (sprite_height == 8) {
-                uint8_t sprite_table = (ppu->ppu_ctrl & 0x08) ? 1 : 0;
-                pattern_addr = (uint16_t)((sprite_table << 12) | (tile_id << 4) | row);
-            } else {
-                uint8_t sprite_table = tile_id & 0x01;
-                uint8_t actual_tile  = tile_id & 0xFE;
-                if (row >= 8) {
-                    actual_tile++;
-                    row -= 8;
+                int row = target_scanline - sprite_y;
+                if (attr & 0x80) {
+                    row = (sprite_height - 1) - row;
                 }
-                pattern_addr = (uint16_t)((sprite_table << 12) | (actual_tile << 4) | row);
-            }
 
-            ScanlineSprite *spr = &ppu->scanline_sprites[ppu->scanline_sprite_count++];
-            spr->x = sprite_x;
-            spr->attributes = attr;
-            spr->sprite_index = (uint8_t)i;
-            spr->low_byte = cart->read_chr(cart, pattern_addr);
-            spr->high_byte = cart->read_chr(cart, (uint16_t)(pattern_addr + 8));
+                uint16_t pattern_addr;
+                if (sprite_height == 8) {
+                    uint8_t sprite_table = (ppu->ppu_ctrl & 0x08) ? 1 : 0;
+                    pattern_addr = (uint16_t)((sprite_table << 12) | (tile_id << 4) | row);
+                } else {
+                    uint8_t sprite_table = tile_id & 0x01;
+                    uint8_t actual_tile  = tile_id & 0xFE;
+                    if (row >= 8) {
+                        actual_tile++;
+                        row -= 8;
+                    }
+                    pattern_addr = (uint16_t)((sprite_table << 12) | (actual_tile << 4) | row);
+                }
+
+                ScanlineSprite *spr = &ppu->scanline_sprites[ppu->scanline_sprite_count++];
+                spr->x = sprite_x;
+                spr->attributes = attr;
+                spr->sprite_index = (uint8_t)i;
+                spr->low_byte = cart->read_chr(cart, pattern_addr);
+                spr->high_byte = cart->read_chr(cart, (uint16_t)(pattern_addr + 8));
+            } else {
+                ppu->ppu_status |= 0x20; // Set sprite overflow flag
+                break;
+            }
         }
     }
 
@@ -177,9 +183,57 @@ static void ppu_evaluate_sprites(PPU2C02 *ppu, Cartridge *cart, int target_scanl
     }
 }
 
+static int ppu_calculate_sprite_overflow_cycle(PPU2C02 *ppu, int target_scanline) {
+    if (target_scanline < 0) return -1;
+    bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
+    if (!rendering_enabled) return -1;
+    int sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
+
+    int secondary_oam_count = 0;
+    int current_cycle = 65;
+
+    int i = 0;
+    for (; i < 64; i++) {
+        int sprite_y = (int)ppu->oam_ram[i * 4] + 1;
+        if (target_scanline >= sprite_y && target_scanline < sprite_y + sprite_height) {
+            if (secondary_oam_count < 8) {
+                secondary_oam_count++;
+                current_cycle += 8;
+            } else {
+                current_cycle += 2;
+                return current_cycle;
+            }
+        } else {
+            if (secondary_oam_count < 8) {
+                current_cycle += 2;
+            }
+        }
+        if (secondary_oam_count == 8) {
+            i++;
+            break;
+        }
+    }
+
+    if (secondary_oam_count == 8 && i < 64) {
+        int n = i;
+        int m = 0;
+        while (n < 64 && current_cycle < 256) {
+            uint8_t y_val = ppu->oam_ram[n * 4 + m];
+            int sprite_y = (int)y_val + 1;
+            current_cycle += 2;
+            if (target_scanline >= sprite_y && target_scanline < sprite_y + sprite_height) {
+                return current_cycle;
+            }
+            n = n + 1;
+            m = (m + 1) & 3;
+        }
+    }
+    return -1;
+}
+
 void ppu_init(PPU2C02 *ppu) {
     memset(ppu->vram, 0, sizeof(ppu->vram));
-    memset(ppu->palette_ram, 0, sizeof(ppu->palette_ram));
+    memset(ppu->palette_ram, 0x0F, sizeof(ppu->palette_ram)); // Initialize palette RAM to 0x0F (black) for Blargg's power_up_palette test
     memset(ppu->oam_ram, 0, sizeof(ppu->oam_ram));
     memset(ppu->screen_buffer, 0, sizeof(ppu->screen_buffer));
     memset(ppu->scanline_sprites, 0, sizeof(ppu->scanline_sprites));
@@ -211,46 +265,88 @@ void ppu_init(PPU2C02 *ppu) {
     ppu->odd_frame = false;
     ppu->a12_state = false;
     ppu->a12_low_counter = 0;
+    ppu->open_bus_value = 0;
+    ppu->overflow_cycle = -1;
+    memset(ppu->open_bus_decay_cycles, 0, sizeof(ppu->open_bus_decay_cycles));
+}
+
+static void ppu_update_open_bus_decay(PPU2C02 *ppu, CPU6502 *cpu) {
+    if (!cpu) return;
+    for (int i = 0; i < 8; i++) {
+        if (cpu->cycle_count - ppu->open_bus_decay_cycles[i] > 700000) {
+            ppu->open_bus_value &= ~(1 << i);
+        }
+    }
+}
+
+static void ppu_refresh_open_bus(PPU2C02 *ppu, CPU6502 *cpu, uint8_t value, uint8_t driven_mask) {
+    if (!cpu) return;
+    for (int i = 0; i < 8; i++) {
+        if (driven_mask & (1 << i)) {
+            ppu->open_bus_decay_cycles[i] = cpu->cycle_count;
+            if (value & (1 << i)) {
+                ppu->open_bus_value |= (1 << i);
+            } else {
+                ppu->open_bus_value &= ~(1 << i);
+            }
+        }
+    }
 }
 
 uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *cpu) {
-    uint8_t data = 0;
+    ppu_update_open_bus_decay(ppu, cpu);
+    uint8_t data = ppu->open_bus_value;
     switch (address & 0x2007) {
         case 0x2002:
-            data = (uint8_t)((ppu->ppu_status & 0xE0) | (ppu->buffered_data & 0x1F));
+            data = (uint8_t)((ppu->ppu_status & 0xE0) | (ppu->open_bus_value & 0x1F));
             ppu->ppu_status &= 0x7F;
             ppu->w = 0;
+            ppu_refresh_open_bus(ppu, cpu, data, 0xE0); // Only bits 5-7 are driven
             break;
         case 0x2004:
             data = ppu->oam_ram[ppu->oam_addr];
+            if ((ppu->oam_addr & 0x03) == 0x02) {
+                data &= 0xE3;
+            }
+            ppu_refresh_open_bus(ppu, cpu, data, 0xFF); // All bits are driven
             break;
         case 0x2007:
             data = ppu->buffered_data;
             uint16_t vram_addr = (uint16_t)(ppu->v & 0x3FFF);
-            if (vram_addr <= 0x1FFF && cart != NULL) {
-                ppu->buffered_data = cart->read_chr(cart, vram_addr);
-            } else if (vram_addr >= 0x2000 && vram_addr <= 0x3EFF) {
-                ppu->buffered_data = ppu_read_nametable_byte(ppu, cart, vram_addr);
-            }
-            
-            if (vram_addr >= 0x3F00) {
-                uint16_t palette_addr = vram_addr & 0x001F;
-                if ((palette_addr & 0x0013) == 0x0010) {
-                    palette_addr &= 0x000F;
-                }
-                data = ppu->palette_ram[palette_addr];
-            }
+            uint8_t data_for_buffer;
 
-            ppu->v += (ppu->ppu_ctrl & 0x04) ? 32 : 1;
+            uint8_t returned_data = ppu->buffered_data;
+
+            if (vram_addr >= 0x3F00) {
+                uint16_t palette_read_addr = vram_addr & 0x001F;
+                if ((palette_read_addr & 0x0013) == 0x0010) {
+                    palette_read_addr &= 0x000F;
+                }
+                    returned_data = (ppu->palette_ram[palette_read_addr] & 0x3F) | (ppu->open_bus_value & 0xC0);
+                data_for_buffer = ppu_read_nametable_byte(ppu, cart, (vram_addr & 0x0FFF) | 0x2000);
+                ppu_refresh_open_bus(ppu, cpu, returned_data, 0x3F); // Palette reads only drive bits 0-5
+            } else if (vram_addr <= 0x1FFF && cart != NULL) {
+                data_for_buffer = cart->read_chr(cart, vram_addr);
+                ppu_refresh_open_bus(ppu, cpu, returned_data, 0xFF);
+            } else { // vram_addr >= 0x2000 && vram_addr <= 0x3EFF
+                data_for_buffer = ppu_read_nametable_byte(ppu, cart, vram_addr);
+                ppu_refresh_open_bus(ppu, cpu, returned_data, 0xFF);
+            }
+            ppu->buffered_data = data_for_buffer; // Update the buffer
+
+            ppu->v = (uint16_t)((ppu->v + ((ppu->ppu_ctrl & 0x04) ? 32 : 1)) & 0x7FFF);
             if (cart && cart->mapper_id == 4) {
                 ppu_set_a12(ppu, (ppu->v & 0x1000) != 0, cart, cpu);
             }
+            data = returned_data; // Set the data to be returned to the CPU
             break;
     }
     return data;
 }
 
 void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data, CPU6502 *cpu) {
+    ppu_update_open_bus_decay(ppu, cpu);
+    ppu_refresh_open_bus(ppu, cpu, data, 0xFF); // Writes drive all 8 bits
     switch (address & 0x2007) {
         case 0x2000: {
             uint8_t old_ctrl = ppu->ppu_ctrl;
@@ -272,10 +368,18 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
         case 0x2003:
             ppu->oam_addr = data;
             break;
-        case 0x2004:
-            ppu->oam_ram[ppu->oam_addr] = data;
-            ppu->oam_addr++;
+        case 0x2004: {
+            bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
+            bool is_rendering_scanline = (ppu->scanline < 240 || ppu->scanline == 261);
+            if (!(rendering_enabled && is_rendering_scanline)) {
+                if ((ppu->oam_addr & 0x03) == 0x02) {
+                    data &= 0xE3;
+                }
+                ppu->oam_ram[ppu->oam_addr] = data;
+                ppu->oam_addr++;
+            }
             break;
+        }
         case 0x2005:
             if (ppu->w == 0) {
                 ppu->x = data & 0x07;
@@ -312,9 +416,9 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
                 if ((palette_addr & 0x0013) == 0x0010) {
                     palette_addr &= 0x000F;
                 }
-                ppu->palette_ram[palette_addr] = data;
+                ppu->palette_ram[palette_addr] = data & 0x3F; // Mask to 6 bits
             }
-            ppu->v += (ppu->ppu_ctrl & 0x04) ? 32 : 1;
+            ppu->v = (uint16_t)((ppu->v + ((ppu->ppu_ctrl & 0x04) ? 32 : 1)) & 0x7FFF);
             if (cart && cart->mapper_id == 4) {
                 ppu_set_a12(ppu, (ppu->v & 0x1000) != 0, cart, cpu);
             }
@@ -589,13 +693,53 @@ static void ppu_render_pixel(PPU2C02 *ppu) {
         if (rendering_enabled) {
             ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + ppu->cycle] = NES_PALETTE[ppu->palette_ram[final_palette_idx] & 0x3F];
         } else {
-            ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + ppu->cycle] = NES_PALETTE[0];
+            // If rendering is disabled, display the universal background color (palette_ram[0]).
+            // However, if the current VRAM address points to the palette RAM region ($3F00-$3FFF),
+            // the PPU outputs the color at that palette address instead.
+            uint16_t vram_addr = ppu->v & 0x3FFF;
+            uint16_t palette_idx = 0;
+            if (vram_addr >= 0x3F00) {
+                palette_idx = vram_addr & 0x001F;
+                if ((palette_idx & 0x0013) == 0x0010) {
+                    palette_idx &= 0x000F;
+                }
+            }
+            ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + ppu->cycle] = NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
         }
     }
 }
 
 void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
     bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
+
+    if (ppu->cycle == 0) {
+        ppu->overflow_cycle = -1;
+        if (ppu->scanline == SCANLINE_PRERENDER) {
+            ppu->overflow_cycle = ppu_calculate_sprite_overflow_cycle(ppu, 0);
+        } else if (ppu->scanline < SCANLINE_VISIBLE_MAX) {
+            ppu->overflow_cycle = ppu_calculate_sprite_overflow_cycle(ppu, ppu->scanline + 1);
+        }
+    }
+
+    if (ppu->cycle == ppu->overflow_cycle) {
+        ppu->ppu_status |= 0x20;
+    }
+
+    // Clear VBlank and Sprite 0 Hit flags at cycle 1 of pre-render scanline (scanline 261)
+    if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 1) {
+        ppu->ppu_status &= ~0xE0; // Clear VBlank (0x80), Sprite 0 Hit (0x40), and Sprite Overflow (0x20)
+        if (cart && cart->reset_irq) {
+            cart->reset_irq(cart);
+        }
+    }
+
+        // Set VBlank flag and trigger NMI at cycle 1 of scanline 241
+        if (ppu->scanline == 241 && ppu->cycle == 1) {
+            ppu->ppu_status |= 0x80;
+            if (ppu->ppu_ctrl & 0x80) {
+                cpu_pulse_nmi(cpu);
+            }
+        }
 
     if (rendering_enabled) {
         if (ppu->scanline < SCANLINE_VISIBLE_MAX || ppu->scanline == SCANLINE_PRERENDER) {
@@ -614,7 +758,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
     if (ppu->cycle == 257) {
         if (ppu->scanline == SCANLINE_PRERENDER) {
             ppu_evaluate_sprites(ppu, cart, 0);
-        } else if (ppu->scanline < SCANLINE_VISIBLE_MAX - 1) {
+        } else if (ppu->scanline < SCANLINE_VISIBLE_MAX) { // For scanlines 0 to 239
             ppu_evaluate_sprites(ppu, cart, ppu->scanline + 1);
         } else {
             ppu->scanline_sprite_count = 0;
@@ -648,17 +792,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
         }
 
         if (ppu->scanline == 241) {
-            ppu->ppu_status |= 0x80;
             ppu->frame_complete = true;
-            if (ppu->ppu_ctrl & 0x80) {
-                cpu_pulse_nmi(cpu);
-            }
-        } else if (ppu->scanline == SCANLINE_PRERENDER) {
-            ppu->ppu_status &= ~0x80;
-            ppu->ppu_status &= ~0x40;
-            if (cart && cart->reset_irq) {
-                cart->reset_irq(cart);
-            }
         } else if (ppu->scanline >= 262) {
             ppu->scanline = 0;
             ppu->odd_frame = !ppu->odd_frame;
@@ -672,6 +806,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
             }
             if (ppu->cycle == 257) {
                 ppu->v = (ppu->v & 0xFBE0) | (ppu->t & 0x041F);
+                ppu->oam_addr = 0;
             }
             if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle >= 280 && ppu->cycle <= 304) {
                 ppu->v = (ppu->v & 0x841F) | (ppu->t & 0x7BE0);

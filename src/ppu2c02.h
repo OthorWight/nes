@@ -56,6 +56,10 @@ typedef struct {
     ScanlineSprite scanline_sprites[8];
     int scanline_sprite_count;
 
+    int      overflow_cycle;
+    uint8_t  open_bus_value;
+    uint64_t open_bus_decay_cycles[8];
+
     uint32_t screen_buffer[256 * 240];
 } PPU2C02;
 
