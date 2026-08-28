@@ -34,6 +34,7 @@ typedef struct {
     int cycle;
     bool nmi_occurred;
     bool frame_complete;
+    bool nmi_suppressed;
 
     // 16-bit shift registers for background rendering
     uint16_t bg_shifter_pattern_low;

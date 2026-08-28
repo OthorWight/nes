@@ -250,6 +250,7 @@ void ppu_init(PPU2C02 *ppu) {
     ppu->cycle = 0;
     ppu->nmi_occurred = false;
     ppu->frame_complete = false;
+    ppu->nmi_suppressed = false;
     ppu->scanline_sprite_count = 0;
     ppu->bg_tile_low = 0;
     ppu->bg_tile_high = 0;
@@ -300,15 +301,20 @@ uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *c
         case 0x2002: {
             uint8_t status = ppu->ppu_status;
             if (ppu->scanline == 241) {
-                if (ppu->cycle == 2) {
+                if (ppu->cycle == 1) {
+                    status &= ~0x80; // VBlank reads as 0 1 cycle before setting
+                    ppu->nmi_suppressed = true;
+                } else if (ppu->cycle == 2) {
                     status &= ~0x80; // VBlank reads as 0 on the exact cycle of setting
                     if (cpu) {
                         cpu->nmi_edge = false; // Suppress NMI
+                        cpu->nmi_delayed = false;
                     }
                 } else if (ppu->cycle == 3) {
                     // VBlank reads as 1, but NMI is still suppressed 1 cycle after setting
                     if (cpu) {
                         cpu->nmi_edge = false; // Suppress NMI
+                        cpu->nmi_delayed = false;
                     }
                 }
             }
@@ -744,6 +750,7 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 2) {
         ppu->ppu_status &= ~0xE0; // Clear VBlank (0x80), Sprite 0 Hit (0x40), and Sprite Overflow (0x20)
         ppu->nmi_occurred = false; // Clear internal NMI flag
+        ppu->nmi_suppressed = false;
         if (cart && cart->reset_irq) {
             cart->reset_irq(cart);
         }
@@ -754,8 +761,11 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
             ppu->nmi_occurred = true; // Set internal NMI flag
             ppu->ppu_status |= 0x80;   // Explicitly set the VBlank flag in the status register
             if (ppu->ppu_ctrl & 0x80) {
-                cpu_pulse_nmi(cpu);
+                if (!ppu->nmi_suppressed) {
+                    cpu_pulse_nmi(cpu);
+                }
             }
+            ppu->nmi_suppressed = false;
         }
 
     if (rendering_enabled) {
