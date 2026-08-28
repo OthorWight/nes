@@ -38,6 +38,9 @@ typedef struct {
     bool     rdy;
     uint8_t  open_bus;
 
+    uint64_t nmi_pulsed_cycle;
+    bool     nmi_delayed;
+
     // Configuration
     CPUModel model;
 } CPU6502;

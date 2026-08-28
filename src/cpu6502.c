@@ -337,6 +337,8 @@ void cpu_init(CPU6502 *cpu, CPUModel model) {
     cpu->rdy             = true;
     cpu->open_bus        = 0;
     cpu->model           = model;
+    cpu->nmi_pulsed_cycle = 0;
+    cpu->nmi_delayed     = false;
 }
 
 void cpu_reset(CPU6502 *cpu, CPUBus *bus) {
@@ -363,12 +365,14 @@ void cpu_set_irq_line(CPU6502 *cpu, uint8_t source_id, bool active) {
 void cpu_set_nmi_line(CPU6502 *cpu, bool active) {
     if (active && !cpu->nmi_line) {
         cpu->nmi_edge = true;
+        cpu->nmi_pulsed_cycle = cpu->cycle_count;
     }
     cpu->nmi_line = active;
 }
 
 void cpu_pulse_nmi(CPU6502 *cpu) {
     cpu->nmi_edge = true;
+    cpu->nmi_pulsed_cycle = cpu->cycle_count;
 }
 
 void cpu_trigger_irq(CPU6502 *cpu) {
@@ -408,6 +412,7 @@ static void do_hardware_interrupt(CPU6502 *cpu, CPUBus *bus, bool is_nmi) {
 
 int cpu_step(CPU6502 *cpu, CPUBus *bus) {
     uint64_t start_cycles = cpu->cycle_count;
+    cpu->nmi_pulsed_cycle = 0;
 
     if (cpu->reset_pending) {
         cpu->reset_pending = false;
@@ -989,6 +994,14 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             fprintf(stderr, "[CPU ERROR] Unknown Opcode: 0x%02X at PC: 0x%04X\n",
                     opcode, (uint16_t)(cpu->program_counter - 1));
             break;
+    }
+
+    if (cpu->nmi_edge && cpu->nmi_pulsed_cycle == cpu->cycle_count) {
+        cpu->nmi_delayed = true;
+        cpu->nmi_edge = false;
+    } else if (cpu->nmi_delayed) {
+        cpu->nmi_edge = true;
+        cpu->nmi_delayed = false;
     }
 
     return (int)(cpu->cycle_count - start_cycles);
