@@ -8,6 +8,7 @@
 #include <direct.h> // For _mkdir
 #endif
 #include <inttypes.h>
+#include <math.h>
 #include "cpu6502.h"
 #include "cartridge.h"
 #include "ppu2c02.h"
@@ -33,6 +34,42 @@ static uint8_t controller_shift = 0;
 static uint8_t controller_strobe = 0;
 static char loaded_rom_name[256] = "";
 static char save_state_dir[512] = ""; // New global variable for per-ROM save states
+static SDL_AudioDeviceID audio_device = 0;
+static bool audio_muted = false;
+
+static int master_volume = 100;
+
+static void play_volume_ding(void) {
+    if (audio_device == 0 || audio_muted) return;
+    SDL_ClearQueuedAudio(audio_device);
+
+    APU2A03 temp_apu;
+    apu_init(&temp_apu);
+
+    // Configure Pulse 1 for a classic NES retro chime
+    apu_write_reg(&temp_apu, 0x4015, 0x01, NULL); // Enable Pulse 1
+    apu_write_reg(&temp_apu, 0x4000, 0xBF, NULL); // 50% duty, constant volume 15, halt length counter
+    apu_write_reg(&temp_apu, 0x4002, 0xFD, NULL); // Timer low (A4 @ 440 Hz)
+    apu_write_reg(&temp_apu, 0x4003, 0x00, NULL); // Timer high
+
+    // Step the APU until we have generated around 0.09 seconds of samples (3900 samples)
+    uint32_t target_samples = 3900;
+    int max_steps = 200000;
+    for (int i = 0; i < max_steps && temp_apu.audio_buffer_idx < target_samples; i++) {
+        apu_step(&temp_apu, NULL, NULL);
+    }
+
+    // Apply a custom decay envelope and scale based on master volume
+    float vol = (float)master_volume / 100.0f;
+    for (uint32_t i = 0; i < temp_apu.audio_buffer_idx; i++) {
+        float envelope = 1.0f - ((float)i / temp_apu.audio_buffer_idx);
+        temp_apu.audio_buffer[i] *= envelope * vol;
+    }
+
+    if (temp_apu.audio_buffer_idx > 0) {
+        SDL_QueueAudio(audio_device, temp_apu.audio_buffer, temp_apu.audio_buffer_idx * sizeof(float));
+    }
+}
 
 static char notification_text[32] = "";
 static int notification_timer = 0;
@@ -206,7 +243,6 @@ static void clear_view_history(uint16_t initial_pc) {
 static int mouse_x = 0;
 static int mouse_y = 0;
 static bool mouse_left_pressed = false;
-static SDL_AudioDeviceID audio_device = 0;
 static bool console_debug_enabled = false;
 static uint64_t debug_emu_ticks = 0;
 static uint64_t debug_total_ticks = 0;
@@ -244,7 +280,6 @@ static GUIState current_state = GUI_STATE_MENU_MAIN;
 static int menu_selection = 1;
 static int rom_scroll_offset = 0;
 static int window_scale = 5;
-static bool audio_muted = false;
 static bool fullscreen = false;
 
 static char rom_files[512][256];
@@ -999,6 +1034,9 @@ int main(int argc, char *argv[]) {
 
                 if (audio_device != 0 && nes_apu.audio_buffer_idx > 0) {
                     if (!audio_muted) {
+                        for (uint32_t i = 0; i < nes_apu.audio_buffer_idx; i++) {
+                            nes_apu.audio_buffer[i] *= ((float)master_volume / 100.0f);
+                        }
                         SDL_QueueAudio(audio_device, nes_apu.audio_buffer, nes_apu.audio_buffer_idx * sizeof(float));
                         while (SDL_GetQueuedAudioSize(audio_device) > 4096 * sizeof(float)) {
                             SDL_Delay(1);
@@ -1185,31 +1223,46 @@ int main(int argc, char *argv[]) {
                 }
                 draw_string(renderer, "UP/DN: Nav | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
-                char scale_buf[64], mute_buf[64], fs_buf[64], debug_buf[64];
+                char scale_buf[64], mute_buf[64], vol_buf[64], fs_buf[64], debug_buf[64];
                 if (window_scale == 5) {
                     sprintf(scale_buf, "1. Window Scale: Maximized");
                 } else {
                     sprintf(scale_buf, "1. Window Scale: %dx", window_scale);
                 }
                 sprintf(mute_buf,  "2. Audio Muted:  %s", audio_muted ? "ON" : "OFF");
-                sprintf(fs_buf,    "3. Fullscreen:   %s", fullscreen ? "ON" : "OFF");
-                sprintf(debug_buf, "4. Console Debug:%s", console_debug_enabled ? "ON" : "OFF");
+
+                int num_bars = master_volume / 10;
+                char slider[12];
+                for (int i = 0; i < 10; i++) {
+                    slider[i] = (i < num_bars) ? '|' : '.';
+                }
+                slider[10] = '\0';
+                sprintf(vol_buf,   "3. Volume: [%s] %d%%", slider, master_volume);
+
+                sprintf(fs_buf,    "4. Fullscreen:   %s", fullscreen ? "ON" : "OFF");
+                sprintf(debug_buf, "5. Console Debug:%s", console_debug_enabled ? "ON" : "OFF");
 
                 uint32_t col0 = (menu_selection == 0) ? 0xFFFFFF : 0x888888;
                 uint32_t col1 = (menu_selection == 1) ? 0xFFFFFF : 0x888888;
                 uint32_t col2 = (menu_selection == 2) ? 0xFFFFFF : 0x888888;
                 uint32_t col3 = (menu_selection == 3) ? 0xFFFFFF : 0x888888;
+                uint32_t col4 = (menu_selection == 4) ? 0xFFFFFF : 0x888888;
 
                 draw_string(renderer, scale_buf, 40, 70, col0);
                 draw_string(renderer, mute_buf,  40, 90, col1);
-                draw_string(renderer, fs_buf,    40, 110, col2);
-                draw_string(renderer, debug_buf, 40, 130, col3);
+                draw_string(renderer, vol_buf,   40, 110, col2);
+                draw_string(renderer, fs_buf,    40, 130, col3);
+                draw_string(renderer, debug_buf, 40, 150, col4);
                 
                 SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
                 SDL_Rect box = { 32, 68 + menu_selection * 20, 190, 11 };
                 SDL_RenderDrawRect(renderer, &box);
 
-                draw_string(renderer, "Press Enter to Toggle setting", 20, 150, 0xFFFF00);
+                if (menu_selection == 2) {
+                    draw_string(renderer, "Use Left/Right to adjust", 24, 175, 0xFFFF00);
+                } else {
+                    draw_string(renderer, "Press Enter to Toggle setting", 20, 175, 0xFFFF00);
+                }
             }
 
             SDL_RenderPresent(renderer);
@@ -1265,6 +1318,10 @@ int main(int argc, char *argv[]) {
                         push_synthetic_key(SDLK_UP, SDL_KEYDOWN);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                         push_synthetic_key(SDLK_DOWN, SDL_KEYDOWN);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                        push_synthetic_key(SDLK_LEFT, SDL_KEYDOWN);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                        push_synthetic_key(SDLK_RIGHT, SDL_KEYDOWN);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                         push_synthetic_key(SDLK_RETURN, SDL_KEYDOWN);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B || event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
@@ -1283,6 +1340,10 @@ int main(int argc, char *argv[]) {
                         push_synthetic_key(SDLK_UP, SDL_KEYUP);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                         push_synthetic_key(SDLK_DOWN, SDL_KEYUP);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                        push_synthetic_key(SDLK_LEFT, SDL_KEYUP);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                        push_synthetic_key(SDLK_RIGHT, SDL_KEYUP);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                         push_synthetic_key(SDLK_RETURN, SDL_KEYUP);
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B || event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
@@ -1361,7 +1422,7 @@ int main(int argc, char *argv[]) {
                                     else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
                                     else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
-                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 3;
+                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 4;
                                     else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = 8;
                                 }
                             } while (current_state == GUI_STATE_MENU_MAIN && loaded_cartridge == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
@@ -1373,9 +1434,23 @@ int main(int argc, char *argv[]) {
                                 else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
-                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 3) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 4) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > 8) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && loaded_cartridge == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
+                            break;
+                        case SDLK_LEFT:
+                            if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection == 2) {
+                                master_volume -= 10;
+                                if (master_volume < 0) master_volume = 0;
+                                play_volume_ding();
+                            }
+                            break;
+                        case SDLK_RIGHT:
+                            if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection == 2) {
+                                master_volume += 10;
+                                if (master_volume > 100) master_volume = 100;
+                                play_volume_ding();
+                            }
                             break;
                         case SDLK_BACKSPACE:
                             if (current_state != GUI_STATE_MENU_MAIN) {
@@ -1517,13 +1592,15 @@ int main(int argc, char *argv[]) {
                                 } else if (menu_selection == 1) {
                                     audio_muted = !audio_muted;
                                 } else if (menu_selection == 2) {
+                                    play_volume_ding();
+                                } else if (menu_selection == 2) {
                                     fullscreen = !fullscreen;
                                     if (fullscreen) {
                                         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
                                     } else {
                                         SDL_SetWindowFullscreen(window, 0);
                                     }
-                                } else if (menu_selection == 3) {
+                                } else if (menu_selection == 4) {
                                     console_debug_enabled = !console_debug_enabled;
                                     if (!console_debug_enabled) {
                                         printf("\033[H\033[2J");
