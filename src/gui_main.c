@@ -35,6 +35,28 @@ static uint8_t controller_strobe = 0;
 static char loaded_rom_name[256] = "";
 static char save_state_dir[512] = ""; // New global variable for per-ROM save states
 
+static char notification_text[32] = "";
+static int notification_timer = 0;
+
+static void show_notification(const char *text) {
+    strncpy(notification_text, text, sizeof(notification_text) - 1);
+    notification_text[sizeof(notification_text) - 1] = '\0';
+    notification_timer = 60; // 60 frames (~1 second)
+}
+
+static SDL_GameController *game_controller = NULL;
+
+static const SDL_GameControllerButton controller_button_mappings[8] = {
+    SDL_CONTROLLER_BUTTON_A,       // Button A (bit 0)
+    SDL_CONTROLLER_BUTTON_B,       // Button B (bit 1)
+    SDL_CONTROLLER_BUTTON_BACK,    // Select   (bit 2)
+    SDL_CONTROLLER_BUTTON_START,   // Start    (bit 3)
+    SDL_CONTROLLER_BUTTON_DPAD_UP,     // Up       (bit 4)
+    SDL_CONTROLLER_BUTTON_DPAD_DOWN,   // Down     (bit 5)
+    SDL_CONTROLLER_BUTTON_DPAD_LEFT,   // Left     (bit 6)
+    SDL_CONTROLLER_BUTTON_DPAD_RIGHT   // Right    (bit 7)
+};
+
 #define VIEW_HISTORY_MAX 256
 static uint16_t view_history[VIEW_HISTORY_MAX];
 static int view_history_count = 0;
@@ -237,6 +259,15 @@ void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t
         cur_x += 8;
         str++;
     }
+}
+
+static void push_synthetic_key(SDL_Keycode sym, Uint32 type) {
+    SDL_Event new_event;
+    SDL_zero(new_event);
+    new_event.type = type;
+    new_event.key.state = (type == SDL_KEYDOWN) ? SDL_PRESSED : SDL_RELEASED;
+    new_event.key.keysym.sym = sym;
+    SDL_PushEvent(&new_event);
 }
 
 static int compare_rom_files(const void *a, const void *b) {
@@ -758,8 +789,18 @@ static void load_emulator_state(CPU6502 *cpu, const char *dir, const char *filen
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         return -1;
+    }
+
+    // Open any currently connected game controller
+    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+        if (SDL_IsGameController(i)) {
+            game_controller = SDL_GameControllerOpen(i);
+            if (game_controller) {
+                break;
+            }
+        }
     }
 
     SDL_AudioSpec desired, obtained;
@@ -847,6 +888,33 @@ int main(int argc, char *argv[]) {
                 SDL_RenderClear(renderer);
                 SDL_Rect src_rect = { 8, 8, 240, 224 };
                 SDL_RenderCopy(renderer, texture, &src_rect, NULL);
+
+                if (notification_timer > 0) {
+                    notification_timer--;
+                    int text_w = (int)strlen(notification_text) * 8;
+                    int x = 256 - text_w - 12;
+                    int y = 240 - 8 - 12;
+
+                    // Outer thin white border (2px offset)
+                    for (int dx = -2; dx <= 2; dx++) {
+                        for (int dy = -2; dy <= 2; dy++) {
+                            if (abs(dx) == 2 || abs(dy) == 2) {
+                                draw_string(renderer, notification_text, x + dx, y + dy, 0xFFFFFF);
+                            }
+                        }
+                    }
+                    // Inner black border (1px offset)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dy = -1; dy <= 1; dy++) {
+                            if (dx != 0 || dy != 0) {
+                                draw_string(renderer, notification_text, x + dx, y + dy, 0x000000);
+                            }
+                        }
+                    }
+                    // Main green text
+                    draw_string(renderer, notification_text, x, y, 0x00FF00);
+                }
+
                 SDL_RenderPresent(renderer);
 
                 if (audio_device != 0 && nes_apu.audio_buffer_idx > 0) {
@@ -1036,6 +1104,97 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_CONTROLLERDEVICEADDED) {
+                if (!game_controller) {
+                    game_controller = SDL_GameControllerOpen(event.cdevice.which);
+                }
+            } else if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+                if (game_controller) {
+                    SDL_Joystick *joystick = SDL_GameControllerGetJoystick(game_controller);
+                    if (joystick && SDL_JoystickInstanceID(joystick) == event.cdevice.which) {
+                        SDL_GameControllerClose(game_controller);
+                        game_controller = NULL;
+                        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+                            if (SDL_IsGameController(i)) {
+                                game_controller = SDL_GameControllerOpen(i);
+                                if (game_controller) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
+                        save_emulator_state(&cpu, save_state_dir, "quick.state");
+                        show_notification("STATE SAVED");
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
+                        load_emulator_state(&cpu, save_state_dir, "quick.state");
+                        show_notification("STATE LOADED");
+                    } else {
+                        for (int i = 0; i < 8; i++) {
+                            if (event.cbutton.button == controller_button_mappings[i]) {
+                                controller_state |= (1 << i);
+                            }
+                        }
+                    }
+                } else {
+                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                        push_synthetic_key(SDLK_UP, SDL_KEYDOWN);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                        push_synthetic_key(SDLK_DOWN, SDL_KEYDOWN);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                        push_synthetic_key(SDLK_RETURN, SDL_KEYDOWN);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B || event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
+                        push_synthetic_key(SDLK_ESCAPE, SDL_KEYDOWN);
+                    }
+                }
+            } else if (event.type == SDL_CONTROLLERBUTTONUP) {
+                if (current_state == GUI_STATE_GAMEPLAY) {
+                    for (int i = 0; i < 8; i++) {
+                        if (event.cbutton.button == controller_button_mappings[i]) {
+                            controller_state &= ~(1 << i);
+                        }
+                    }
+                } else {
+                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                        push_synthetic_key(SDLK_UP, SDL_KEYUP);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                        push_synthetic_key(SDLK_DOWN, SDL_KEYUP);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                        push_synthetic_key(SDLK_RETURN, SDL_KEYUP);
+                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B || event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
+                        push_synthetic_key(SDLK_ESCAPE, SDL_KEYUP);
+                    }
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
+                        if (event.caxis.value < -16000) {
+                            controller_state |= (1 << 6);
+                            controller_state &= ~(1 << 7);
+                        } else if (event.caxis.value > 16000) {
+                            controller_state |= (1 << 7);
+                            controller_state &= ~(1 << 6);
+                        } else {
+                            controller_state &= ~(1 << 6);
+                            controller_state &= ~(1 << 7);
+                        }
+                    }
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        if (event.caxis.value < -16000) {
+                            controller_state |= (1 << 4);
+                            controller_state &= ~(1 << 5);
+                        } else if (event.caxis.value > 16000) {
+                            controller_state |= (1 << 5);
+                            controller_state &= ~(1 << 4);
+                        } else {
+                            controller_state &= ~(1 << 4);
+                            controller_state &= ~(1 << 5);
+                        }
+                    }
+                }
             } else if (event.type == SDL_MOUSEMOTION) {
                 mouse_x = event.motion.x;
                 mouse_y = event.motion.y;
@@ -1260,10 +1419,12 @@ int main(int argc, char *argv[]) {
                         }
                         case SDLK_F5: {
                             save_emulator_state(&cpu, save_state_dir, "quick.state");
+                            show_notification("STATE SAVED");
                             break;
                         }
                         case SDLK_F8: {
                             load_emulator_state(&cpu, save_state_dir, "quick.state");
+                            show_notification("STATE LOADED");
                             break;
                         }
                         case SDLK_UP: {
@@ -1380,6 +1541,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (game_controller) {
+        SDL_GameControllerClose(game_controller);
+    }
     if (audio_device != 0) {
         SDL_CloseAudioDevice(audio_device);
     }
