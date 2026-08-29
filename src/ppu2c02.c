@@ -37,6 +37,13 @@ static inline void ppu_set_coarse_y(uint16_t *v, uint8_t y) { *v = (*v & ~0x03E0
 static inline uint8_t ppu_get_nametable_select(uint16_t v) { return (v >> 10) & 0x0003; }
 static inline uint8_t ppu_get_fine_y(uint16_t v) { return (v >> 12) & 0x0007; }
 
+static void ppu_update_nmi(PPU2C02 *ppu, CPU6502 *cpu) {
+    bool nmi_line = (ppu->ppu_ctrl & 0x80) && (ppu->ppu_status & 0x80);
+    if (cpu) {
+        cpu_set_nmi_line(cpu, nmi_line);
+    }
+}
+
 static void ppu_set_a12(PPU2C02 *ppu, bool high, Cartridge *cart, CPU6502 *cpu) {
     if (high) {
         if (!ppu->a12_state) {
@@ -301,27 +308,27 @@ uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *c
         case 0x2002: {
             uint8_t status = ppu->ppu_status;
             if (ppu->scanline == 241) {
-                if (ppu->cycle == 1) {
-                    status &= ~0x80; // VBlank reads as 0 1 cycle before setting
+                // NMI suppression window: when reading 1 clock before, at, or 1 clock after setting.
+                // Since ppu_read_reg is evaluated after the 3 PPU steps complete,
+                // these correspond exactly to ppu->cycle 1, 2, 3.
+                if (ppu->cycle >= 1 && ppu->cycle <= 3) {
+                    if (cpu) {
+                        cpu->nmi_edge = false; // Suppress NMI
+                        cpu->nmi_delayed = false;
+                    }
                     ppu->nmi_suppressed = true;
-                } else if (ppu->cycle == 2) {
-                    status &= ~0x80; // VBlank reads as 0 on the exact cycle of setting
-                    if (cpu) {
-                        cpu->nmi_edge = false; // Suppress NMI
-                        cpu->nmi_delayed = false;
-                    }
-                } else if (ppu->cycle == 3) {
-                    // VBlank reads as 1, but NMI is still suppressed 1 cycle after setting
-                    if (cpu) {
-                        cpu->nmi_edge = false; // Suppress NMI
-                        cpu->nmi_delayed = false;
-                    }
+                }
+                // VBlank reads as 0 when reading 1 clock before, or exactly at VBlank set.
+                // These correspond exactly to ppu->cycle 1, 2.
+                if (ppu->cycle >= 1 && ppu->cycle <= 2) {
+                    status &= ~0x80;
                 }
             }
             data = (uint8_t)((status & 0xE0) | (ppu->open_bus_value & 0x1F));
             ppu->ppu_status &= 0x7F;
             ppu->w = 0;
             ppu_refresh_open_bus(ppu, cpu, data, 0xE0); // Only bits 5-7 are driven
+            ppu_update_nmi(ppu, cpu);
             break;
         }
         case 0x2004:
@@ -370,17 +377,12 @@ void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data
     ppu_refresh_open_bus(ppu, cpu, data, 0xFF); // Writes drive all 8 bits
     switch (address & 0x2007) {
         case 0x2000: {
-            uint8_t old_ctrl = ppu->ppu_ctrl;
             ppu->ppu_ctrl = data;
             if (cart != NULL) {
                 cart->ppu_sprite_size_8x16 = (data & 0x20) != 0;
             }
             ppu->t = (uint16_t)((ppu->t & 0xF3FF) | (((uint16_t)data & 0x03) << 10));
-            if ((data & 0x80) && !(old_ctrl & 0x80) && (ppu->ppu_status & 0x80)) {
-                if (cpu != NULL) {
-                    cpu_pulse_nmi(cpu);
-                }
-            }
+            ppu_update_nmi(ppu, cpu);
             break;
         }
         case 0x2001:
@@ -751,22 +753,20 @@ void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart) {
         ppu->ppu_status &= ~0xE0; // Clear VBlank (0x80), Sprite 0 Hit (0x40), and Sprite Overflow (0x20)
         ppu->nmi_occurred = false; // Clear internal NMI flag
         ppu->nmi_suppressed = false;
+        ppu_update_nmi(ppu, cpu);
         if (cart && cart->reset_irq) {
             cart->reset_irq(cart);
         }
     }
 
-        // Set VBlank flag and trigger NMI at cycle 1 of scanline 241
-        if (ppu->scanline == 241 && ppu->cycle == 1) {
-            ppu->nmi_occurred = true; // Set internal NMI flag
-            ppu->ppu_status |= 0x80;   // Explicitly set the VBlank flag in the status register
-            if (ppu->ppu_ctrl & 0x80) {
-                if (!ppu->nmi_suppressed) {
-                    cpu_pulse_nmi(cpu);
-                }
-            }
-            ppu->nmi_suppressed = false;
+    // Set VBlank flag and trigger NMI at cycle 1 of scanline 241
+    if (ppu->scanline == 241 && ppu->cycle == 1) {
+        ppu->nmi_occurred = true; // Set internal NMI flag
+        ppu->ppu_status |= 0x80;   // Explicitly set the VBlank flag in the status register
+        if (!ppu->nmi_suppressed) {
+            ppu_update_nmi(ppu, cpu);
         }
+    }
 
     if (rendering_enabled) {
         if (ppu->scanline < SCANLINE_VISIBLE_MAX || ppu->scanline == SCANLINE_PRERENDER) {

@@ -27,6 +27,7 @@ APU2A03 nes_apu;
 static uint8_t test_bus_read(void *context, uint16_t address);
 static void test_bus_write(void *context, uint16_t address, uint8_t data);
 static void test_bus_tick(void *context);
+static void test_bus_ppu_tick(void *context);
 
 static uint8_t controller_state = 0;
 static uint8_t controller_shift = 0;
@@ -506,9 +507,13 @@ static void test_bus_tick(void *context) {
             loaded_cartridge->clock_irq(loaded_cartridge, global_cpu);
         }
         apu_step(&nes_apu, &nes_bus, global_cpu);
-        for (int i = 0; i < 3; i++) {
-            ppu_step(&nes_ppu, global_cpu, loaded_cartridge);
-        }
+    }
+}
+
+static void test_bus_ppu_tick(void *context) {
+    (void)context;
+    if (loaded_cartridge != NULL) {
+        ppu_step(&nes_ppu, global_cpu, loaded_cartridge);
     }
 }
 
@@ -565,18 +570,30 @@ static void test_bus_write(void *context, uint16_t address, uint8_t data) {
             uint16_t dma_addr = (uint16_t)(data << 8);
             global_cpu->cycle_count++;
             test_bus_tick(NULL);
+            test_bus_ppu_tick(NULL);
+            test_bus_ppu_tick(NULL);
+            test_bus_ppu_tick(NULL);
             if (global_cpu->cycle_count % 2 == 1) {
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
             }
             uint8_t oam_start_addr = nes_ppu.oam_addr; // Store OAMADDR before DMA
             for (int i = 0; i < 256; i++) {
                 uint8_t val = test_bus_read(context, (uint16_t)(dma_addr + i));
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
                 nes_ppu.oam_ram[(oam_start_addr + i) & 0xFF] = val; // DMA writes directly to OAM RAM, OAMADDR is not incremented
                 global_cpu->cycle_count++;
                 test_bus_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
+                test_bus_ppu_tick(NULL);
             }
         } else if (address >= 0x4000 && address <= 0x4017) {
             apu_write_reg(&nes_apu, address, data, global_cpu);
@@ -787,6 +804,7 @@ int main(int argc, char *argv[]) {
     nes_bus.read = test_bus_read;
     nes_bus.write = test_bus_write;
     nes_bus.tick = test_bus_tick;
+    nes_bus.ppu_tick = test_bus_ppu_tick;
 
     global_cpu = &cpu;
 

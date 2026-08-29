@@ -22,11 +22,25 @@ static inline void update_zero_and_negative_flags(CPU6502 *cpu, uint8_t value) {
     set_flag(cpu, FLAG_NEGATIVE, (value & 0x80) != 0);
 }
 
+static inline void ppu_step_one_cycle(CPU6502 *cpu, CPUBus *bus) {
+    if (bus->ppu_tick) {
+        bus->ppu_tick(bus->bus_context);
+    }
+    if (cpu->nmi_line) {
+        cpu->nmi_active_count++;
+    } else {
+        cpu->nmi_active_count = 0;
+    }
+}
+
 static inline void bus_cycle(CPU6502 *cpu, CPUBus *bus) {
     cpu->cycle_count++;
     if (bus->tick) {
         bus->tick(bus->bus_context);
     }
+    ppu_step_one_cycle(cpu, bus);
+    ppu_step_one_cycle(cpu, bus);
+    ppu_step_one_cycle(cpu, bus);
 }
 
 static inline uint8_t read_byte(CPU6502 *cpu, CPUBus *bus, uint16_t address) {
@@ -332,7 +346,9 @@ void cpu_init(CPU6502 *cpu, CPUModel model) {
     cpu->cycle_count     = 0;
     cpu->irq_lines       = 0;
     cpu->nmi_line        = false;
+    cpu->nmi_prev_line   = false;
     cpu->nmi_edge        = false;
+    cpu->nmi_active_count = 0;
     cpu->reset_pending   = false;
     cpu->rdy             = true;
     cpu->open_bus        = 0;
@@ -363,9 +379,21 @@ void cpu_set_irq_line(CPU6502 *cpu, uint8_t source_id, bool active) {
 }
 
 void cpu_set_nmi_line(CPU6502 *cpu, bool active) {
-    if (active && !cpu->nmi_line) {
-        cpu->nmi_edge = true;
-        cpu->nmi_pulsed_cycle = cpu->cycle_count;
+    if (active) {
+        if (!cpu->nmi_line) {
+            cpu->nmi_edge = true;
+            cpu->nmi_pulsed_cycle = cpu->cycle_count;
+            cpu->nmi_active_count = 0;
+        }
+    } else {
+        if (cpu->nmi_line) {
+            // Suppress the NMI if the active pulse was shorter than 3 PPU cycles (1 CPU cycle)
+            if (cpu->nmi_active_count < 3) {
+                cpu->nmi_edge = false;
+                cpu->nmi_delayed = false; // Cancel delayed NMI
+            }
+        }
+        cpu->nmi_active_count = 0;
     }
     cpu->nmi_line = active;
 }

@@ -33,10 +33,12 @@ typedef struct {
     // Hardware lines & latch states
     uint8_t  irq_lines;
     bool     nmi_line;
+    bool     nmi_prev_line;
     bool     nmi_edge;
     bool     reset_pending;
     bool     rdy;
     uint8_t  open_bus;
+    int      nmi_active_count;
 
     uint64_t nmi_pulsed_cycle;
     bool     nmi_delayed;
@@ -54,6 +56,7 @@ typedef struct {
     CPUReadCallback  read;
     CPUWriteCallback write;
     CPUTickCallback  tick;
+    CPUTickCallback  ppu_tick;
 } CPUBus;
 
 void cpu_init(CPU6502 *cpu, CPUModel model);
