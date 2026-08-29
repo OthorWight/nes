@@ -3,10 +3,9 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
+#include <sys/stat.h> // For stat, struct stat, mkdir
 #ifdef _WIN32
 #include <direct.h> // For _mkdir
-#else
-#include <sys/stat.h> // For mkdir
 #endif
 #include <inttypes.h>
 #include "cpu6502.h"
@@ -42,6 +41,121 @@ static void show_notification(const char *text) {
     strncpy(notification_text, text, sizeof(notification_text) - 1);
     notification_text[sizeof(notification_text) - 1] = '\0';
     notification_timer = 60; // 60 frames (~1 second)
+}
+
+static char state_files[512][256];
+static int state_file_count = 0;
+
+static void get_rolling_quicksave_filename(char *out_filename, size_t max_len, bool save) {
+    int selected_slot = -1;
+    time_t extreme_time = 0;
+
+    for (int i = 0; i < 10; i++) {
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s/quick_%d.state", save_state_dir, i);
+        struct stat st;
+        if (stat(filepath, &st) == 0) {
+            if (selected_slot == -1) {
+                extreme_time = st.st_mtime;
+                selected_slot = i;
+            } else {
+                if (save) {
+                    if (st.st_mtime < extreme_time) {
+                        extreme_time = st.st_mtime;
+                        selected_slot = i;
+                    }
+                } else {
+                    if (st.st_mtime > extreme_time) {
+                        extreme_time = st.st_mtime;
+                        selected_slot = i;
+                    }
+                }
+            }
+        } else {
+            if (save) {
+                selected_slot = i;
+                break;
+            }
+        }
+    }
+
+    if (selected_slot == -1) {
+        selected_slot = 0;
+    }
+    snprintf(out_filename, max_len, "quick_%d.state", selected_slot);
+}
+
+static int compare_state_files(const void *a, const void *b) {
+    char path_a[1024];
+    char path_b[1024];
+    snprintf(path_a, sizeof(path_a), "%s/%s", save_state_dir, (const char *)a);
+    snprintf(path_b, sizeof(path_b), "%s/%s", save_state_dir, (const char *)b);
+    struct stat stat_a, stat_b;
+    time_t time_a = 0;
+    time_t time_b = 0;
+    if (stat(path_a, &stat_a) == 0) time_a = stat_a.st_mtime;
+    if (stat(path_b, &stat_b) == 0) time_b = stat_b.st_mtime;
+    if (time_a < time_b) return 1;
+    if (time_a > time_b) return -1;
+    return 0;
+}
+
+static void scan_save_state_directory(void) {
+    state_file_count = 0;
+    DIR *d = opendir(save_state_dir);
+    struct dirent *dir;
+    if (d) {
+        while ((dir = readdir(d)) != NULL) {
+            size_t len = strlen(dir->d_name);
+            if (len > 6 && strcmp(dir->d_name + len - 6, ".state") == 0) {
+                strncpy(state_files[state_file_count], dir->d_name, 255);
+                state_files[state_file_count][255] = '\0';
+                state_file_count++;
+                if (state_file_count >= 512) break;
+            }
+        }
+        closedir(d);
+    }
+    if (state_file_count > 0) {
+        qsort(state_files, state_file_count, sizeof(state_files[0]), compare_state_files);
+    }
+}
+
+static void get_state_file_info(const char *filename, char *out_buf, size_t max_len) {
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/%s", save_state_dir, filename);
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        snprintf(out_buf, max_len, "%.40s: [Error Opening]", filename);
+        return;
+    }
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != 0x53544154) {
+        snprintf(out_buf, max_len, "%.40s: [Invalid]", filename);
+        fclose(f);
+        return;
+    }
+    char rom_meta[64] = {0};
+    char time_meta[32] = {0};
+    if (fread(rom_meta, 1, 64, f) != 64 || fread(time_meta, 1, 32, f) != 32) {
+        snprintf(out_buf, max_len, "%.40s: [Corrupt]", filename);
+        fclose(f);
+        return;
+    }
+    fclose(f);
+
+    char *ext = strrchr(rom_meta, '.');
+    if (ext && (strcmp(ext, ".nes") == 0 || strcmp(ext, ".NES") == 0)) {
+        *ext = '\0';
+    }
+
+    char clean_filename[128];
+    strncpy(clean_filename, filename, sizeof(clean_filename) - 1);
+    clean_filename[sizeof(clean_filename) - 1] = '\0';
+    char *state_ext = strrchr(clean_filename, '.');
+    if (state_ext) *state_ext = '\0';
+
+    snprintf(out_buf, max_len, "%.40s: %s", clean_filename, time_meta);
 }
 
 static SDL_GameController *game_controller = NULL;
@@ -293,40 +407,6 @@ static void scan_rom_directory(void) {
     if (rom_file_count > 0) {
         qsort(rom_files, rom_file_count, sizeof(rom_files[0]), compare_rom_files);
     }
-}
-
-static void get_state_slot_info(int slot, char *out_buf, size_t max_len, bool is_save_menu) {
-    char filepath[1024];
-    snprintf(filepath, sizeof(filepath), "%s/slot%d.state", save_state_dir, slot);
-    FILE *f = fopen(filepath, "rb");
-    if (!f) {
-        if (is_save_menu) {
-            snprintf(out_buf, max_len, "Slot %d: [Empty - Press Enter to Save]", slot);
-        } else {
-            snprintf(out_buf, max_len, "Slot %d: [Empty - No Save Data]", slot);
-        }
-        return;
-    }
-    uint32_t magic = 0;
-    if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != 0x53544154) {
-        snprintf(out_buf, max_len, "Slot %d: [Invalid]", slot);
-        fclose(f);
-        return;
-    }
-    char rom_meta[64] = {0};
-    char time_meta[32] = {0};
-    if (fread(rom_meta, 1, 64, f) != 64 || fread(time_meta, 1, 32, f) != 32) {
-        snprintf(out_buf, max_len, "Slot %d: [Corrupt]", slot);
-        fclose(f);
-        return;
-    }
-    fclose(f);
-
-    char *ext = strrchr(rom_meta, '.');
-    if (ext && (strcmp(ext, ".nes") == 0 || strcmp(ext, ".NES") == 0)) {
-        *ext = '\0';
-    }
-    snprintf(out_buf, max_len, "Slot %d: %-10.10s %s", slot, rom_meta, time_meta);
 }
 
 static void update_console_debug(CPU6502 *cpu) {
@@ -1040,33 +1120,70 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (current_state == GUI_STATE_MENU_SAVE_STATE) {
-                draw_string(renderer, "SELECT SLOT TO SAVE STATE:", 24, 50, 0xFFFF00);
-                for (int i = 0; i < 10; i++) {
-                    char buf[64];
-                    get_state_slot_info(i, buf, sizeof(buf), true);
+                draw_string(renderer, "SELECT SAVE TO OVERWRITE:", 24, 50, 0xFFFF00);
+                int total_options = state_file_count + 1;
+                if (menu_selection < rom_scroll_offset) {
+                    rom_scroll_offset = menu_selection;
+                } else if (menu_selection >= rom_scroll_offset + 12) {
+                    rom_scroll_offset = menu_selection - 12 + 1;
+                }
+                int end_idx = rom_scroll_offset + 12;
+                if (end_idx > total_options) end_idx = total_options;
+                for (int i = rom_scroll_offset; i < end_idx; i++) {
+                    int display_row = i - rom_scroll_offset;
                     uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                    draw_string(renderer, buf, 8, 70 + i * 14, col);
+                    char buf[128];
+                    if (i == 0) {
+                        snprintf(buf, sizeof(buf), "<Create New Manual Save>");
+                    } else {
+                        get_state_file_info(state_files[i - 1], buf, sizeof(buf));
+                    }
+                    char display_buf[32];
+                    strncpy(display_buf, buf, 28);
+                    display_buf[28] = '\0';
+                    if (strlen(buf) > 28) strcat(display_buf, "...");
+                    draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
                     if (i == menu_selection) {
                         SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 6, 68 + i * 14, 244, 11 };
+                        SDL_Rect box = { 24, 68 + display_row * 12, 208, 11 };
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
-                draw_string(renderer, "UP/DN: Navigate | ENTER: Save | ESC: Back", 8, 220, 0x00FFFF);
+                if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
+                if (end_idx < total_options) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
+                draw_string(renderer, "UP/DN: Nav | ENTER: Save | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
                 draw_string(renderer, "SELECT SLOT TO LOAD STATE:", 24, 50, 0xFFFF00);
-                for (int i = 0; i < 10; i++) {
-                    char buf[64];
-                    get_state_slot_info(i, buf, sizeof(buf), false);
-                    uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                    draw_string(renderer, buf, 8, 70 + i * 14, col);
-                    if (i == menu_selection) {
-                        SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 6, 68 + i * 14, 244, 11 };
-                        SDL_RenderDrawRect(renderer, &box);
+                if (state_file_count == 0) {
+                    draw_string(renderer, "No save states found", 40, 70, 0xFF0000);
+                } else {
+                    if (menu_selection < rom_scroll_offset) {
+                        rom_scroll_offset = menu_selection;
+                    } else if (menu_selection >= rom_scroll_offset + 12) {
+                        rom_scroll_offset = menu_selection - 12 + 1;
                     }
+                    int end_idx = rom_scroll_offset + 12;
+                    if (end_idx > state_file_count) end_idx = state_file_count;
+                    for (int i = rom_scroll_offset; i < end_idx; i++) {
+                        int display_row = i - rom_scroll_offset;
+                        uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
+                        char buf[128];
+                        get_state_file_info(state_files[i], buf, sizeof(buf));
+                        char display_buf[32];
+                        strncpy(display_buf, buf, 28);
+                        display_buf[28] = '\0';
+                        if (strlen(buf) > 28) strcat(display_buf, "...");
+                        draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
+                        if (i == menu_selection) {
+                            SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+                            SDL_Rect box = { 24, 68 + display_row * 12, 208, 11 };
+                            SDL_RenderDrawRect(renderer, &box);
+                        }
+                    }
+                    if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
+                    if (end_idx < state_file_count) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
                 }
-                draw_string(renderer, "UP/DN: Navigate | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
+                draw_string(renderer, "UP/DN: Nav | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                 char scale_buf[64], mute_buf[64], fs_buf[64], debug_buf[64];
                 if (window_scale == 5) {
@@ -1127,10 +1244,14 @@ int main(int argc, char *argv[]) {
             } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                 if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
                     if (event.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
-                        save_emulator_state(&cpu, save_state_dir, "quick.state");
+                        char filename[128];
+                        get_rolling_quicksave_filename(filename, sizeof(filename), true);
+                        save_emulator_state(&cpu, save_state_dir, filename);
                         show_notification("STATE SAVED");
                     } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
-                        load_emulator_state(&cpu, save_state_dir, "quick.state");
+                        char filename[128];
+                        get_rolling_quicksave_filename(filename, sizeof(filename), false);
+                        load_emulator_state(&cpu, save_state_dir, filename);
                         show_notification("STATE LOADED");
                     } else {
                         for (int i = 0; i < 8; i++) {
@@ -1238,7 +1359,8 @@ int main(int argc, char *argv[]) {
                                 if (menu_selection < 0) {
                                     if (current_state == GUI_STATE_MENU_MAIN) menu_selection = 6;
                                     else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
-                                    else if (current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = 9;
+                                    else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
+                                    else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 3;
                                     else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = 8;
                                 }
@@ -1249,7 +1371,8 @@ int main(int argc, char *argv[]) {
                                 menu_selection++;
                                 if (current_state == GUI_STATE_MENU_MAIN && menu_selection > 6) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
-                                else if ((current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE) && menu_selection > 9) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 3) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > 8) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && loaded_cartridge == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
@@ -1275,11 +1398,15 @@ int main(int argc, char *argv[]) {
                                     if (loaded_cartridge != NULL) {
                                         current_state = GUI_STATE_MENU_SAVE_STATE;
                                         menu_selection = 0;
+                                        rom_scroll_offset = 0;
+                                        scan_save_state_directory();
                                     }
                                 } else if (menu_selection == 3) {
                                     if (loaded_cartridge != NULL) {
                                         current_state = GUI_STATE_MENU_LOAD_STATE;
                                         menu_selection = 0;
+                                        rom_scroll_offset = 0;
+                                        scan_save_state_directory();
                                     }
                                 } else if (menu_selection == 4) {
                                     current_state = GUI_STATE_MENU_CONTROLS;
@@ -1351,15 +1478,25 @@ int main(int argc, char *argv[]) {
                                     }
                                 }
                             } else if (current_state == GUI_STATE_MENU_SAVE_STATE) {
-                                char name_buf[64];
-                                sprintf(name_buf, "slot%d.state", menu_selection);
-                                save_emulator_state(&cpu, save_state_dir, name_buf);
+                                if (menu_selection == 0) {
+                                    time_t t = time(NULL);
+                                    struct tm *tm_info = localtime(&t);
+                                    char name_buf[128];
+                                    if (tm_info) {
+                                        strftime(name_buf, sizeof(name_buf), "manual_%Y%m%d_%H%M%S.state", tm_info);
+                                    } else {
+                                        snprintf(name_buf, sizeof(name_buf), "manual_%ld.state", (long)t);
+                                    }
+                                    save_emulator_state(&cpu, save_state_dir, name_buf);
+                                } else {
+                                    save_emulator_state(&cpu, save_state_dir, state_files[menu_selection - 1]);
+                                }
                                 current_state = GUI_STATE_GAMEPLAY;
                             } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
-                                char name_buf[64];
-                                sprintf(name_buf, "slot%d.state", menu_selection);
-                                load_emulator_state(&cpu, save_state_dir, name_buf);
-                                current_state = GUI_STATE_GAMEPLAY; // Re-enter gameplay after loading state
+                                if (state_file_count > 0) {
+                                    load_emulator_state(&cpu, save_state_dir, state_files[menu_selection]);
+                                    current_state = GUI_STATE_GAMEPLAY;
+                                }
                             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                                 if (menu_selection == 0) {
                                     window_scale++;
@@ -1418,12 +1555,16 @@ int main(int argc, char *argv[]) {
                             break;
                         }
                         case SDLK_F5: {
-                            save_emulator_state(&cpu, save_state_dir, "quick.state");
+                            char filename[128];
+                            get_rolling_quicksave_filename(filename, sizeof(filename), true);
+                            save_emulator_state(&cpu, save_state_dir, filename);
                             show_notification("STATE SAVED");
                             break;
                         }
                         case SDLK_F8: {
-                            load_emulator_state(&cpu, save_state_dir, "quick.state");
+                            char filename[128];
+                            get_rolling_quicksave_filename(filename, sizeof(filename), false);
+                            load_emulator_state(&cpu, save_state_dir, filename);
                             show_notification("STATE LOADED");
                             break;
                         }
