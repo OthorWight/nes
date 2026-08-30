@@ -1,4 +1,27 @@
-# RetroNES: High-Fidelity 8-Bit NES Emulator
+## Controls
+
+### Keyboard Layout (Mappable)
+*   **D-Pad**: `Arrow Keys`
+*   **Button A**: `Z`
+*   **Button B**: `X`
+*   **Select**: `Space`
+*   **Start**: `Enter`
+*   **Menu/Pause**: `F1` or `Escape`
+
+### Gamepad Layout (Standard Xbox/PlayStation)
+*   **D-Pad / Left Stick**: NES Directional Pad
+*   **A Button**: NES Button A
+*   **B Button**: NES Button B
+*   **Back/Share**: NES Select
+*   **Start/Options**: NES Start
+
+### Quick Save & Quick Load
+*   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
+*   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
+
+---
+
+# High-Fidelity 8-Bit NES Emulator
 
 A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) emulator written in C. It features a modular architecture, custom low-level APU/PPU pipelines, real-time in-game step debugging, rolling quick-saves, and seamless plug-and-play controller support via SDL2.
 
@@ -39,29 +62,6 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 *   **Mapper 69 (FME-7)**: Precision IRQ interval timing counters (*Batman Return of the Joker*).
 *   **Mapper 206 (DxROM)**: Nintendo-style early MMC3 variants.
 *   **Mapper 227 (Karateka)**: Obscure multi-cart configurations.
-
----
-
-## Controls
-
-### Keyboard Layout (Mappable)
-*   **D-Pad**: `Arrow Keys`
-*   **Button A**: `Z`
-*   **Button B**: `X`
-*   **Select**: `Space`
-*   **Start**: `Enter`
-*   **Menu/Pause**: `F1` or `Escape`
-
-### Gamepad Layout (Standard Xbox/PlayStation)
-*   **D-Pad / Left Stick**: NES Directional Pad
-*   **A Button**: NES Button A
-*   **B Button**: NES Button B
-*   **Back/Share**: NES Select
-*   **Start/Options**: NES Start
-
-### Quick Save & Quick Load
-*   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
-*   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
 
 ---
 
