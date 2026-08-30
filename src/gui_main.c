@@ -37,6 +37,27 @@ static char save_state_dir[512] = ""; // New global variable for per-ROM save st
 static SDL_AudioDeviceID audio_device = 0;
 static bool audio_muted = false;
 
+#ifdef _WIN32
+#define MKDIR(path) _mkdir(path)
+#else
+#define MKDIR(path) mkdir(path, 0777)
+#endif
+
+static bool console_debug_enabled = false;
+static int window_scale = 5;
+static bool fullscreen = false;
+
+static SDL_Keycode control_mappings[8] = {
+    SDLK_z,      // Button A (bit 0)
+    SDLK_x,      // Button B (bit 1)
+    SDLK_SPACE,  // Select   (bit 2)
+    SDLK_RETURN, // Start    (bit 3)
+    SDLK_UP,     // Up       (bit 4)
+    SDLK_DOWN,   // Down     (bit 5)
+    SDLK_LEFT,   // Left     (bit 6)
+    SDLK_RIGHT   // Right    (bit 7)
+};
+
 static int master_volume = 100;
 
 static void play_volume_ding(void) {
@@ -195,6 +216,115 @@ static void get_state_file_info(const char *filename, char *out_buf, size_t max_
     snprintf(out_buf, max_len, "%.40s: %s", clean_filename, time_meta);
 }
 
+static void get_clean_rom_name(char *out_buf, size_t max_len) {
+    snprintf(out_buf, max_len, "%s", loaded_rom_name);
+    char *ext = strrchr(out_buf, '.');
+    if (ext) *ext = '\0';
+}
+
+static void save_battery_ram(void) {
+    if (!loaded_cartridge || !loaded_cartridge->prg_ram || loaded_cartridge->prg_ram_size == 0) return;
+    char rom_name_clean[256];
+    get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/%s.sav", save_state_dir, rom_name_clean);
+    FILE *f = fopen(filepath, "wb");
+    if (f) {
+        fwrite(loaded_cartridge->prg_ram, 1, loaded_cartridge->prg_ram_size, f);
+        fclose(f);
+    }
+}
+
+static void load_battery_ram(void) {
+    if (!loaded_cartridge || !loaded_cartridge->prg_ram || loaded_cartridge->prg_ram_size == 0) return;
+    char rom_name_clean[256];
+    get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/%s.sav", save_state_dir, rom_name_clean);
+    FILE *f = fopen(filepath, "rb");
+    if (f) {
+        fread(loaded_cartridge->prg_ram, 1, loaded_cartridge->prg_ram_size, f);
+        fclose(f);
+    }
+}
+
+static void cleanup_default_sav(void) {
+    char rom_name_clean[256];
+    get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
+    char default_sav[512];
+    snprintf(default_sav, sizeof(default_sav), "%s.sav", rom_name_clean);
+    remove(default_sav);
+}
+
+static void get_settings_filepath(char *out_path, size_t max_len) {
+    char *base_path = SDL_GetBasePath();
+    if (base_path) {
+        snprintf(out_path, max_len, "%ssaves/settings.bin", base_path);
+        SDL_free(base_path);
+    } else {
+        snprintf(out_path, max_len, "saves/settings.bin");
+    }
+}
+
+static void save_emulator_settings(void) {
+    char filepath[1024];
+    get_settings_filepath(filepath, sizeof(filepath));
+
+    // Ensure main saves directory exists
+    char saves_dir[1024];
+    char *base_path = SDL_GetBasePath();
+    if (base_path) {
+        snprintf(saves_dir, sizeof(saves_dir), "%ssaves", base_path);
+        SDL_free(base_path);
+    } else {
+        snprintf(saves_dir, sizeof(saves_dir), "saves");
+    }
+    MKDIR(saves_dir);
+
+    FILE *f = fopen(filepath, "wb");
+    if (!f) return;
+
+    uint32_t version = 1;
+    fwrite(&version, sizeof(version), 1, f);
+    fwrite(&master_volume, sizeof(master_volume), 1, f);
+    int temp_muted = audio_muted ? 1 : 0;
+    fwrite(&temp_muted, sizeof(temp_muted), 1, f);
+    fwrite(&window_scale, sizeof(window_scale), 1, f);
+    int temp_fs = fullscreen ? 1 : 0;
+    fwrite(&temp_fs, sizeof(temp_fs), 1, f);
+    int temp_debug = console_debug_enabled ? 1 : 0;
+    fwrite(&temp_debug, sizeof(temp_debug), 1, f);
+    fwrite(control_mappings, sizeof(SDL_Keycode), 8, f);
+    fclose(f);
+}
+
+static void load_emulator_settings(void) {
+    char filepath[1024];
+    get_settings_filepath(filepath, sizeof(filepath));
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return;
+
+    uint32_t version = 0;
+    if (fread(&version, sizeof(version), 1, f) != 1 || version != 1) {
+        fclose(f);
+        return;
+    }
+    fread(&master_volume, sizeof(master_volume), 1, f);
+    int temp_muted = 0;
+    fread(&temp_muted, sizeof(temp_muted), 1, f);
+    audio_muted = (temp_muted != 0);
+    fread(&window_scale, sizeof(window_scale), 1, f);
+    int temp_fs = 0;
+    fread(&temp_fs, sizeof(temp_fs), 1, f);
+    fullscreen = (temp_fs != 0);
+    int temp_debug = 0;
+    fread(&temp_debug, sizeof(temp_debug), 1, f);
+    console_debug_enabled = (temp_debug != 0);
+    fread(control_mappings, sizeof(SDL_Keycode), 8, f);
+    fclose(f);
+}
+
 static SDL_GameController *game_controller = NULL;
 
 static const SDL_GameControllerButton controller_button_mappings[8] = {
@@ -243,21 +373,10 @@ static void clear_view_history(uint16_t initial_pc) {
 static int mouse_x = 0;
 static int mouse_y = 0;
 static bool mouse_left_pressed = false;
-static bool console_debug_enabled = false;
 static uint64_t debug_emu_ticks = 0;
 static uint64_t debug_total_ticks = 0;
 
 static bool rebinding = false;
-static SDL_Keycode control_mappings[8] = {
-    SDLK_z,      // Button A (bit 0)
-    SDLK_x,      // Button B (bit 1)
-    SDLK_SPACE,  // Select   (bit 2)
-    SDLK_RETURN, // Start    (bit 3)
-    SDLK_UP,     // Up       (bit 4)
-    SDLK_DOWN,   // Down     (bit 5)
-    SDLK_LEFT,   // Left     (bit 6)
-    SDLK_RIGHT   // Right    (bit 7)
-};
 static const SDL_Keycode default_control_mappings[8] = {
     SDLK_z, SDLK_x, SDLK_SPACE, SDLK_RETURN, SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT
 };
@@ -279,8 +398,6 @@ typedef enum {
 static GUIState current_state = GUI_STATE_MENU_MAIN;
 static int menu_selection = 1;
 static int rom_scroll_offset = 0;
-static int window_scale = 5;
-static bool fullscreen = false;
 
 static char rom_files[512][256];
 static int rom_file_count = 0;
@@ -813,6 +930,33 @@ static void save_emulator_state(const CPU6502 *cpu, const char *dir, const char 
     fwrite(&mirroring_val, sizeof(mirroring_val), 1, f);
     fwrite(loaded_cartridge->mapper_state, 1, sizeof(loaded_cartridge->mapper_state), f);
 
+    if (loaded_cartridge->mapper_id == 5) {
+        fwrite(loaded_cartridge->exram, 1, sizeof(loaded_cartridge->exram), f);
+        fwrite(&loaded_cartridge->mmc5_prg_mode, 1, sizeof(loaded_cartridge->mmc5_prg_mode), f);
+        fwrite(&loaded_cartridge->mmc5_chr_mode, 1, sizeof(loaded_cartridge->mmc5_chr_mode), f);
+        fwrite(loaded_cartridge->mmc5_ram_protect, 1, sizeof(loaded_cartridge->mmc5_ram_protect), f);
+        fwrite(&loaded_cartridge->mmc5_exram_mode, 1, sizeof(loaded_cartridge->mmc5_exram_mode), f);
+        fwrite(&loaded_cartridge->mmc5_nametable_ctrl, 1, sizeof(loaded_cartridge->mmc5_nametable_ctrl), f);
+        fwrite(&loaded_cartridge->mmc5_fill_tile, 1, sizeof(loaded_cartridge->mmc5_fill_tile), f);
+        fwrite(&loaded_cartridge->mmc5_fill_attr, 1, sizeof(loaded_cartridge->mmc5_fill_attr), f);
+        fwrite(loaded_cartridge->mmc5_prg_regs, 1, sizeof(loaded_cartridge->mmc5_prg_regs), f);
+        fwrite(loaded_cartridge->mmc5_chr_regs_a, 1, sizeof(loaded_cartridge->mmc5_chr_regs_a), f);
+        fwrite(loaded_cartridge->mmc5_chr_regs_b, 1, sizeof(loaded_cartridge->mmc5_chr_regs_b), f);
+        fwrite(&loaded_cartridge->mmc5_chr_high, 1, sizeof(loaded_cartridge->mmc5_chr_high), f);
+        fwrite(&loaded_cartridge->mmc5_mult_a, 1, sizeof(loaded_cartridge->mmc5_mult_a), f);
+        fwrite(&loaded_cartridge->mmc5_mult_b, 1, sizeof(loaded_cartridge->mmc5_mult_b), f);
+        fwrite(&loaded_cartridge->mmc5_irq_target, 1, sizeof(loaded_cartridge->mmc5_irq_target), f);
+        uint8_t temp_enabled = loaded_cartridge->mmc5_irq_enabled ? 1 : 0;
+        fwrite(&temp_enabled, 1, 1, f);
+        uint8_t temp_pending = loaded_cartridge->mmc5_irq_pending ? 1 : 0;
+        fwrite(&temp_pending, 1, 1, f);
+        uint8_t temp_in_frame = loaded_cartridge->mmc5_in_frame ? 1 : 0;
+        fwrite(&temp_in_frame, 1, 1, f);
+        fwrite(&loaded_cartridge->mmc5_scanline, 1, sizeof(loaded_cartridge->mmc5_scanline), f);
+        uint8_t temp_last_chr_a = loaded_cartridge->mmc5_last_chr_a ? 1 : 0;
+        fwrite(&temp_last_chr_a, 1, 1, f);
+    }
+
     uint32_t prg_ram_sz = (loaded_cartridge->prg_ram != NULL) ? loaded_cartridge->prg_ram_size : 0;
     fwrite(&prg_ram_sz, sizeof(prg_ram_sz), 1, f);
     if (prg_ram_sz > 0) {
@@ -878,6 +1022,37 @@ static void load_emulator_state(CPU6502 *cpu, const char *dir, const char *filen
     loaded_cartridge->mirroring = (MirroringMode)mirroring_val;
     if (fread(loaded_cartridge->mapper_state, 1, sizeof(loaded_cartridge->mapper_state), f) != sizeof(loaded_cartridge->mapper_state)) { fclose(f); return; }
 
+    if (loaded_cartridge->mapper_id == 5) {
+        if (fread(loaded_cartridge->exram, 1, sizeof(loaded_cartridge->exram), f) != sizeof(loaded_cartridge->exram)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_prg_mode, 1, sizeof(loaded_cartridge->mmc5_prg_mode), f) != sizeof(loaded_cartridge->mmc5_prg_mode)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_chr_mode, 1, sizeof(loaded_cartridge->mmc5_chr_mode), f) != sizeof(loaded_cartridge->mmc5_chr_mode)) { fclose(f); return; }
+        if (fread(loaded_cartridge->mmc5_ram_protect, 1, sizeof(loaded_cartridge->mmc5_ram_protect), f) != sizeof(loaded_cartridge->mmc5_ram_protect)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_exram_mode, 1, sizeof(loaded_cartridge->mmc5_exram_mode), f) != sizeof(loaded_cartridge->mmc5_exram_mode)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_nametable_ctrl, 1, sizeof(loaded_cartridge->mmc5_nametable_ctrl), f) != sizeof(loaded_cartridge->mmc5_nametable_ctrl)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_fill_tile, 1, sizeof(loaded_cartridge->mmc5_fill_tile), f) != sizeof(loaded_cartridge->mmc5_fill_tile)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_fill_attr, 1, sizeof(loaded_cartridge->mmc5_fill_attr), f) != sizeof(loaded_cartridge->mmc5_fill_attr)) { fclose(f); return; }
+        if (fread(loaded_cartridge->mmc5_prg_regs, 1, sizeof(loaded_cartridge->mmc5_prg_regs), f) != sizeof(loaded_cartridge->mmc5_prg_regs)) { fclose(f); return; }
+        if (fread(loaded_cartridge->mmc5_chr_regs_a, 1, sizeof(loaded_cartridge->mmc5_chr_regs_a), f) != sizeof(loaded_cartridge->mmc5_chr_regs_a)) { fclose(f); return; }
+        if (fread(loaded_cartridge->mmc5_chr_regs_b, 1, sizeof(loaded_cartridge->mmc5_chr_regs_b), f) != sizeof(loaded_cartridge->mmc5_chr_regs_b)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_chr_high, 1, sizeof(loaded_cartridge->mmc5_chr_high), f) != sizeof(loaded_cartridge->mmc5_chr_high)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_mult_a, 1, sizeof(loaded_cartridge->mmc5_mult_a), f) != sizeof(loaded_cartridge->mmc5_mult_a)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_mult_b, 1, sizeof(loaded_cartridge->mmc5_mult_b), f) != sizeof(loaded_cartridge->mmc5_mult_b)) { fclose(f); return; }
+        if (fread(&loaded_cartridge->mmc5_irq_target, 1, sizeof(loaded_cartridge->mmc5_irq_target), f) != sizeof(loaded_cartridge->mmc5_irq_target)) { fclose(f); return; }
+        uint8_t temp_enabled = 0;
+        if (fread(&temp_enabled, 1, 1, f) != 1) { fclose(f); return; }
+        loaded_cartridge->mmc5_irq_enabled = (temp_enabled != 0);
+        uint8_t temp_pending = 0;
+        if (fread(&temp_pending, 1, 1, f) != 1) { fclose(f); return; }
+        loaded_cartridge->mmc5_irq_pending = (temp_pending != 0);
+        uint8_t temp_in_frame = 0;
+        if (fread(&temp_in_frame, 1, 1, f) != 1) { fclose(f); return; }
+        loaded_cartridge->mmc5_in_frame = (temp_in_frame != 0);
+        if (fread(&loaded_cartridge->mmc5_scanline, 1, sizeof(loaded_cartridge->mmc5_scanline), f) != sizeof(loaded_cartridge->mmc5_scanline)) { fclose(f); return; }
+        uint8_t temp_last_chr_a = 0;
+        if (fread(&temp_last_chr_a, 1, 1, f) != 1) { fclose(f); return; }
+        loaded_cartridge->mmc5_last_chr_a = (temp_last_chr_a != 0);
+    }
+
     uint32_t prg_ram_sz = 0;
     if (fread(&prg_ram_sz, sizeof(prg_ram_sz), 1, f) == 1 && prg_ram_sz > 0) {
         if (loaded_cartridge->prg_ram != NULL && loaded_cartridge->prg_ram_size >= prg_ram_sz) {
@@ -894,12 +1069,6 @@ static void load_emulator_state(CPU6502 *cpu, const char *dir, const char *filen
     fclose(f);
 }
 
-#ifdef _WIN32
-#define MKDIR(path) _mkdir(path)
-#else
-#define MKDIR(path) mkdir(path, 0777)
-#endif
-
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
@@ -907,6 +1076,8 @@ int main(int argc, char *argv[]) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         return -1;
     }
+
+    load_emulator_settings();
 
     // Open any currently connected game controller
     for (int i = 0; i < SDL_NumJoysticks(); ++i) {
@@ -935,6 +1106,10 @@ int main(int argc, char *argv[]) {
         256 * window_scale, 240 * window_scale,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
+    if (fullscreen) {
+        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
+
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     SDL_RenderSetLogicalSize(renderer, 256, 240);
 
@@ -1001,7 +1176,28 @@ int main(int argc, char *argv[]) {
                 SDL_UpdateTexture(texture, NULL, nes_ppu.screen_buffer, 256 * sizeof(uint32_t));
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
-                SDL_Rect src_rect = { 8, 8, 240, 224 };
+
+                SDL_Rect src_rect = { 0, 0, 256, 240 };
+                if (loaded_cartridge != NULL) {
+                    uint8_t mapper = loaded_cartridge->mapper_id;
+                    // NROM, MMC3: Crop horizontal/vertical margins to hide scroll overflow
+                    if (mapper == 0 || mapper == 4 || mapper == 206 || mapper == 227) {
+                        src_rect.x = 8;
+                        src_rect.y = 8;
+                        src_rect.w = 240;
+                        src_rect.h = 224;
+                    } else if (mapper == 1) { // MMC1 (e.g. Zelda): Crop left/right margins, show full height
+                        src_rect.x = 8;
+                        src_rect.y = 0;
+                        src_rect.w = 240;
+                        src_rect.h = 240;
+                    } else { // UxROM (Castlevania), CNROM, AxROM, etc.: Show full output overflow
+                        src_rect.x = 0;
+                        src_rect.y = 0;
+                        src_rect.w = 256;
+                        src_rect.h = 240;
+                    }
+                }
                 SDL_RenderCopy(renderer, texture, &src_rect, NULL);
 
                 if (notification_timer > 0) {
@@ -1392,6 +1588,7 @@ int main(int argc, char *argv[]) {
                 if (rebinding) {
                     if (event.key.keysym.sym != SDLK_ESCAPE) {
                         control_mappings[menu_selection] = event.key.keysym.sym;
+                        save_emulator_settings();
                     }
                     rebinding = false;
                     break;
@@ -1443,6 +1640,7 @@ int main(int argc, char *argv[]) {
                                 master_volume -= 10;
                                 if (master_volume < 0) master_volume = 0;
                                 play_volume_ding();
+                                save_emulator_settings();
                             }
                             break;
                         case SDLK_RIGHT:
@@ -1450,6 +1648,7 @@ int main(int argc, char *argv[]) {
                                 master_volume += 10;
                                 if (master_volume > 100) master_volume = 100;
                                 play_volume_ding();
+                                save_emulator_settings();
                             }
                             break;
                         case SDLK_BACKSPACE:
@@ -1497,6 +1696,7 @@ int main(int argc, char *argv[]) {
                                     for (int i = 0; i < 8; i++) {
                                         control_mappings[i] = default_control_mappings[i];
                                     }
+                                    save_emulator_settings();
                                 } else {
                                     rebinding = true;
                                 }
@@ -1504,7 +1704,11 @@ int main(int argc, char *argv[]) {
                                 if (rom_file_count > 0) {
                                     Cartridge *cart = cartridge_load(rom_files[menu_selection]);
                                     if (cart) {
-                                        if (loaded_cartridge) cartridge_free(loaded_cartridge);
+                                        if (loaded_cartridge) {
+                                            save_battery_ram();
+                                            cartridge_free(loaded_cartridge);
+                                            cleanup_default_sav();
+                                        }
                                         loaded_cartridge = cart;
                                         strncpy(loaded_rom_name, rom_files[menu_selection], sizeof(loaded_rom_name) - 1);
 
@@ -1542,6 +1746,7 @@ int main(int argc, char *argv[]) {
                                         cpu_init(&cpu, CPU_MODEL_RICOH_2A03);
                                         cpu_trigger_reset(&cpu);
                                         cpu_step(&cpu, &nes_bus);
+                                        load_battery_ram();
                                         debugger_active = console_debug_enabled;
                                         debugger_logging_active = false;
                                         if (debugger_active) {
@@ -1593,7 +1798,7 @@ int main(int argc, char *argv[]) {
                                     audio_muted = !audio_muted;
                                 } else if (menu_selection == 2) {
                                     play_volume_ding();
-                                } else if (menu_selection == 2) {
+                                } else if (menu_selection == 3) {
                                     fullscreen = !fullscreen;
                                     if (fullscreen) {
                                         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -1607,6 +1812,7 @@ int main(int argc, char *argv[]) {
                                         fflush(stdout);
                                     }
                                 }
+                                save_emulator_settings();
                             }
                             break;
                         default: break;
@@ -1621,6 +1827,7 @@ int main(int argc, char *argv[]) {
                             } else {
                                 SDL_SetWindowFullscreen(window, 0);
                             }
+                            save_emulator_settings();
                             break;
                         }
                         case SDLK_F3: {
@@ -1629,6 +1836,7 @@ int main(int argc, char *argv[]) {
                                 printf("\033[H\033[2J");
                                 fflush(stdout);
                             }
+                            save_emulator_settings();
                             break;
                         }
                         case SDLK_F5: {
@@ -1776,7 +1984,10 @@ int main(int argc, char *argv[]) {
     }
 
     if (loaded_cartridge) {
+        save_battery_ram();
         cartridge_free(loaded_cartridge);
+        cleanup_default_sav();
     }
+    save_emulator_settings();
     return 0;
 }
