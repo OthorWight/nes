@@ -58,12 +58,18 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 *   **Mapper 19 (Namco 163)**: Custom Namco bank selector registers.
 *   **Mapper 23 (VRC2 / VRC4)**: Pin-swapped address modes (*Akumajou Special*).
 *   **Mapper 34 (BNROM / NINA-06)**: Dual-mode bank configurations.
+*   **Mapper 24 (VRC6a)**: Konami VRC6 variant with PRG/CHR banking, mirroring, and IRQ counter.
+*   **Mapper 26 (VRC6b)**: Konami VRC6 variant, similar to VRC6a but with A0/A1 address line swap.
+*   **Mapper 64 (RAMBO-1)**: PRG/CHR banking, mirroring, and IRQ counter.
 *   **Mapper 66 (GxROM)**: Early multi-bank arcade selections.
 *   **Mapper 69 (FME-7)**: Precision IRQ interval timing counters (*Batman Return of the Joker*).
 *   **Mapper 206 (DxROM)**: Nintendo-style early MMC3 variants.
 *   **Mapper 227 (Karateka)**: Obscure multi-cart configurations.
 
 ---
+*   **Mapper 71 (Camerica)**: PRG banking and mirroring control, including Bee 52 compatibility.
+*   **Mapper 78 (Holy Diver)**: PRG/CHR banking and mirroring control.
+*   **Mapper 118 (TxSROM)**: PRG/CHR banking, mirroring, and IRQ counter.
 
 ## Real-Time Step Debugger
 
