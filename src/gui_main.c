@@ -31,7 +31,9 @@ static bool console_debug_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
 
-static SDL_Keycode control_mappings[8] = {
+#define CONTROL_COUNT 10
+
+static SDL_Keycode control_mappings[CONTROL_COUNT] = {
     SDLK_z,
     SDLK_x,
     SDLK_SPACE,
@@ -39,10 +41,39 @@ static SDL_Keycode control_mappings[8] = {
     SDLK_UP,
     SDLK_DOWN,
     SDLK_LEFT,
-    SDLK_RIGHT
+    SDLK_RIGHT,
+    SDLK_F5,
+    SDLK_F8
+};
+
+static SDL_GameControllerButton controller_button_mappings[CONTROL_COUNT] = {
+    SDL_CONTROLLER_BUTTON_A,
+    SDL_CONTROLLER_BUTTON_B,
+    SDL_CONTROLLER_BUTTON_BACK,
+    SDL_CONTROLLER_BUTTON_START,
+    SDL_CONTROLLER_BUTTON_DPAD_UP,
+    SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+    SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+    SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+    SDL_CONTROLLER_BUTTON_X,
+    SDL_CONTROLLER_BUTTON_Y
+};
+
+static const SDL_GameControllerButton default_controller_mappings[CONTROL_COUNT] = {
+    SDL_CONTROLLER_BUTTON_A,
+    SDL_CONTROLLER_BUTTON_B,
+    SDL_CONTROLLER_BUTTON_BACK,
+    SDL_CONTROLLER_BUTTON_START,
+    SDL_CONTROLLER_BUTTON_DPAD_UP,
+    SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+    SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+    SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+    SDL_CONTROLLER_BUTTON_X,
+    SDL_CONTROLLER_BUTTON_Y
 };
 
 static int master_volume = 100;
+static bool control_mode_keyboard = true;
 
 static uint8_t cpu_bridge_read(void *ctx, uint16_t addr) {
     return nes_cpu_bus_read((NES*)ctx, addr);
@@ -272,7 +303,7 @@ static void save_emulator_settings(void) {
     FILE *f = fopen(filepath, "wb");
     if (!f) return;
 
-    uint32_t version = 1;
+    uint32_t version = 3;
     fwrite(&version, sizeof(version), 1, f);
     fwrite(&master_volume, sizeof(master_volume), 1, f);
     int temp_muted = audio_muted ? 1 : 0;
@@ -282,7 +313,8 @@ static void save_emulator_settings(void) {
     fwrite(&temp_fs, sizeof(temp_fs), 1, f);
     int temp_debug = console_debug_enabled ? 1 : 0;
     fwrite(&temp_debug, sizeof(temp_debug), 1, f);
-    fwrite(control_mappings, sizeof(SDL_Keycode), 8, f);
+    fwrite(control_mappings, sizeof(SDL_Keycode), CONTROL_COUNT, f);
+    fwrite(controller_button_mappings, sizeof(SDL_GameControllerButton), CONTROL_COUNT, f);
     fclose(f);
 }
 
@@ -294,7 +326,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version != 1) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 3) {
         fclose(f);
         return;
     }
@@ -309,22 +341,20 @@ static void load_emulator_settings(void) {
     int temp_debug = 0;
     fread(&temp_debug, sizeof(temp_debug), 1, f);
     console_debug_enabled = (temp_debug != 0);
-    fread(control_mappings, sizeof(SDL_Keycode), 8, f);
+    if (version == 1) {
+        fread(control_mappings, sizeof(SDL_Keycode), 8, f);
+    } else if (version == 2) {
+        fread(control_mappings, sizeof(SDL_Keycode), 8, f);
+        fread(controller_button_mappings, sizeof(SDL_GameControllerButton), 8, f);
+    } else if (version == 3) {
+        fread(control_mappings, sizeof(SDL_Keycode), CONTROL_COUNT, f);
+        fread(controller_button_mappings, sizeof(SDL_GameControllerButton), CONTROL_COUNT, f);
+    }
     fclose(f);
 }
 
 static SDL_GameController *game_controller = NULL;
 
-static const SDL_GameControllerButton controller_button_mappings[8] = {
-    SDL_CONTROLLER_BUTTON_A,
-    SDL_CONTROLLER_BUTTON_B,
-    SDL_CONTROLLER_BUTTON_BACK,
-    SDL_CONTROLLER_BUTTON_START,
-    SDL_CONTROLLER_BUTTON_DPAD_UP,
-    SDL_CONTROLLER_BUTTON_DPAD_DOWN,
-    SDL_CONTROLLER_BUTTON_DPAD_LEFT,
-    SDL_CONTROLLER_BUTTON_DPAD_RIGHT
-};
 
 #define VIEW_HISTORY_MAX 256
 static uint16_t view_history[VIEW_HISTORY_MAX];
@@ -362,12 +392,13 @@ static uint64_t debug_emu_ticks = 0;
 static uint64_t debug_total_ticks = 0;
 
 static bool rebinding = false;
-static const SDL_Keycode default_control_mappings[8] = {
-    SDLK_z, SDLK_x, SDLK_SPACE, SDLK_RETURN, SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT
+static const SDL_Keycode default_control_mappings[CONTROL_COUNT] = {
+    SDLK_z, SDLK_x, SDLK_SPACE, SDLK_RETURN, SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_F5, SDLK_F8
 };
-static const char *button_names[8] = {
+static const char *button_names[CONTROL_COUNT] = {
     "Button A", "Button B", "Select", "Start",
-    "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right"
+    "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
+    "Quick Save", "Quick Load"
 };
 
 typedef enum {
@@ -1048,32 +1079,72 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (current_state == GUI_STATE_MENU_CONTROLS) {
-                draw_string(renderer, "NES Button  ->  Keyboard Key", 16, 45, 0x00FFFF);
-                draw_string(renderer, "-----------------------------", 16, 55, 0x00FFFF);
-                for (int i = 0; i < 8; i++) {
+                char header_buf[64];
+                if (control_mode_keyboard) {
+                    snprintf(header_buf, sizeof(header_buf), "Mode: < KEYBOARD >");
+                } else {
+                    snprintf(header_buf, sizeof(header_buf), "Mode: < CONTROLLER >");
+                }
+                uint32_t header_col = (menu_selection == 0) ? 0xFFFFFF : 0x00FFFF;
+                draw_string(renderer, header_buf, 16, 45, header_col);
+                if (menu_selection == 0) {
+                    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+                    SDL_Rect box = { 12, 43, 232, 11 };
+                    SDL_RenderDrawRect(renderer, &box);
+                }
+
+                draw_string(renderer, "-----------------------------", 16, 52, 0x00FFFF);
+                for (int i = 0; i < CONTROL_COUNT; i++) {
                     char buf[64];
-                    const char *key_name = SDL_GetKeyName(control_mappings[i]);
-                    if (rebinding && i == menu_selection) {
-                        snprintf(buf, sizeof(buf), "%-11s -> [PRESS KEY...]", button_names[i]);
+                    if (control_mode_keyboard) {
+                        const char *key_name = SDL_GetKeyName(control_mappings[i]);
+                        if (rebinding && (i + 1) == menu_selection) {
+                            snprintf(buf, sizeof(buf), "%-11s -> [PRESS KEY...]", button_names[i]);
+                        } else {
+                            snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], key_name);
+                        }
                     } else {
-                        snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], key_name);
+                        const char *btn_name = "Unknown";
+                        switch (controller_button_mappings[i]) {
+                            case SDL_CONTROLLER_BUTTON_A: btn_name = "Button A"; break;
+                            case SDL_CONTROLLER_BUTTON_B: btn_name = "Button B"; break;
+                            case SDL_CONTROLLER_BUTTON_X: btn_name = "Button X"; break;
+                            case SDL_CONTROLLER_BUTTON_Y: btn_name = "Button Y"; break;
+                            case SDL_CONTROLLER_BUTTON_BACK: btn_name = "Back"; break;
+                            case SDL_CONTROLLER_BUTTON_GUIDE: btn_name = "Guide"; break;
+                            case SDL_CONTROLLER_BUTTON_START: btn_name = "Start"; break;
+                            case SDL_CONTROLLER_BUTTON_LEFTSTICK: btn_name = "Left Stick"; break;
+                            case SDL_CONTROLLER_BUTTON_RIGHTSTICK: btn_name = "Right Stick"; break;
+                            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: btn_name = "Left Shoulder"; break;
+                            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: btn_name = "Right Shoulder"; break;
+                            case SDL_CONTROLLER_BUTTON_DPAD_UP: btn_name = "D-Pad Up"; break;
+                            case SDL_CONTROLLER_BUTTON_DPAD_DOWN: btn_name = "D-Pad Down"; break;
+                            case SDL_CONTROLLER_BUTTON_DPAD_LEFT: btn_name = "D-Pad Left"; break;
+                            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: btn_name = "D-Pad Right"; break;
+                            default: btn_name = "None"; break;
+                        }
+                        if (rebinding && (i + 1) == menu_selection) {
+                            snprintf(buf, sizeof(buf), "%-11s -> [PRESS BUTTON...]", button_names[i]);
+                        } else {
+                            snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], btn_name);
+                        }
                     }
-                    uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                    draw_string(renderer, buf, 24, 70 + i * 14, col);
-                    if (i == menu_selection) {
+                    uint32_t col = ((i + 1) == menu_selection) ? 0xFFFFFF : 0x888888;
+                    draw_string(renderer, buf, 24, 62 + i * 13, col);
+                    if ((i + 1) == menu_selection) {
                         SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 16, 68 + i * 14, 224, 11 };
+                        SDL_Rect box = { 16, 60 + i * 13, 224, 11 };
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
-                uint32_t def_col = (menu_selection == 8) ? 0xFFFFFF : 0x888888;
-                draw_string(renderer, "Restore Defaults", 24, 70 + 8 * 14, def_col);
-                if (menu_selection == 8) {
+                uint32_t def_col = (menu_selection == (CONTROL_COUNT + 1)) ? 0xFFFFFF : 0x888888;
+                draw_string(renderer, "Restore Defaults", 24, 62 + CONTROL_COUNT * 13, def_col);
+                if (menu_selection == (CONTROL_COUNT + 1)) {
                     SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                    SDL_Rect box = { 16, 68 + 8 * 14, 224, 11 };
+                    SDL_Rect box = { 16, 60 + CONTROL_COUNT * 13, 224, 11 };
                     SDL_RenderDrawRect(renderer, &box);
                 }
-                draw_string(renderer, "ENTER: Select/Reset | ESC: Return", 16, 215, 0x888888);
+                draw_string(renderer, "ENTER/LEFT/RIGHT: Adjust | ESC: Return", 8, 225, 0x888888);
             } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
                 draw_string(renderer, "SELECT ROM TO LAUNCH:", 40, 50, 0xFFFF00);
                 if (rom_file_count == 0) {
@@ -1271,13 +1342,19 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (rebinding && !control_mode_keyboard) {
+                    controller_button_mappings[menu_selection - 1] = event.cbutton.button;
+                    save_emulator_settings();
+                    rebinding = false;
+                    continue;
+                }
                 if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
-                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
+                    if (event.cbutton.button == controller_button_mappings[8]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), true);
                         save_emulator_state(save_state_dir, filename);
                         show_notification("STATE SAVED");
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
+                    } else if (event.cbutton.button == controller_button_mappings[9]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), false);
                         load_emulator_state(save_state_dir, filename);
@@ -1355,8 +1432,8 @@ int main(int argc, char *argv[]) {
                 }
             } else if (event.type == SDL_KEYDOWN) {
                 if (rebinding) {
-                    if (event.key.keysym.sym != SDLK_ESCAPE) {
-                        control_mappings[menu_selection] = event.key.keysym.sym;
+                    if (control_mode_keyboard && event.key.keysym.sym != SDLK_ESCAPE) {
+                        control_mappings[menu_selection - 1] = event.key.keysym.sym;
                         save_emulator_settings();
                     }
                     rebinding = false;
@@ -1389,7 +1466,7 @@ int main(int argc, char *argv[]) {
                                     else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
                                     else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 4;
-                                    else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = 8;
+                                    else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = (CONTROL_COUNT + 1);
                                 }
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
@@ -1401,7 +1478,7 @@ int main(int argc, char *argv[]) {
                                 else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 4) menu_selection = 0;
-                                else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > 8) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > (CONTROL_COUNT + 1)) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
                         case SDLK_LEFT:
@@ -1410,6 +1487,8 @@ int main(int argc, char *argv[]) {
                                 if (master_volume < 0) master_volume = 0;
                                 play_volume_ding();
                                 save_emulator_settings();
+                            } else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection == 0) {
+                                control_mode_keyboard = !control_mode_keyboard;
                             }
                             break;
                         case SDLK_RIGHT:
@@ -1418,6 +1497,8 @@ int main(int argc, char *argv[]) {
                                 if (master_volume > 100) master_volume = 100;
                                 play_volume_ding();
                                 save_emulator_settings();
+                            } else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection == 0) {
+                                control_mode_keyboard = !control_mode_keyboard;
                             }
                             break;
                         case SDLK_BACKSPACE:
@@ -1461,9 +1542,12 @@ int main(int argc, char *argv[]) {
                                     running = false;
                                 }
                             } else if (current_state == GUI_STATE_MENU_CONTROLS) {
-                                if (menu_selection == 8) {
-                                    for (int i = 0; i < 8; i++) {
+                                if (menu_selection == 0) {
+                                    control_mode_keyboard = !control_mode_keyboard;
+                                } else if (menu_selection == (CONTROL_COUNT + 1)) {
+                                    for (int i = 0; i < CONTROL_COUNT; i++) {
                                         control_mappings[i] = default_control_mappings[i];
+                                        controller_button_mappings[i] = default_controller_mappings[i];
                                     }
                                     save_emulator_settings();
                                 } else {
@@ -1593,9 +1677,21 @@ int main(int argc, char *argv[]) {
                         default: break;
                     }
                 } else {
-                    switch (event.key.keysym.sym) {
-                        case SDLK_f:
-                        case SDLK_F11: {
+                    SDL_Keycode sym = event.key.keysym.sym;
+                    if (sym == control_mappings[8]) {
+                        char filename[128];
+                        get_rolling_quicksave_filename(filename, sizeof(filename), true);
+                        save_emulator_state(save_state_dir, filename);
+                        show_notification("STATE SAVED");
+                    } else if (sym == control_mappings[9]) {
+                        char filename[128];
+                        get_rolling_quicksave_filename(filename, sizeof(filename), false);
+                        load_emulator_state(save_state_dir, filename);
+                        show_notification("STATE LOADED");
+                    } else {
+                        switch (sym) {
+                            case SDLK_f:
+                            case SDLK_F11: {
                             fullscreen = !fullscreen;
                             if (fullscreen) {
                                 SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -1612,20 +1708,6 @@ int main(int argc, char *argv[]) {
                                 fflush(stdout);
                             }
                             save_emulator_settings();
-                            break;
-                        }
-                        case SDLK_F5: {
-                            char filename[128];
-                            get_rolling_quicksave_filename(filename, sizeof(filename), true);
-                            save_emulator_state(save_state_dir, filename);
-                            show_notification("STATE SAVED");
-                            break;
-                        }
-                        case SDLK_F8: {
-                            char filename[128];
-                            get_rolling_quicksave_filename(filename, sizeof(filename), false);
-                            load_emulator_state(save_state_dir, filename);
-                            show_notification("STATE LOADED");
                             break;
                         }
                         case SDLK_UP: {
@@ -1732,6 +1814,7 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
+        }
             } else if (event.type == SDL_KEYUP && current_state == GUI_STATE_GAMEPLAY) {
                 for (int i = 0; i < 8; i++) {
                     if (event.key.keysym.sym == control_mappings[i]) {

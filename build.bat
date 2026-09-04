@@ -105,4 +105,3 @@ if %ERRORLEVEL% equ 0 (
 ) else (
     echo Compilation failed!
 )
-pause
