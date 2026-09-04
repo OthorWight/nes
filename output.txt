@@ -1,0 +1,7 @@
+Compiling NES Emulator...
+Compilation successful!
+Launching NES Emulator...
+----------------------------------------
+[M071 Reset] PRG ROM Size: 65536 bytes. Initial board guess: BF9093 (hardwired vertical mirroring)
+[M071 Reset] PRG ROM Size: 65536 bytes. Initial board guess: BF9093 (hardwired vertical mirroring)
+----------------------------------------

@@ -3,10 +3,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "cpu6502.h"
 
 #define APU_IRQ_SOURCE_FRAME 1
 #define APU_IRQ_SOURCE_DMC   2
+
+typedef struct NES NES;
 
 typedef struct {
     // Pulse 1 & Pulse 2
@@ -79,10 +80,14 @@ typedef struct {
     bool     dmc_silent;
 
     // Frame Counter Sequencer
-    bool     frame_mode;          // false = 4-step (240Hz), true = 5-step (192Hz)
+    bool     frame_mode;
     bool     frame_irq_inhibit;
     bool     frame_irq_active;
     uint32_t frame_cycles;
+
+    // $4017 reset is delayed by 3 or 4 CPU cycles depending on APU phase.
+    bool     frame_counter_reset_pending;
+    uint8_t  frame_counter_reset_delay;
 
     // Audio Output Buffer & Downsampler
     double   audio_accumulator;
@@ -94,8 +99,8 @@ typedef struct {
 } APU2A03;
 
 void    apu_init(APU2A03 *apu);
-void    apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu);
-uint8_t apu_read_reg(APU2A03 *apu, uint16_t address, CPU6502 *cpu);
-void    apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu);
+void    apu_write_reg(NES *nes, uint16_t address, uint8_t data);
+uint8_t apu_read_reg(NES *nes, uint16_t address);
+void    apu_step(APU2A03 *apu, NES *nes);
 
 #endif

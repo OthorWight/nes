@@ -1,161 +1,259 @@
 #include "mappers.h"
-#include "cpu6502.h"
+#include "cartridge.h"
+#include "nes_system.h"
+#include <stdlib.h>
 
-static uint8_t mmc3_read_prg(void *cart, uint16_t address) {
-    Cartridge *c = (Cartridge*)cart;
-    if (address >= 0x6000 && address <= 0x7FFF) {
-        return c->prg_ram ? c->prg_ram[address - 0x6000] : 0;
+typedef struct {
+    uint8_t  bank_select;
+    uint8_t  bank_regs[8];
+    uint8_t  mirroring;
+    uint8_t  prg_ram_protect;
+    uint8_t  irq_latch;
+    uint8_t  irq_counter;
+    bool     irq_enabled;
+    bool     irq_reload;
+    bool     last_a12;
+    int      a12_low_count;
+} MMC3Data;
+
+static void mmc3_reset(Cartridge *c) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+    d->bank_select = 0;
+    for (int i = 0; i < 8; i++) {
+        d->bank_regs[i] = 0;
     }
-
-    uint32_t total_banks = c->prg_rom_size / 8192;
-    if (total_banks == 0) return 0;
-
-    uint8_t bank_select = c->mapper_state[8];
-    uint8_t prg_mode = (bank_select >> 6) & 0x01;
-    uint32_t bank = 0;
-
-    if (address >= 0x8000 && address <= 0x9FFF) {
-        bank = (prg_mode == 0) ? c->mapper_state[6] : (total_banks - 2);
-    } else if (address >= 0xA000 && address <= 0xBFFF) {
-        bank = c->mapper_state[7];
-    } else if (address >= 0xC000 && address <= 0xDFFF) {
-        bank = (prg_mode == 0) ? (total_banks - 2) : c->mapper_state[6];
-    } else {
-        bank = total_banks - 1;
-    }
-
-    bank %= total_banks;
-    uint32_t offset = bank * 8192 + (address & 0x1FFF);
-    return c->prg_rom[offset];
+    d->mirroring = 0;
+    d->prg_ram_protect = 0x80;
+    d->irq_latch = 0;
+    d->irq_counter = 0;
+    d->irq_enabled = false;
+    d->irq_reload = false;
+    d->last_a12 = false;
+    d->a12_low_count = 0;
 }
 
-static void mmc3_write_prg(void *cart, uint16_t address, uint8_t data) {
-    Cartridge *c = (Cartridge*)cart;
-    if (address >= 0x6000 && address <= 0x7FFF) {
-        if (c->prg_ram) c->prg_ram[address - 0x6000] = data;
+static void mmc3_destroy(Cartridge *c) {
+    free(c->mapper_data);
+    c->mapper_data = NULL;
+}
+
+static void mmc3_clock_scanline(Cartridge *c) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+
+    if (d->irq_counter == 0 || d->irq_reload) {
+        d->irq_counter = d->irq_latch;
+        d->irq_reload = false;
+    } else {
+        d->irq_counter--;
+    }
+
+    if (d->irq_counter == 0 && d->irq_enabled) {
+        c->nes->lines.irq_line = true;
+        cpu_set_irq_line(&c->nes->cpu, 0, true);
+    }
+}
+
+static void mmc3_ppu_dot(Cartridge *c, uint16_t addr) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+    bool current_a12 = (addr & 0x1000) != 0;
+
+    if (!current_a12) {
+        d->a12_low_count++;
+    } else {
+        if (!d->last_a12 && current_a12) {
+            // RC filter threshold: A12 must stay low for at least 8 PPU dots
+            if (d->a12_low_count >= 8) {
+                mmc3_clock_scanline(c);
+            }
+        }
+        d->a12_low_count = 0;
+    }
+    d->last_a12 = current_a12;
+}
+
+static uint8_t mmc3_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        *handled = true;
+        if ((d->prg_ram_protect & 0x80) && c->prg_ram && c->prg_ram_size > 0) {
+            return c->prg_ram[addr - 0x6000];
+        }
+        return 0;
+    }
+
+    if (addr >= 0x8000) {
+        *handled = true;
+        uint32_t total_8k = c->prg_rom_size / 8192;
+        if (total_8k == 0) return 0;
+
+        uint32_t bank = 0;
+        bool prg_mode = (d->bank_select & 0x40) != 0;
+
+        if (addr < 0xA000) {
+            bank = prg_mode ? (total_8k - 2) : d->bank_regs[6];
+        } else if (addr < 0xC000) {
+            bank = d->bank_regs[7];
+        } else if (addr < 0xE000) {
+            bank = prg_mode ? d->bank_regs[6] : (total_8k - 2);
+        } else {
+            bank = total_8k - 1;
+        }
+        return c->prg_rom[(bank % total_8k) * 8192 + (addr & 0x1FFF)];
+    }
+
+    return 0;
+}
+
+static void mmc3_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        if ((d->prg_ram_protect & 0xC0) == 0x80 && c->prg_ram && c->prg_ram_size > 0) {
+            c->prg_ram[addr - 0x6000] = val;
+        }
         return;
     }
 
-    CPU6502 *cpu = (CPU6502*)c->cpu_context;
+    if (addr < 0x8000) return;
 
-    if (address >= 0x8000 && address <= 0x9FFF) {
-        if ((address & 1) == 0) {
-            c->mapper_state[8] = data;
-        } else {
-            uint8_t target_reg = c->mapper_state[8] & 0x07;
-            c->mapper_state[target_reg] = data;
-        }
-    } else if (address >= 0xA000 && address <= 0xBFFF) {
-        if ((address & 1) == 0) {
-            if (c->mirroring != MIRROR_FOUR_SCREEN) {
-                c->mirroring = (data & 1) ? MIRROR_HORIZONTAL : MIRROR_VERTICAL;
-            }
-        }
-    } else if (address >= 0xC000 && address <= 0xDFFF) {
-        if ((address & 1) == 0) {
-            c->mapper_state[9] = data;
-        } else {
-            c->mapper_state[12] = 1;
-        }
-    } else {
-        if ((address & 1) == 0) {
-            c->mapper_state[11] = 0;
-            if (cpu) {
-                cpu_set_irq_line(cpu, 0, false);
-            }
-        } else {
-            c->mapper_state[11] = 1;
-        }
+    switch (addr & 0xE001) {
+        case 0x8000: d->bank_select = val; break;
+        case 0x8001: d->bank_regs[d->bank_select & 0x07] = val; break;
+        case 0xA000: d->mirroring = val & 0x01; break;
+        case 0xA001: d->prg_ram_protect = val; break;
+        case 0xC000: d->irq_latch = val; break;
+        case 0xC001: d->irq_reload = true; break;
+        case 0xE000:
+            d->irq_enabled = false;
+            c->nes->lines.irq_line = false;
+            cpu_set_irq_line(&c->nes->cpu, 0, false);
+            break;
+        case 0xE001: 
+            d->irq_enabled = true; 
+            break;
     }
 }
 
-static uint8_t mmc3_read_chr(void *cart, uint16_t address) {
-    Cartridge *c = (Cartridge*)cart;
+static uint8_t mmc3_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+    if (addr >= 0x2000) return 0;
+
+    *handled = true;
     if (c->chr_rom_size == 0) return 0;
 
-    uint8_t bank_select = c->mapper_state[8];
-    uint8_t chr_mode = (bank_select >> 7) & 0x01;
+    uint32_t total_1k = c->chr_rom_size / 1024;
+    if (total_1k == 0) return 0;
+
     uint32_t bank = 0;
-    uint16_t sub_addr = address & 0x03FF;
+    bool chr_mode = (d->bank_select & 0x80) != 0;
 
-    if (chr_mode == 0) {
-        if (address < 0x0400) bank = c->mapper_state[0] & 0xFE;
-        else if (address < 0x0800) bank = c->mapper_state[0] | 0x01;
-        else if (address < 0x0C00) bank = c->mapper_state[1] & 0xFE;
-        else if (address < 0x1000) bank = c->mapper_state[1] | 0x01;
-        else if (address < 0x1400) bank = c->mapper_state[2];
-        else if (address < 0x1800) bank = c->mapper_state[3];
-        else if (address < 0x1C00) bank = c->mapper_state[4];
-        else bank = c->mapper_state[5];
-    } else {
-        if (address < 0x0400) bank = c->mapper_state[2];
-        else if (address < 0x0800) bank = c->mapper_state[3];
-        else if (address < 0x0C00) bank = c->mapper_state[4];
-        else if (address < 0x1000) bank = c->mapper_state[5];
-        else if (address < 0x1400) bank = c->mapper_state[0] & 0xFE;
-        else if (address < 0x1800) bank = c->mapper_state[0] | 0x01;
-        else if (address < 0x1C00) bank = c->mapper_state[1] & 0xFE;
-        else bank = c->mapper_state[1] | 0x01;
-    }
-
-    uint32_t total_banks = c->chr_rom_size / 1024;
-    bank %= total_banks;
-    return c->chr_rom[bank * 1024 + sub_addr];
-}
-
-static void mmc3_write_chr(void *cart, uint16_t address, uint8_t data) {
-    Cartridge *c = (Cartridge*)cart;
-    if (c->chr_rom_size == 0) return;
-
-    //uint32_t total_banks = c->chr_rom_size / 1024;
-    uint32_t offset = (address & 0x03FF) + (address / 1024) * 1024;
-    c->chr_rom[offset % c->chr_rom_size] = data;
-}
-
-static void mmc3_clock_irq(void *cart, void *cpu) {
-    Cartridge *c = (Cartridge*)cart;
-    CPU6502 *cpu_ptr = (CPU6502*)cpu;
-    if (cpu_ptr) {
-        c->cpu_context = cpu_ptr;
-    }
-
-    if (c->mapper_state[10] == 0 || c->mapper_state[12] != 0) {
-        c->mapper_state[10] = c->mapper_state[9];
-        c->mapper_state[12] = 0;
-
-        if (c->mapper_state[10] == 0 && c->mapper_state[11] != 0) {
-            if (cpu_ptr) {
-                cpu_set_irq_line(cpu_ptr, 0, true);
-            }
+    if (!chr_mode) {
+        if (addr < 0x0800) {
+            bank = (d->bank_regs[0] & 0xFE) | ((addr >> 10) & 1);
+        } else if (addr < 0x1000) {
+            bank = (d->bank_regs[1] & 0xFE) | ((addr >> 10) & 1);
+        } else if (addr < 0x1400) {
+            bank = d->bank_regs[2];
+        } else if (addr < 0x1800) {
+            bank = d->bank_regs[3];
+        } else if (addr < 0x1C00) {
+            bank = d->bank_regs[4];
+        } else {
+            bank = d->bank_regs[5];
         }
     } else {
-        c->mapper_state[10]--;
-        if (c->mapper_state[10] == 0 && c->mapper_state[11] != 0) {
-            if (cpu_ptr) {
-                cpu_set_irq_line(cpu_ptr, 0, true);
-            }
+        if (addr < 0x0400) {
+            bank = d->bank_regs[2];
+        } else if (addr < 0x0800) {
+            bank = d->bank_regs[3];
+        } else if (addr < 0x0C00) {
+            bank = d->bank_regs[4];
+        } else if (addr < 0x1000) {
+            bank = d->bank_regs[5];
+        } else if (addr < 0x1800) {
+            bank = (d->bank_regs[0] & 0xFE) | (((addr - 0x1000) >> 10) & 1);
+        } else {
+            bank = (d->bank_regs[1] & 0xFE) | (((addr - 0x1800) >> 10) & 1);
         }
     }
+
+    uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
+    return c->chr_rom[offset % c->chr_rom_size];
 }
 
-static void mmc3_reset_irq(void *cart) {
-    Cartridge *c = (Cartridge*)cart;
-    CPU6502 *cpu = (CPU6502*)c->cpu_context;
-    if (cpu) {
-        cpu_set_irq_line(cpu, 0, false);
+static void mmc3_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+    if (addr >= 0x2000 || c->chr_rom_size == 0) return;
+
+    uint32_t total_1k = c->chr_rom_size / 1024;
+    if (total_1k == 0) return;
+
+    uint32_t bank = 0;
+    bool chr_mode = (d->bank_select & 0x80) != 0;
+
+    if (!chr_mode) {
+        if (addr < 0x0800) {
+            bank = (d->bank_regs[0] & 0xFE) | ((addr >> 10) & 1);
+        } else if (addr < 0x1000) {
+            bank = (d->bank_regs[1] & 0xFE) | ((addr >> 10) & 1);
+        } else if (addr < 0x1400) {
+            bank = d->bank_regs[2];
+        } else if (addr < 0x1800) {
+            bank = d->bank_regs[3];
+        } else if (addr < 0x1C00) {
+            bank = d->bank_regs[4];
+        } else {
+            bank = d->bank_regs[5];
+        }
+    } else {
+        if (addr < 0x0400) {
+            bank = d->bank_regs[2];
+        } else if (addr < 0x0800) {
+            bank = d->bank_regs[3];
+        } else if (addr < 0x0C00) {
+            bank = d->bank_regs[4];
+        } else if (addr < 0x1000) {
+            bank = d->bank_regs[5];
+        } else if (addr < 0x1800) {
+            bank = (d->bank_regs[0] & 0xFE) | (((addr - 0x1000) >> 10) & 1);
+        } else {
+            bank = (d->bank_regs[1] & 0xFE) | (((addr - 0x1800) >> 10) & 1);
+        }
     }
+
+    uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
+    c->chr_rom[offset % c->chr_rom_size] = val;
 }
+
+static uint16_t mmc3_remap_ciram(Cartridge *c, uint16_t addr, bool *ciram_ce) {
+    MMC3Data *d = (MMC3Data*)c->mapper_data;
+    *ciram_ce = true;
+    
+    if (c->mirroring == MIRROR_FOUR_SCREEN) {
+        return cartridge_default_remap_ciram(MIRROR_FOUR_SCREEN, addr);
+    }
+    
+    MirroringMode mode = (d->mirroring & 1) ? MIRROR_HORIZONTAL : MIRROR_VERTICAL;
+    return cartridge_default_remap_ciram(mode, addr);
+}
+
+static const MapperInterface mmc3_interface = {
+    .reset = mmc3_reset,
+    .destroy = mmc3_destroy,
+    .cpu_read = mmc3_cpu_read,
+    .cpu_write = mmc3_cpu_write,
+    .ppu_read = mmc3_ppu_read,
+    .ppu_write = mmc3_ppu_write,
+    .ppu_addr_change = NULL,
+    .ppu_dot = mmc3_ppu_dot,
+    .clock_m2 = NULL,
+    .remap_ciram_addr = mmc3_remap_ciram
+};
 
 void mapper_004_init(Cartridge *cart) {
-    cart->read_prg = mmc3_read_prg;
-    cart->write_prg = mmc3_write_prg;
-    cart->read_chr = mmc3_read_chr;
-    cart->write_chr = mmc3_write_chr;
-    cart->clock_irq = mmc3_clock_irq;
-    cart->reset_irq = mmc3_reset_irq;
-    cart->mapper_state[0] = 0;
-    cart->mapper_state[1] = 0;
-    cart->mapper_state[6] = 0;
-    cart->mapper_state[7] = 0;
-    cart->mapper_state[8] = 0;
+    MMC3Data *data = calloc(1, sizeof(MMC3Data));
+    cart->mapper_data = data;
+    cart->vtable = &mmc3_interface;
+    mmc3_reset(cart);
 }

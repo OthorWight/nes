@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "cartridge.h"
-#include "cpu6502.h"
+
+typedef struct NES NES;
 
 typedef struct {
     uint8_t x;
@@ -15,7 +15,6 @@ typedef struct {
 } ScanlineSprite;
 
 typedef struct {
-    uint8_t vram[2048];
     uint8_t palette_ram[32];
     uint8_t oam_ram[256];
 
@@ -29,6 +28,7 @@ typedef struct {
     uint8_t ppu_status;
     uint8_t oam_addr;
     uint8_t buffered_data;
+    uint16_t bus_address;
 
     int scanline;
     int cycle;
@@ -46,12 +46,7 @@ typedef struct {
     uint8_t  bg_next_tile_lsb;
     uint8_t  bg_next_tile_msb;
     bool     odd_frame;
-    bool     a12_state;
-    int      a12_low_counter;
 
-    // Background tile cache for active 8-pixel span
-    uint8_t bg_tile_low;
-    uint8_t bg_tile_high;
     uint8_t bg_palette_index;
 
     ScanlineSprite scanline_sprites[8];
@@ -64,9 +59,13 @@ typedef struct {
     uint32_t screen_buffer[256 * 240];
 } PPU2C02;
 
-void ppu_init(PPU2C02 *ppu);
-uint8_t ppu_read_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, CPU6502 *cpu); 
-void ppu_write_reg(PPU2C02 *ppu, Cartridge *cart, uint16_t address, uint8_t data, CPU6502 *cpu); 
-void ppu_step(PPU2C02 *ppu, CPU6502 *cpu, Cartridge *cart);
+void    ppu_init(PPU2C02 *ppu);
+void    ppu_step(NES *nes);
+
+uint8_t ppu_read_reg(NES *nes, uint16_t address);
+void    ppu_write_reg(NES *nes, uint16_t address, uint8_t data);
+
+uint8_t ppu_palette_read(PPU2C02 *ppu, uint16_t addr);
+void    ppu_palette_write(PPU2C02 *ppu, uint16_t addr, uint8_t data);
 
 #endif

@@ -1,155 +1,178 @@
 #include "mappers.h"
-#include "cpu6502.h"
+#include "cartridge.h"
+#include "nes_system.h"
+#include <stdlib.h>
 #include <string.h>
 
-static uint8_t fme7_read_prg(void *cart, uint16_t address) {
-    Cartridge *c = (Cartridge*)cart;
-    uint32_t total_banks = c->prg_rom_size / 8192;
-    if (total_banks == 0) return 0;
+typedef struct {
+    uint8_t  cmd;
+    uint8_t  chr_banks[8];
+    uint8_t  prg_banks[4]; // 0: $6000, 1: $8000, 2: $A000, 3: $C000
+    uint8_t  irq_ctrl;
+    uint16_t irq_counter;
+} FME7Data;
 
-    if (address >= 0x6000 && address <= 0x7FFF) {
-        uint8_t reg = c->mapper_state[9];
+static void fme7_reset(Cartridge *c) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+    memset(d, 0, sizeof(FME7Data));
+
+    uint32_t total_8k = c->prg_rom_size / 8192;
+    d->prg_banks[0] = 0x00;
+    d->prg_banks[1] = 0;
+    d->prg_banks[2] = 1;
+    d->prg_banks[3] = (total_8k >= 2) ? (total_8k - 2) : 0;
+
+    c->mirroring = MIRROR_VERTICAL;
+    c->nes->lines.irq_line = false;
+}
+
+static void fme7_destroy(Cartridge *c) {
+    free(c->mapper_data);
+    c->mapper_data = NULL;
+}
+
+static void fme7_clock_m2(Cartridge *c) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+
+    if (d->irq_ctrl & 0x80) {
+        uint16_t prev = d->irq_counter;
+        d->irq_counter--;
+
+        if (prev == 0 && d->irq_counter == 0xFFFF) {
+            if (d->irq_ctrl & 0x01) {
+                c->nes->lines.irq_line = true;
+            }
+        }
+    }
+}
+
+static uint8_t fme7_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+    uint32_t total_8k = c->prg_rom_size / 8192;
+    if (total_8k == 0) return 0;
+
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        *handled = true;
+        uint8_t reg = d->prg_banks[0];
+        
         if (!(reg & 0x80)) {
-            uint32_t bank = (reg & 0x3F) % total_banks;
-            return c->prg_rom[bank * 8192 + (address - 0x6000)];
+            // Bit 7 is 0: Map ROM into $6000-$7FFF
+            uint32_t bank = (reg & 0x3F) % total_8k;
+            return c->prg_rom[bank * 8192 + (addr - 0x6000)];
         } else {
-            if ((reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
-                return c->prg_ram[(address - 0x6000) % c->prg_ram_size];
+            // Bit 7 is 1: Map RAM into $6000-$7FFF (Bit 6 is ignored for reads)
+            if (c->prg_ram && c->prg_ram_size > 0) {
+                return c->prg_ram[(addr - 0x6000) % c->prg_ram_size];
             }
             return 0;
         }
     }
 
-    uint32_t bank = 0;
-    if (address >= 0x8000 && address <= 0x9FFF) {
-        bank = c->mapper_state[10] & 0x3F;
-    } else if (address >= 0xA000 && address <= 0xBFFF) {
-        bank = c->mapper_state[11] & 0x3F;
-    } else if (address >= 0xC000 && address <= 0xDFFF) {
-        bank = c->mapper_state[12] & 0x3F;
-    } else if (address >= 0xE000) {
-        bank = total_banks - 1;
+    if (addr >= 0x8000) {
+        *handled = true;
+        uint32_t bank = 0;
+        if (addr <= 0x9FFF) {
+            bank = d->prg_banks[1] & 0x3F;
+        } else if (addr <= 0xBFFF) {
+            bank = d->prg_banks[2] & 0x3F;
+        } else if (addr <= 0xDFFF) {
+            bank = d->prg_banks[3] & 0x3F;
+        } else {
+            bank = total_8k - 1;
+        }
+
+        uint32_t offset = (bank % total_8k) * 8192 + (addr & 0x1FFF);
+        return c->prg_rom[offset % c->prg_rom_size];
     }
 
-    bank %= total_banks;
-    return c->prg_rom[bank * 8192 + (address & 0x1FFF)];
+    return 0;
 }
 
-static void fme7_write_prg(void *cart, uint16_t address, uint8_t data) {
-    Cartridge *c = (Cartridge*)cart;
-    if (address >= 0x6000 && address <= 0x7FFF) {
-        uint8_t reg = c->mapper_state[9];
+static void fme7_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        uint8_t reg = d->prg_banks[0];
+        // Bit 7 must be 1 (RAM Enable) AND Bit 6 must be 1 (Write Enable)
         if ((reg & 0x80) && (reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[(address - 0x6000) % c->prg_ram_size] = data;
+            c->prg_ram[(addr - 0x6000) % c->prg_ram_size] = val;
         }
         return;
     }
 
-    CPU6502 *cpu = (CPU6502*)c->cpu_context;
+    if (addr >= 0x8000 && addr <= 0x9FFF) {
+        d->cmd = val & 0x0F;
+        return;
+    }
 
-    if (address >= 0x8000 && address <= 0x9FFF) {
-        c->mapper_state[0] = data & 0x0F;
-    } else if (address >= 0xA000 && address <= 0xBFFF) {
-        uint8_t cmd = c->mapper_state[0];
-        if (cmd <= 7) {
-            c->mapper_state[1 + cmd] = data;
-        } else if (cmd >= 8 && cmd <= 11) {
-            c->mapper_state[9 + (cmd - 8)] = data;
-        } else if (cmd == 12) {
-            c->mapper_state[13] = data & 0x03;
-            switch (data & 0x03) {
+    if (addr >= 0xA000 && addr <= 0xBFFF) {
+        if (d->cmd <= 7) {
+            d->chr_banks[d->cmd] = val;
+        } else if (d->cmd >= 8 && d->cmd <= 11) {
+            d->prg_banks[d->cmd - 8] = val;
+        } else if (d->cmd == 12) {
+            switch (val & 0x03) {
                 case 0: c->mirroring = MIRROR_VERTICAL; break;
                 case 1: c->mirroring = MIRROR_HORIZONTAL; break;
                 case 2: c->mirroring = MIRROR_ONE_SCREEN_LOW; break;
                 case 3: c->mirroring = MIRROR_ONE_SCREEN_HIGH; break;
             }
-        } else if (cmd == 13) {
-            c->mapper_state[14] = data;
-            c->mapper_state[17] = 0;
-            if (cpu) {
-                cpu_set_irq_line(cpu, 0, false);
-            }
-        } else if (cmd == 14) {
-            c->mapper_state[15] = data;
-        } else if (cmd == 15) {
-            c->mapper_state[16] = data;
+        } else if (d->cmd == 13) {
+            d->irq_ctrl = val;
+            c->nes->lines.irq_line = false;
+        } else if (d->cmd == 14) {
+            d->irq_counter = (d->irq_counter & 0xFF00) | val;
+        } else if (d->cmd == 15) {
+            d->irq_counter = (d->irq_counter & 0x00FF) | ((uint16_t)val << 8);
         }
     }
 }
 
-static uint8_t fme7_read_chr(void *cart, uint16_t address) {
-    Cartridge *c = (Cartridge*)cart;
-    if (c->chr_rom_size == 0) return 0;
-    uint32_t total_banks = c->chr_rom_size / 1024;
-    if (total_banks == 0) return 0;
+static uint8_t fme7_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+    if (addr >= 0x2000 || c->chr_rom_size == 0) return 0;
 
-    uint32_t bank_idx = address / 1024;
-    uint32_t bank = c->mapper_state[1 + bank_idx];
-    bank %= total_banks;
-    return c->chr_rom[bank * 1024 + (address & 0x03FF)];
+    *handled = true;
+    uint32_t total_1k = c->chr_rom_size / 1024;
+    if (total_1k == 0) return 0;
+
+    uint32_t bank = d->chr_banks[(addr / 1024) & 0x07];
+    uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
+    return c->chr_rom[offset % c->chr_rom_size];
 }
 
-static void fme7_write_chr(void *cart, uint16_t address, uint8_t data) {
-    Cartridge *c = (Cartridge*)cart;
-    if (c->chr_rom_size == 0) return;
-    uint32_t total_banks = c->chr_rom_size / 1024;
-    if (total_banks == 0) return;
+static void fme7_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
+    FME7Data *d = (FME7Data*)c->mapper_data;
+    if (addr >= 0x2000 || c->chr_rom_size == 0) return;
 
-    uint32_t bank_idx = address / 1024;
-    uint32_t bank = c->mapper_state[1 + bank_idx];
-    bank %= total_banks;
-    c->chr_rom[bank * 1024 + (address & 0x03FF)] = data;
+    uint32_t total_1k = c->chr_rom_size / 1024;
+    if (total_1k == 0) return;
+
+    uint32_t bank = d->chr_banks[(addr / 1024) & 0x07];
+    uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
+    c->chr_rom[offset % c->chr_rom_size] = val;
 }
 
-static void fme7_clock_irq(void *cart, void *cpu) {
-    Cartridge *c = (Cartridge*)cart;
-    CPU6502 *cpu_ptr = (CPU6502*)cpu;
-    if (cpu_ptr) {
-        c->cpu_context = cpu_ptr;
-    }
-
-    uint8_t control = c->mapper_state[14];
-    if (control & 0x80) {
-        uint16_t counter = c->mapper_state[15] | (c->mapper_state[16] << 8);
-        uint16_t prev_counter = counter;
-        counter--;
-        c->mapper_state[15] = counter & 0xFF;
-        c->mapper_state[16] = (counter >> 8) & 0xFF;
-
-        if (prev_counter == 0 && counter == 0xFFFF) {
-            if (control & 0x01) {
-                c->mapper_state[17] = 1;
-                if (cpu_ptr) {
-                    cpu_set_irq_line(cpu_ptr, 0, true);
-                }
-            }
-        }
-    }
+static uint16_t fme7_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
+    *ciram_ce = true;
+    return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
-static void fme7_reset_irq(void *cart) {
-    Cartridge *c = (Cartridge*)cart;
-    c->mapper_state[17] = 0;
-    CPU6502 *cpu = (CPU6502*)c->cpu_context;
-    if (cpu) {
-        cpu_set_irq_line(cpu, 0, false);
-    }
-}
+static const MapperInterface fme7_interface = {
+    .reset = fme7_reset,
+    .destroy = fme7_destroy,
+    .cpu_read = fme7_cpu_read,
+    .cpu_write = fme7_cpu_write,
+    .ppu_read = fme7_ppu_read,
+    .ppu_write = fme7_ppu_write,
+    .ppu_addr_change = NULL,
+    .clock_m2 = fme7_clock_m2,
+    .remap_ciram_addr = fme7_remap_ciram_addr
+};
 
 void mapper_069_init(Cartridge *cart) {
-    cart->read_prg = fme7_read_prg;
-    cart->write_prg = fme7_write_prg;
-    cart->read_chr = fme7_read_chr;
-    cart->write_chr = fme7_write_chr;
-    cart->clock_irq = fme7_clock_irq;
-    cart->reset_irq = fme7_reset_irq;
-    memset(cart->mapper_state, 0, sizeof(cart->mapper_state));
-    uint32_t total_banks = cart->prg_rom_size / 8192;
-    if (total_banks > 0) {
-        cart->mapper_state[10] = 0;
-        cart->mapper_state[11] = 1;
-        cart->mapper_state[12] = (total_banks >= 2) ? (total_banks - 2) : 0;
-        cart->mapper_state[9] = 0x00;
-        cart->cpu_clocked_irq = true;
-    }
+    FME7Data *data = calloc(1, sizeof(FME7Data));
+    cart->mapper_data = data;
+    cart->vtable = &fme7_interface;
+    fme7_reset(cart);
 }

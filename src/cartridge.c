@@ -1,15 +1,14 @@
 #include "cartridge.h"
 #include "mappers.h"
-#include "cpu6502.h"
+#include "nes_system.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* iNES Header constants and defaults */
 #define INES_SIGNATURE_N      'N'
 #define INES_SIGNATURE_E      'E'
 #define INES_SIGNATURE_S      'S'
-#define INES_SIGNATURE_EOF    0x1A  /* MS-DOS EOF control character */
+#define INES_SIGNATURE_EOF    0x1A
 
 #define PRG_CHUNK_SIZE        16384
 #define CHR_CHUNK_SIZE        8192
@@ -17,10 +16,6 @@
 
 #define PRG_RAM_DEFAULT_SIZE  8192
 #define MMC5_PRG_RAM_SIZE     65536
-
-// ==========================================
-// POWER-OF-TWO PADDING & MIRRORING HELPER
-// ==========================================
 
 static void pad_and_mirror_rom(uint8_t **rom_data, uint32_t *rom_size) {
     uint32_t orig_size = *rom_size;
@@ -43,14 +38,13 @@ static void pad_and_mirror_rom(uint8_t **rom_data, uint32_t *rom_size) {
             chunk_size *= 2;
         }
         if (chunk_size > remaining) chunk_size = remaining;
-        
+
         memcpy(new_data + current_size, new_data + current_size - chunk_size, chunk_size);
         current_size += chunk_size;
     }
     *rom_size = padded_size;
 }
 
-/* iNES Header decoding helper functions */
 static inline bool validate_ines_header(const uint8_t *header) {
     return (header[0] == INES_SIGNATURE_N &&
             header[1] == INES_SIGNATURE_E &&
@@ -88,6 +82,23 @@ static void generate_save_filepath(char *dest, const char *src, size_t max_len) 
     }
 }
 
+uint16_t cartridge_default_remap_ciram(MirroringMode mode, uint16_t addr) {
+    uint16_t offset = addr & 0x0FFF;
+    switch (mode) {
+        case MIRROR_HORIZONTAL:
+            return (offset & 0x0800) ? 0x0400 + (offset & 0x03FF) : (offset & 0x03FF);
+        case MIRROR_VERTICAL:
+            return (offset & 0x0400) ? 0x0400 + (offset & 0x03FF) : (offset & 0x03FF);
+        case MIRROR_ONE_SCREEN_LOW:
+            return (offset & 0x03FF);
+        case MIRROR_ONE_SCREEN_HIGH:
+            return 0x0400 + (offset & 0x03FF);
+        case MIRROR_FOUR_SCREEN:
+        default:
+            return offset & 0x0FFF;
+    }
+}
+
 static bool initialize_mapper(Cartridge *cart) {
     switch (cart->mapper_id) {
         case 0:   mapper_000_init(cart); break;
@@ -110,6 +121,7 @@ static bool initialize_mapper(Cartridge *cart) {
         case 34:  mapper_034_init(cart); break;
         case 66:  mapper_066_init(cart); break;
         case 69:  mapper_069_init(cart); break;
+        case 71:  mapper_071_init(cart); break; // Added Mapper 71
         case 206: mapper_206_init(cart); break;
         case 227: mapper_227_init(cart); break;
         default:
@@ -119,11 +131,7 @@ static bool initialize_mapper(Cartridge *cart) {
     return true;
 }
 
-// ==========================================
-// LOADER & LIFECYCLE
-// ==========================================
-
-Cartridge* cartridge_load(const char *filepath) {
+Cartridge* cartridge_load(NES *nes, const char *filepath) {
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         fprintf(stderr, "Error: Could not open iNES file '%s'\n", filepath);
@@ -148,6 +156,8 @@ Cartridge* cartridge_load(const char *filepath) {
         fclose(f);
         return NULL;
     }
+
+    cart->nes = nes;
 
     uint8_t prg_rom_chunks = header[4];
     uint8_t chr_rom_chunks = header[5];
@@ -191,9 +201,9 @@ Cartridge* cartridge_load(const char *filepath) {
     cart->prg_ram_size = PRG_RAM_DEFAULT_SIZE;
     cart->prg_ram = calloc(1, cart->prg_ram_size);
 
+    generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath));
     cart->has_battery = ines_has_battery(flags6);
     if (cart->has_battery) {
-        generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath));
         FILE *sf = fopen(cart->save_filepath, "rb");
         if (sf) {
             fread(cart->prg_ram, 1, cart->prg_ram_size, sf);
@@ -224,6 +234,11 @@ void cartridge_save_battery(Cartridge *cart) {
 void cartridge_free(Cartridge *cart) {
     if (cart) {
         cartridge_save_battery(cart);
+        if (cart->vtable && cart->vtable->destroy) {
+            cart->vtable->destroy(cart);
+        } else if (cart->mapper_data) {
+            free(cart->mapper_data);
+        }
         free(cart->prg_rom);
         free(cart->chr_rom);
         free(cart->prg_ram);

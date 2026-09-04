@@ -29,6 +29,7 @@ typedef struct {
     uint16_t program_counter;
     uint8_t  status_flags;
     uint64_t cycle_count;
+    uint32_t stall_cycles;
 
     // Hardware lines & latch states
     uint8_t  irq_lines;
@@ -49,14 +50,13 @@ typedef struct {
 
 typedef uint8_t (*CPUReadCallback)(void *bus_context, uint16_t address);
 typedef void    (*CPUWriteCallback)(void *bus_context, uint16_t address, uint8_t data);
-typedef void    (*CPUTickCallback)(void *bus_context);
+typedef void    (*CPUCycleTickCallback)(void *bus_context);
 
 typedef struct {
     void *bus_context;
-    CPUReadCallback  read;
-    CPUWriteCallback write;
-    CPUTickCallback  tick;
-    CPUTickCallback  ppu_tick;
+    CPUReadCallback      read;
+    CPUWriteCallback     write;
+    CPUCycleTickCallback cycle_tick;
 } CPUBus;
 
 void cpu_init(CPU6502 *cpu, CPUModel model);

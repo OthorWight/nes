@@ -1,4 +1,5 @@
 #include "debugger.h"
+#include "nes_system.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,11 +12,7 @@ uint16_t debugger_view_pc = 0;
 int debugger_selected_line = 0;
 uint16_t debugger_line_pcs[12] = {0};
 
-extern uint8_t nes_ram[2048];
-extern uint8_t mock_apu_io[24];
-extern Cartridge *loaded_cartridge;
-extern PPU2C02 nes_ppu;
-extern APU2A03 nes_apu;
+extern NES nes_sys;
 
 #define LOG_BUFFER_MAX 1024
 #define MAX_PATTERN_LEN 16
@@ -30,8 +27,6 @@ static void process_log_buffer(bool flush_all) {
     if (!f) return;
 
     int i = 0;
-    // If not flushing all, we must leave at least 2 * MAX_PATTERN_LEN lines in the buffer
-    // so we don't accidentally cut off an active, incomplete repeating loop.
     int limit = flush_all ? log_buffer_count : (log_buffer_count - 2 * MAX_PATTERN_LEN);
 
     while (i < limit) {
@@ -58,11 +53,9 @@ static void process_log_buffer(bool flush_all) {
             }
 
             if (count > 2) {
-                // Write the representative loop iteration
                 for (int j = 0; j < pat_len; j++) {
                     fputs(log_buffer[i + j], f);
                 }
-                // Write the repeat summary line
                 fprintf(f, "    ^^^ [Repeated %dx across %d steps] ^^^\n", count, count * pat_len);
                 i += count * pat_len;
                 matched = true;
@@ -78,7 +71,6 @@ static void process_log_buffer(bool flush_all) {
 
     fclose(f);
 
-    // Shift any remaining lines in the buffer to the front
     if (i > 0 && i < log_buffer_count) {
         memmove(&log_buffer[0], &log_buffer[i], (log_buffer_count - i) * sizeof(log_buffer[0]));
         memmove(&match_buffer[0], &match_buffer[i], (log_buffer_count - i) * sizeof(match_buffer[0]));
@@ -158,14 +150,17 @@ static const uint8_t op_modes[256] = {
 };
 
 uint8_t test_bus_peek(uint16_t address) {
-    if (address <= 0x1FFF) {
-        return nes_ram[address & 0x07FF];
-    } else if (address >= 0x2000 && address <= 0x3FFF) {
-        return nes_ppu.buffered_data;
-    } else if (address >= 0x4000 && address <= 0x4017) {
-        return mock_apu_io[address - 0x4000];
-    } else if (address >= 0x4018 && loaded_cartridge != NULL) {
-        return loaded_cartridge->read_prg(loaded_cartridge, address);
+    if (address < 0x2000) {
+        return nes_sys.wram[address & 0x07FF];
+    }
+    if (address >= 0x6000 && address <= 0x7FFF && nes_sys.cart && nes_sys.cart->prg_ram) {
+        return nes_sys.cart->prg_ram[address - 0x6000];
+    }
+    if (address >= 0x8000 && nes_sys.cart && nes_sys.cart->prg_rom) {
+        bool handled = false;
+        if (nes_sys.cart->vtable && nes_sys.cart->vtable->cpu_read) {
+            return nes_sys.cart->vtable->cpu_read(nes_sys.cart, address, &handled);
+        }
     }
     return 0;
 }
@@ -276,128 +271,6 @@ void debugger_step_instruction(CPU6502 *cpu, CPUBus *bus) {
     debugger_selected_line = 0;
 }
 
-static void get_mapper_prg_banks(Cartridge *c, int *b8, int *bA, int *bC, int *bE) {
-    uint32_t total_banks = c->prg_rom_size / 8192;
-    if (total_banks == 0) total_banks = 1;
-    *b8 = 0; *bA = 0; *bC = 0; *bE = 0;
-
-    switch (c->mapper_id) {
-        case 0: // NROM
-        case 3: // CNROM
-        default:
-            *b8 = 0;
-            *bA = 1 % total_banks;
-            *bC = (total_banks > 2) ? 2 : 0;
-            *bE = (total_banks > 2) ? 3 : 1 % total_banks;
-            break;
-        case 1: { // MMC1
-            uint8_t control = c->mapper_state[2];
-            uint8_t prg_bank = c->mapper_state[5] & 0x0F;
-            uint8_t prg_mode = (control >> 2) & 0x03;
-            uint32_t total_16k = c->prg_rom_size / 16384;
-            if (total_16k == 0) total_16k = 1;
-            if (prg_mode == 0 || prg_mode == 1) {
-                uint32_t bank = (prg_bank & 0xFE) % total_16k;
-                *b8 = bank * 2;
-                *bA = bank * 2 + 1;
-                *bC = bank * 2 + 2;
-                *bE = bank * 2 + 3;
-            } else if (prg_mode == 2) {
-                *b8 = 0;
-                *bA = 1;
-                *bC = (prg_bank % total_16k) * 2;
-                *bE = (prg_bank % total_16k) * 2 + 1;
-            } else {
-                *b8 = (prg_bank % total_16k) * 2;
-                *bA = (prg_bank % total_16k) * 2 + 1;
-                *bC = (total_16k - 1) * 2;
-                *bE = (total_16k - 1) * 2 + 1;
-            }
-            break;
-        }
-        case 2: { // UxROM
-            uint32_t total_16k = c->prg_rom_size / 16384;
-            if (total_16k == 0) total_16k = 1;
-            uint32_t bank = c->mapper_state[0] % total_16k;
-            *b8 = bank * 2;
-            *bA = bank * 2 + 1;
-            *bC = (total_16k - 1) * 2;
-            *bE = (total_16k - 1) * 2 + 1;
-            break;
-        }
-        case 4: { // MMC3
-            uint8_t bank_select = c->mapper_state[8];
-            uint8_t prg_mode = (bank_select >> 6) & 0x01;
-            uint8_t r6 = c->mapper_state[6];
-            uint8_t r7 = c->mapper_state[7];
-            if (prg_mode == 0) {
-                *b8 = r6 % total_banks;
-                *bA = r7 % total_banks;
-                *bC = (total_banks - 2) % total_banks;
-                *bE = (total_banks - 1) % total_banks;
-            } else {
-                *b8 = (total_banks - 2) % total_banks;
-                *bA = r7 % total_banks;
-                *bC = r6 % total_banks;
-                *bE = (total_banks - 1) % total_banks;
-            }
-            break;
-        }
-        case 5: { // MMC5
-            *b8 = (c->mmc5_prg_regs[1] & 0x7F) % total_banks;
-            *bA = (c->mmc5_prg_regs[2] & 0x7F) % total_banks;
-            *bC = (c->mmc5_prg_regs[3] & 0x7F) % total_banks;
-            *bE = (c->mmc5_prg_regs[4] & 0x7F) % total_banks;
-            break;
-        }
-        case 23: { // VRC2/4
-            uint8_t prg_mode = (c->mapper_state[2] >> 1) & 0x01;
-            if (prg_mode == 0) {
-                *b8 = c->mapper_state[0] % total_banks;
-                *bA = c->mapper_state[1] % total_banks;
-                *bC = (total_banks - 2) % total_banks;
-                *bE = (total_banks - 1) % total_banks;
-            } else {
-                *b8 = (total_banks - 2) % total_banks;
-                *bA = c->mapper_state[1] % total_banks;
-                *bC = c->mapper_state[0] % total_banks;
-                *bE = (total_banks - 1) % total_banks;
-            }
-            break;
-        }
-        case 69: { // FME-7
-            *b8 = (c->mapper_state[10] & 0x3F) % total_banks;
-            *bA = (c->mapper_state[11] & 0x3F) % total_banks;
-            *bC = (c->mapper_state[12] & 0x3F) % total_banks;
-            *bE = (total_banks - 1) % total_banks;
-            break;
-        }
-    }
-}
-
-static void get_mapper_irq_status(Cartridge *c, int *counter, bool *enabled) {
-    *counter = 0;
-    *enabled = false;
-    switch (c->mapper_id) {
-        case 4: // MMC3
-            *counter = c->mapper_state[10];
-            *enabled = c->mapper_state[11] != 0;
-            break;
-        case 5: // MMC5
-            *counter = c->mmc5_irq_target;
-            *enabled = c->mmc5_irq_enabled;
-            break;
-        case 23: // VRC2/4
-            *counter = c->mapper_state[21];
-            *enabled = (c->mapper_state[20] & 0x02) != 0;
-            break;
-        case 69: // FME-7
-            *counter = c->mapper_state[15] | (c->mapper_state[16] << 8);
-            *enabled = (c->mapper_state[14] & 0x01) != 0;
-            break;
-    }
-}
-
 void debugger_log_instruction(CPU6502 *cpu) {
     if (!debugger_logging_active) {
         return;
@@ -417,25 +290,13 @@ void debugger_log_instruction(CPU6502 *cpu) {
             cpu->accumulator, cpu->index_x, cpu->index_y,
             cpu->status_flags, cpu->stack_pointer,
             (long long)cpu->cycle_count,
-            nes_ppu.scanline, nes_ppu.cycle);
+            nes_sys.ppu.scanline, nes_sys.ppu.cycle);
 
-    if (loaded_cartridge) {
-        int b8, bA, bC, bE;
-        get_mapper_prg_banks(loaded_cartridge, &b8, &bA, &bC, &bE);
-        len += snprintf(line + len, sizeof(log_buffer[0]) - len, " | M%d PRG:[%02X,%02X,%02X,%02X]",
-                loaded_cartridge->mapper_id, b8, bA, bC, bE);
-
-        if (loaded_cartridge->mapper_id == 4 || loaded_cartridge->mapper_id == 5 ||
-            loaded_cartridge->mapper_id == 23 || loaded_cartridge->mapper_id == 69) {
-            int irq_counter = 0;
-            bool irq_enabled = false;
-            get_mapper_irq_status(loaded_cartridge, &irq_counter, &irq_enabled);
-            len += snprintf(line + len, sizeof(log_buffer[0]) - len, " IRQ:%d/%s", irq_counter, irq_enabled ? "On" : "Off");
-        }
+    if (nes_sys.cart) {
+        len += snprintf(line + len, sizeof(log_buffer[0]) - len, " | M%d", nes_sys.cart->mapper_id);
     }
     snprintf(line + len, sizeof(log_buffer[0]) - len, "\n");
 
-    // Generate match string (everything before " CYC:")
     char *cyc_ptr = strstr(line, " CYC:");
     int match_len = cyc_ptr ? (int)(cyc_ptr - line) : (int)strlen(line);
     if (match_len >= (int)sizeof(match_buffer[0])) {
@@ -476,7 +337,7 @@ void debugger_render(SDL_Renderer *renderer, CPU6502 *cpu) {
     uint16_t dis_pc = debugger_view_pc;
     for (int i = 0; i < 12; i++) {
         debugger_line_pcs[i] = dis_pc;
-        char dis_buf[64]; // Max disassembled instruction string length is around 40 chars, 64 is safe.
+        char dis_buf[64];
         disassemble_instruction(dis_pc, dis_buf, sizeof(dis_buf), cpu);
         
         char prefix[8] = "  ";
@@ -511,10 +372,10 @@ void debugger_render(SDL_Renderer *renderer, CPU6502 *cpu) {
     draw_string(renderer, "--------------------------------", 0, 202, 0x444444);
 
     uint8_t sp = cpu->stack_pointer;
-    uint8_t s1 = nes_ram[0x0100 | ((sp + 1) & 0xFF)];
-    uint8_t s2 = nes_ram[0x0100 | ((sp + 2) & 0xFF)];
-    uint8_t s3 = nes_ram[0x0100 | ((sp + 3) & 0xFF)];
-    uint8_t s4 = nes_ram[0x0100 | ((sp + 4) & 0xFF)];
+    uint8_t s1 = nes_sys.wram[0x0100 | ((sp + 1) & 0xFF)];
+    uint8_t s2 = nes_sys.wram[0x0100 | ((sp + 2) & 0xFF)];
+    uint8_t s3 = nes_sys.wram[0x0100 | ((sp + 3) & 0xFF)];
+    uint8_t s4 = nes_sys.wram[0x0100 | ((sp + 4) & 0xFF)];
     snprintf(buf, sizeof(buf), "Stack: [ %02X %02X %02X %02X ]", s1, s2, s3, s4);
     draw_string(renderer, buf, 8, 210, 0x00FF00);
 

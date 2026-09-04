@@ -1,13 +1,16 @@
 #!/bin/bash
 set -e
 
-# Navigate to the script's directory to ensure relative paths work
 cd "$(dirname "$0")"
 
-# Function to check and install missing dependencies
 install_dependencies() {
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/debian_version ]; then
+        if [ -f /etc/arch-release ]; then
+            if ! command -v gcc &> /dev/null || ! command -v pkg-config &> /dev/null || ! pkg-config --exists sdl2 &> /dev/null; then
+                echo "Dependencies missing. Installing via pacman..."
+                sudo pacman -Sy --needed --noconfirm base-devel sdl2 pkgconf
+            fi
+        elif [ -f /etc/debian_version ]; then
             if ! command -v gcc &> /dev/null || ! command -v pkg-config &> /dev/null || ! pkg-config --exists sdl2 &> /dev/null; then
                 echo "Dependencies missing. Installing via apt-get..."
                 sudo apt-get update
@@ -22,10 +25,10 @@ install_dependencies() {
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         if ! command -v brew &> /dev/null; then
-            echo "Homebrew is required to install macOS dependencies. Please install it from https://brew.sh/"
+            echo "Homebrew is required. Install from https://brew.sh/"
             exit 1
         fi
-        if ! command -v gcc &> /dev/null && ! command -v clang &> /dev/null || ! command -v pkg-config &> /dev/null || ! pkg-config --exists sdl2 &> /dev/null; then
+        if ! command -v pkg-config &> /dev/null || ! pkg-config --exists sdl2 &> /dev/null; then
             echo "Dependencies missing. Installing via Homebrew..."
             brew install pkg-config sdl2
         fi
@@ -34,13 +37,16 @@ install_dependencies() {
 
 install_dependencies
 
-echo "Compiling 6502 CPU Emulator Core and Test Runner..."
+echo "Compiling NES Emulator..."
 mkdir -p build
-gcc -Wall -Wextra -std=c11 -O2 -Isrc src/*.c -o build/nes_emulator $(pkg-config --cflags --libs sdl2 || echo "-lSDL2")
+
+SDL_CFLAGS=$(pkg-config --cflags sdl2 2>/dev/null || echo "")
+SDL_LIBS=$(pkg-config --libs sdl2 2>/dev/null || echo "-lSDL2")
+
+gcc -Wall -Wextra -std=c11 -O2 -Isrc src/*.c -o build/nes_emulator ${SDL_CFLAGS} ${SDL_LIBS} -lm
 
 echo "Compilation successful!"
 echo "Launching NES Emulator..."
 echo "----------------------------------------"
-cd build
-./nes_emulator
+(cd build && ./nes_emulator)
 echo "----------------------------------------"

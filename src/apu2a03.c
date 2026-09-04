@@ -1,14 +1,13 @@
 #include "apu2a03.h"
+#include "nes_system.h"
 #include <string.h>
 
-/* APU Constants */
 #define CPU_CLOCK_RATE      1789773.0
 #define AUDIO_SAMPLE_RATE   44100.0
 #define AUDIO_BUFFER_SIZE   4096
 #define MIX_PULSE_DIVISOR   8128.0f
 #define MIX_TND_DIVISOR     100.0f
 
-/* Length counter lookup table */
 static const uint8_t LENGTH_TABLE[32] = {
     10, 254, 20,  2, 40,  4, 80,  6, 30,  8, 60, 10, 14, 12, 26, 14,
     12,  16, 24, 18, 48, 20, 96, 22, 72, 24, 80, 26, 16, 28, 30, 30
@@ -30,20 +29,41 @@ static const uint16_t NOISE_PERIOD[16] = {
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068
 };
 
+// NTSC DMC timer periods in CPU cycles.
 static const uint16_t DMC_RATE_TABLE[16] = {
-    428, 380, 340, 320, 286, 254, 226, 202, 180, 166, 150, 134, 116, 100, 84, 54
+    428, 380, 340, 320, 286, 254, 226, 214,
+    190, 160, 142, 128, 106,  84,  72,  54
 };
+
+// Frame sequencer step delays, measured in CPU cycles. The first step after
+// a $4017 reset is delayed by the APU's phase-dependent write synchronization.
+#define FRAME_STEP1 7459u
+#define FRAME_STEP2 7456u
+#define FRAME_STEP3 7458u
+#define FRAME_STEP4 7458u
+#define FRAME_STEP5 7452u
+
+#define FRAME_4_STEP1 FRAME_STEP1
+#define FRAME_4_STEP2 (FRAME_STEP1 + FRAME_STEP2)
+#define FRAME_4_STEP3 (FRAME_STEP1 + FRAME_STEP2 + FRAME_STEP3)
+#define FRAME_4_STEP4 (FRAME_STEP1 + FRAME_STEP2 + FRAME_STEP3 + FRAME_STEP4)
+
+#define FRAME_5_STEP1 FRAME_STEP1
+#define FRAME_5_STEP2 (FRAME_STEP1 + FRAME_STEP2)
+#define FRAME_5_STEP3 (FRAME_STEP1 + FRAME_STEP2 + FRAME_STEP3)
+#define FRAME_5_STEP4 (FRAME_STEP1 + FRAME_STEP2 + FRAME_STEP3 + FRAME_STEP4)
+#define FRAME_5_STEP5 (FRAME_STEP1 + FRAME_STEP2 + FRAME_STEP3 + FRAME_STEP4 + FRAME_STEP5)
 
 static bool is_sweep_muting(APU2A03 *apu, int ch) {
     uint16_t period = apu->pulse_timer_reload[ch];
     if (period < 8 || period > 0x07FF) return true;
-    
+
     int16_t change = period >> apu->pulse_sweep_shift[ch];
     int16_t target;
     if (apu->pulse_sweep_negate[ch]) {
         target = period - change;
         if (ch == 0) {
-            target -= 1; /* Pulse 1 sweeps negate using one's complement */
+            target -= 1;
         }
     } else {
         target = period + change;
@@ -51,9 +71,10 @@ static bool is_sweep_muting(APU2A03 *apu, int ch) {
     return (target > 0x07FF);
 }
 
-static void dmc_fetch(APU2A03 *apu, CPUBus *bus) {
-    if (apu->dmc_bytes_remaining > 0 && bus && bus->read) {
-        apu->dmc_buffer = bus->read(bus->bus_context, apu->dmc_current_addr);
+static void dmc_fetch(APU2A03 *apu, NES *nes) {
+    if (apu->dmc_bytes_remaining > 0 && nes) {
+        nes->cpu.stall_cycles += 4; // Accurately stall the CPU while DMA reads memory
+        apu->dmc_buffer = nes_cpu_bus_read(nes, apu->dmc_current_addr);
         apu->dmc_buffer_empty = false;
         apu->dmc_current_addr = (apu->dmc_current_addr + 1) | 0x8000;
         apu->dmc_bytes_remaining--;
@@ -61,13 +82,17 @@ static void dmc_fetch(APU2A03 *apu, CPUBus *bus) {
             if (apu->dmc_loop) {
                 apu->dmc_current_addr = apu->dmc_sample_addr;
                 apu->dmc_bytes_remaining = apu->dmc_sample_len;
+            } else if (apu->dmc_irq_enable) {
+                /* Hardware asserts the DMC IRQ when the final sample byte is
+                   fetched into the sample buffer, not after it is played. */
+                apu->dmc_irq_active = true;
+                cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_DMC, true);
             }
         }
     }
 }
 
 static void apu_clock_quarter_frame(APU2A03 *apu) {
-    /* Clock Linear counter (Triangle) */
     if (apu->triangle_linear_reload_flag) {
         apu->triangle_linear_counter = apu->triangle_linear_reload;
     } else if (apu->triangle_linear_counter > 0) {
@@ -77,7 +102,6 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
         apu->triangle_linear_reload_flag = false;
     }
 
-    /* Clock Envelopes (Pulse 1 & 2) */
     for (int ch = 0; ch < 2; ch++) {
         if (apu->pulse_envelope_start[ch]) {
             apu->pulse_envelope_decay[ch] = 15;
@@ -95,7 +119,6 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
         }
     }
 
-    /* Clock Envelope (Noise) */
     if (apu->noise_envelope_start) {
         apu->noise_envelope_decay = 15;
         apu->noise_envelope_divider = apu->noise_volume;
@@ -115,7 +138,6 @@ static void apu_clock_quarter_frame(APU2A03 *apu) {
 static void apu_clock_half_frame(APU2A03 *apu) {
     apu_clock_quarter_frame(apu);
 
-    /* Clock Pulse channel lengths and sweeps */
     for (int ch = 0; ch < 2; ch++) {
         if (!apu->pulse_halt[ch] && apu->pulse_length_counter[ch] > 0) {
             apu->pulse_length_counter[ch]--;
@@ -144,12 +166,10 @@ static void apu_clock_half_frame(APU2A03 *apu) {
         }
     }
 
-    /* Clock Triangle length */
     if (apu->triangle_length_counter > 0 && !apu->triangle_control_flag) {
         apu->triangle_length_counter--;
     }
 
-    /* Clock Noise length */
     if (apu->noise_length_counter > 0 && !apu->noise_halt) {
         apu->noise_length_counter--;
     }
@@ -159,10 +179,14 @@ void apu_init(APU2A03 *apu) {
     memset(apu, 0, sizeof(APU2A03));
     apu->noise_shift_reg = 1;
     apu->dmc_buffer_empty = true;
+    apu->dmc_silent = true;
     apu->dmc_bits_remaining = 8;
     apu->dmc_timer_reload = DMC_RATE_TABLE[0];
+    apu->dmc_timer = 0;
     apu->audio_accumulator = 0.0;
     apu->audio_buffer_idx = 0;
+    apu->frame_counter_reset_pending = false;
+    apu->frame_counter_reset_delay = 0;
 }
 
 static void apu_write_pulse_reg(APU2A03 *apu, int ch, uint16_t offset, uint8_t data) {
@@ -194,7 +218,8 @@ static void apu_write_pulse_reg(APU2A03 *apu, int ch, uint16_t offset, uint8_t d
     }
 }
 
-void apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu) {
+void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
+    APU2A03 *apu = &nes->apu;
     if (address >= 0x4000 && address <= 0x4003) {
         apu_write_pulse_reg(apu, 0, address & 0x03, data);
     } else if (address >= 0x4004 && address <= 0x4007) {
@@ -247,9 +272,7 @@ void apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu) {
                 apu->dmc_timer_reload = DMC_RATE_TABLE[apu->dmc_rate];
                 if (!apu->dmc_irq_enable) {
                     apu->dmc_irq_active = false;
-                    if (cpu) {
-                        cpu_set_irq_line(cpu, APU_IRQ_SOURCE_DMC, false);
-                    }
+                    cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_DMC, false);
                 }
                 break;
             case 1:
@@ -270,9 +293,7 @@ void apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu) {
         apu->dmc_enabled = (data & 0x10) != 0;
 
         apu->dmc_irq_active = false;
-        if (cpu) {
-            cpu_set_irq_line(cpu, APU_IRQ_SOURCE_DMC, false);
-        }
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_DMC, false);
 
         if (!apu->pulse_enabled[0]) apu->pulse_length_counter[0] = 0;
         if (!apu->pulse_enabled[1]) apu->pulse_length_counter[1] = 0;
@@ -293,19 +314,19 @@ void apu_write_reg(APU2A03 *apu, uint16_t address, uint8_t data, CPU6502 *cpu) {
 
         if (apu->frame_irq_inhibit) {
             apu->frame_irq_active = false;
-            if (cpu) {
-                cpu_set_irq_line(cpu, APU_IRQ_SOURCE_FRAME, false);
-            }
+            cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, false);
         }
 
-        apu->frame_cycles = 0;
-        if (apu->frame_mode) {
-            apu_clock_half_frame(apu);
-        }
+        // The frame counter reset does not occur on the write cycle itself.
+        // The hardware delays the reset until the next appropriate APU phase,
+        // giving a 3- or 4-CPU-cycle delay depending on the current phase.
+        apu->frame_counter_reset_pending = true;
+        apu->frame_counter_reset_delay = apu->clock_toggle ? 3 : 4;
     }
 }
 
-uint8_t apu_read_reg(APU2A03 *apu, uint16_t address, CPU6502 *cpu) {
+uint8_t apu_read_reg(NES *nes, uint16_t address) {
+    APU2A03 *apu = &nes->apu;
     if (address == 0x4015) {
         uint8_t data = 0;
         if (apu->pulse_length_counter[0] > 0) data |= 0x01;
@@ -317,94 +338,136 @@ uint8_t apu_read_reg(APU2A03 *apu, uint16_t address, CPU6502 *cpu) {
         if (apu->dmc_irq_active)              data |= 0x80;
 
         apu->frame_irq_active = false;
-        if (cpu) {
-            cpu_set_irq_line(cpu, APU_IRQ_SOURCE_FRAME, false);
-        }
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, false);
 
         return data;
     }
     return 0;
 }
 
-static void apu_step_frame_sequencer(APU2A03 *apu, CPU6502 *cpu) {
+static void apu_frame_counter_reset(APU2A03 *apu) {
+    apu->frame_counter_reset_pending = false;
+    apu->frame_counter_reset_delay = 0;
+    apu->frame_cycles = 0;
+
+    // In 5-step mode, the reset event immediately generates the first
+    // quarter+half-frame clock. In 4-step mode it only resets the sequence.
+    if (apu->frame_mode) {
+        apu_clock_half_frame(apu);
+    }
+}
+
+static void apu_step_frame_sequencer(APU2A03 *apu, NES *nes) {
+    if (apu->frame_counter_reset_pending) {
+        if (apu->frame_counter_reset_delay > 0) {
+            apu->frame_counter_reset_delay--;
+        }
+
+        if (apu->frame_counter_reset_delay == 0) {
+            apu_frame_counter_reset(apu);
+        }
+
+        return;
+    }
+
+    apu->frame_cycles++;
+
     if (!apu->frame_mode) {
-        /* 4-Step Mode (240 Hz) */
-        if (apu->frame_cycles == 7457) {
-            apu_clock_quarter_frame(apu);
-        } else if (apu->frame_cycles == 14913) {
-            apu_clock_half_frame(apu);
-        } else if (apu->frame_cycles == 22371) {
-            apu_clock_quarter_frame(apu);
-        } else if (apu->frame_cycles == 29829) {
-            apu_clock_half_frame(apu);
-            if (!apu->frame_irq_inhibit) {
-                apu->frame_irq_active = true;
-                if (cpu) {
-                    cpu_set_irq_line(cpu, APU_IRQ_SOURCE_FRAME, true);
+        switch (apu->frame_cycles) {
+            case FRAME_4_STEP1:
+                apu_clock_quarter_frame(apu);
+                break;
+            case FRAME_4_STEP2:
+                apu_clock_half_frame(apu);
+                break;
+            case FRAME_4_STEP3:
+                apu_clock_quarter_frame(apu);
+                break;
+            case FRAME_4_STEP4:
+                apu_clock_half_frame(apu);
+                if (!apu->frame_irq_inhibit) {
+                    apu->frame_irq_active = true;
+                    cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, true);
                 }
-            }
-        } else if (apu->frame_cycles >= 29830) {
-            apu->frame_cycles = 0;
+                apu->frame_cycles = 0;
+                break;
         }
     } else {
-        /* 5-Step Mode (192 Hz) */
-        if (apu->frame_cycles == 7457) {
-            apu_clock_quarter_frame(apu);
-        } else if (apu->frame_cycles == 14913) {
-            apu_clock_half_frame(apu);
-        } else if (apu->frame_cycles == 22371) {
-            apu_clock_quarter_frame(apu);
-        } else if (apu->frame_cycles == 37281) {
-            apu_clock_half_frame(apu);
-        } else if (apu->frame_cycles >= 37282) {
-            apu->frame_cycles = 0;
+        switch (apu->frame_cycles) {
+            case FRAME_5_STEP1:
+                apu_clock_quarter_frame(apu);
+                break;
+            case FRAME_5_STEP2:
+                apu_clock_half_frame(apu);
+                break;
+            case FRAME_5_STEP3:
+                apu_clock_quarter_frame(apu);
+                break;
+            case FRAME_5_STEP4:
+                // The fourth position in 5-step mode has no unit clock.
+                break;
+            case FRAME_5_STEP5:
+                apu_clock_half_frame(apu);
+                apu->frame_cycles = 0;
+                break;
         }
     }
 }
 
-static void apu_step_dmc(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
-    if (apu->dmc_enabled) {
-        if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining > 0) {
-            dmc_fetch(apu, bus);
+static void apu_step_dmc(APU2A03 *apu, NES *nes) {
+    /*
+     * The memory reader is controlled by bytes_remaining.  Clearing $4015.4
+     * stops new DMA reads, but it does not stop the DMC timer/output unit or
+     * discard a byte already in the sample buffer.
+     */
+    if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining > 0) {
+        dmc_fetch(apu, nes);
+    }
+
+    /* The table entries are complete CPU-cycle periods. */
+    if (apu->dmc_timer == 0) {
+        apu->dmc_timer = (apu->dmc_timer_reload > 0)
+            ? (uint16_t)(apu->dmc_timer_reload - 1u)
+            : 0;
+
+        if (!apu->dmc_silent) {
+            if (apu->dmc_shift_reg & 1u) {
+                if (apu->dmc_value <= 125u) {
+                    apu->dmc_value += 2u;
+                }
+            } else if (apu->dmc_value >= 2u) {
+                apu->dmc_value -= 2u;
+            }
         }
 
-        if (apu->dmc_timer == 0) {
-            apu->dmc_timer = apu->dmc_timer_reload;
-            if (!apu->dmc_silent) {
-                if (apu->dmc_shift_reg & 1) {
-                    if (apu->dmc_value <= 125) apu->dmc_value += 2;
-                } else {
-                    if (apu->dmc_value >= 2) apu->dmc_value -= 2;
-                }
-            }
-            apu->dmc_shift_reg >>= 1;
+        apu->dmc_shift_reg >>= 1;
+        if (apu->dmc_bits_remaining > 0) {
             apu->dmc_bits_remaining--;
-            if (apu->dmc_bits_remaining == 0) {
-                apu->dmc_bits_remaining = 8;
-                if (apu->dmc_buffer_empty) {
-                    apu->dmc_silent = true;
-                } else {
-                    apu->dmc_silent = false;
-                    apu->dmc_shift_reg = apu->dmc_buffer;
-                    apu->dmc_buffer_empty = true;
-                    if (apu->dmc_bytes_remaining > 0) {
-                        dmc_fetch(apu, bus);
-                    } else if (apu->dmc_irq_enable && !apu->dmc_loop) {
-                        apu->dmc_irq_active = true;
-                        if (cpu) {
-                            cpu_set_irq_line(cpu, APU_IRQ_SOURCE_DMC, true);
-                        }
-                    }
+        }
+
+        if (apu->dmc_bits_remaining == 0) {
+            apu->dmc_bits_remaining = 8;
+            if (apu->dmc_buffer_empty) {
+                apu->dmc_silent = true;
+            } else {
+                apu->dmc_silent = false;
+                apu->dmc_shift_reg = apu->dmc_buffer;
+                apu->dmc_buffer_empty = true;
+
+                /* A refill is requested when the output unit empties the
+                   sample buffer.  This coarse core completes the DMA here;
+                   dmc_fetch accounts for the CPU stall. */
+                if (apu->dmc_bytes_remaining > 0) {
+                    dmc_fetch(apu, nes);
                 }
             }
-        } else {
-            apu->dmc_timer--;
         }
+    } else {
+        apu->dmc_timer--;
     }
 }
 
 static void apu_step_timers(APU2A03 *apu) {
-    /* Triangle Channel Timer (Every CPU Cycle) */
     if (apu->triangle_enabled && apu->triangle_length_counter > 0 && apu->triangle_linear_counter > 0) {
         if (apu->triangle_timer == 0) {
             apu->triangle_timer = apu->triangle_timer_reload;
@@ -416,7 +479,6 @@ static void apu_step_timers(APU2A03 *apu) {
         }
     }
 
-    /* Pulse & Noise Timers (Clocked on CPU / 2) */
     apu->clock_toggle = !apu->clock_toggle;
     if (apu->clock_toggle) {
         for (int ch = 0; ch < 2; ch++) {
@@ -469,7 +531,6 @@ static void apu_mix_audio_output(APU2A03 *apu) {
             : (float)apu->noise_envelope_decay;
     }
 
-    /* Standard linear approximation formulas for channel mixing */
     if (ch_out[0] != 0.0f || ch_out[1] != 0.0f) {
         pulse_out = 95.88f / ((MIX_PULSE_DIVISOR / (ch_out[0] + ch_out[1])) + 100.0f);
     }
@@ -483,14 +544,11 @@ static void apu_mix_audio_output(APU2A03 *apu) {
     }
 }
 
-void apu_step(APU2A03 *apu, CPUBus *bus, CPU6502 *cpu) {
-    apu->frame_cycles++;
-
-    apu_step_frame_sequencer(apu, cpu);
-    apu_step_dmc(apu, bus, cpu);
+void apu_step(APU2A03 *apu, NES *nes) {
+    apu_step_frame_sequencer(apu, nes);
+    apu_step_dmc(apu, nes);
     apu_step_timers(apu);
 
-    /* Audio Output Downsampling (1.789773 MHz -> 44.1 kHz) */
     apu->audio_accumulator += (AUDIO_SAMPLE_RATE / CPU_CLOCK_RATE);
     if (apu->audio_accumulator >= 1.0) {
         apu->audio_accumulator -= 1.0;

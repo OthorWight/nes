@@ -22,25 +22,11 @@ static inline void update_zero_and_negative_flags(CPU6502 *cpu, uint8_t value) {
     set_flag(cpu, FLAG_NEGATIVE, (value & 0x80) != 0);
 }
 
-static inline void ppu_step_one_cycle(CPU6502 *cpu, CPUBus *bus) {
-    if (bus->ppu_tick) {
-        bus->ppu_tick(bus->bus_context);
-    }
-    if (cpu->nmi_line) {
-        cpu->nmi_active_count++;
-    } else {
-        cpu->nmi_active_count = 0;
-    }
-}
-
 static inline void bus_cycle(CPU6502 *cpu, CPUBus *bus) {
     cpu->cycle_count++;
-    if (bus->tick) {
-        bus->tick(bus->bus_context);
+    if (bus->cycle_tick) {
+        bus->cycle_tick(bus->bus_context);
     }
-    ppu_step_one_cycle(cpu, bus);
-    ppu_step_one_cycle(cpu, bus);
-    ppu_step_one_cycle(cpu, bus);
 }
 
 static inline uint8_t read_byte(CPU6502 *cpu, CPUBus *bus, uint16_t address) {
@@ -337,24 +323,23 @@ static inline void rmw_isc(CPU6502 *cpu, CPUBus *bus, uint16_t addr) {
 }
 
 void cpu_init(CPU6502 *cpu, CPUModel model) {
-    cpu->accumulator     = 0;
-    cpu->index_x         = 0;
-    cpu->index_y         = 0;
-    cpu->stack_pointer   = 0xFD;
-    cpu->program_counter = 0x0000;
-    cpu->status_flags    = FLAG_UNUSED | FLAG_INTERRUPT_DISABLE;
-    cpu->cycle_count     = 0;
-    cpu->irq_lines       = 0;
-    cpu->nmi_line        = false;
-    cpu->nmi_prev_line   = false;
-    cpu->nmi_edge        = false;
-    cpu->nmi_active_count = 0;
-    cpu->reset_pending   = false;
-    cpu->rdy             = true;
-    cpu->open_bus        = 0;
-    cpu->model           = model;
+    cpu->accumulator      = 0;
+    cpu->index_x          = 0;
+    cpu->index_y          = 0;
+    cpu->stack_pointer    = 0xFD;
+    cpu->program_counter  = 0x0000;
+    cpu->status_flags     = FLAG_UNUSED | FLAG_INTERRUPT_DISABLE;
+    cpu->cycle_count      = 0;
+    cpu->stall_cycles     = 0;
+    cpu->irq_lines        = 0;
+    cpu->nmi_line         = false;
+    cpu->nmi_edge         = false;
+    cpu->reset_pending    = false;
+    cpu->rdy              = true;
+    cpu->open_bus         = 0;
+    cpu->model            = model;
     cpu->nmi_pulsed_cycle = 0;
-    cpu->nmi_delayed     = false;
+    cpu->nmi_delayed      = false;
 }
 
 void cpu_reset(CPU6502 *cpu, CPUBus *bus) {
@@ -379,21 +364,9 @@ void cpu_set_irq_line(CPU6502 *cpu, uint8_t source_id, bool active) {
 }
 
 void cpu_set_nmi_line(CPU6502 *cpu, bool active) {
-    if (active) {
-        if (!cpu->nmi_line) {
-            cpu->nmi_edge = true;
-            cpu->nmi_pulsed_cycle = cpu->cycle_count;
-            cpu->nmi_active_count = 0;
-        }
-    } else {
-        if (cpu->nmi_line) {
-            // Suppress the NMI if the active pulse was shorter than 3 PPU cycles (1 CPU cycle)
-            if (cpu->nmi_active_count < 3) {
-                cpu->nmi_edge = false;
-                cpu->nmi_delayed = false; // Cancel delayed NMI
-            }
-        }
-        cpu->nmi_active_count = 0;
+    if (active && !cpu->nmi_line) {
+        cpu->nmi_edge = true;
+        cpu->nmi_pulsed_cycle = cpu->cycle_count;
     }
     cpu->nmi_line = active;
 }
@@ -442,6 +415,12 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
     uint64_t start_cycles = cpu->cycle_count;
     cpu->nmi_pulsed_cycle = 0;
 
+    if (cpu->stall_cycles > 0) {
+        cpu->stall_cycles--;
+        bus_cycle(cpu, bus);
+        return (int)(cpu->cycle_count - start_cycles);
+    }
+
     if (cpu->reset_pending) {
         cpu->reset_pending = false;
         cpu_reset(cpu, bus);
@@ -462,7 +441,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
     uint8_t opcode = read_byte(cpu, bus, cpu->program_counter++);
 
     switch (opcode) {
-        // --- ADC ---
         case 0x69: do_adc(cpu, addr_imm(cpu, bus)); break;
         case 0x65: do_adc(cpu, read_byte(cpu, bus, addr_zp(cpu, bus))); break;
         case 0x75: do_adc(cpu, read_byte(cpu, bus, addr_zpx(cpu, bus))); break;
@@ -472,7 +450,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x61: do_adc(cpu, read_byte(cpu, bus, addr_indx(cpu, bus))); break;
         case 0x71: do_adc(cpu, read_indy(cpu, bus)); break;
 
-        // --- AND ---
         case 0x29: cpu->accumulator &= addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x25: cpu->accumulator &= read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x35: cpu->accumulator &= read_byte(cpu, bus, addr_zpx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
@@ -482,7 +459,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x21: cpu->accumulator &= read_byte(cpu, bus, addr_indx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x31: cpu->accumulator &= read_indy(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
 
-        // --- ASL ---
         case 0x0A:
             read_byte(cpu, bus, cpu->program_counter);
             set_flag(cpu, FLAG_CARRY, (cpu->accumulator & 0x80) != 0);
@@ -494,7 +470,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x0E: rmw_asl(cpu, bus, addr_abs(cpu, bus)); break;
         case 0x1E: rmw_asl(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- Branch Instructions ---
         case 0x10: do_branch(cpu, bus, !get_flag(cpu, FLAG_NEGATIVE)); break;
         case 0x30: do_branch(cpu, bus, get_flag(cpu, FLAG_NEGATIVE)); break;
         case 0x50: do_branch(cpu, bus, !get_flag(cpu, FLAG_OVERFLOW_V)); break;
@@ -504,7 +479,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0xD0: do_branch(cpu, bus, !get_flag(cpu, FLAG_ZERO)); break;
         case 0xF0: do_branch(cpu, bus, get_flag(cpu, FLAG_ZERO)); break;
 
-        // --- BIT ---
         case 0x24: {
             uint8_t val = read_byte(cpu, bus, addr_zp(cpu, bus));
             set_flag(cpu, FLAG_ZERO, (cpu->accumulator & val) == 0);
@@ -520,7 +494,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- BRK ---
         case 0x00: {
             read_byte(cpu, bus, cpu->program_counter++);
             stack_push(cpu, bus, (uint8_t)(cpu->program_counter >> 8));
@@ -539,13 +512,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- CLC, CLD, CLI, CLV ---
         case 0x18: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_CARRY, false); break;
         case 0xD8: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_DECIMAL_MODE, false); break;
         case 0x58: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_INTERRUPT_DISABLE, false); break;
         case 0xB8: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_OVERFLOW_V, false); break;
 
-        // --- CMP ---
         case 0xC9: { uint8_t v = addr_imm(cpu, bus); set_flag(cpu, FLAG_CARRY, cpu->accumulator >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->accumulator - v)); break; }
         case 0xC5: { uint8_t v = read_byte(cpu, bus, addr_zp(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->accumulator >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->accumulator - v)); break; }
         case 0xD5: { uint8_t v = read_byte(cpu, bus, addr_zpx(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->accumulator >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->accumulator - v)); break; }
@@ -555,27 +526,22 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0xC1: { uint8_t v = read_byte(cpu, bus, addr_indx(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->accumulator >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->accumulator - v)); break; }
         case 0xD1: { uint8_t v = read_indy(cpu, bus); set_flag(cpu, FLAG_CARRY, cpu->accumulator >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->accumulator - v)); break; }
 
-        // --- CPX ---
         case 0xE0: { uint8_t v = addr_imm(cpu, bus); set_flag(cpu, FLAG_CARRY, cpu->index_x >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_x - v)); break; }
         case 0xE4: { uint8_t v = read_byte(cpu, bus, addr_zp(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->index_x >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_x - v)); break; }
         case 0xEC: { uint8_t v = read_byte(cpu, bus, addr_abs(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->index_x >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_x - v)); break; }
 
-        // --- CPY ---
         case 0xC0: { uint8_t v = addr_imm(cpu, bus); set_flag(cpu, FLAG_CARRY, cpu->index_y >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_y - v)); break; }
         case 0xC4: { uint8_t v = read_byte(cpu, bus, addr_zp(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->index_y >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_y - v)); break; }
         case 0xCC: { uint8_t v = read_byte(cpu, bus, addr_abs(cpu, bus)); set_flag(cpu, FLAG_CARRY, cpu->index_y >= v); update_zero_and_negative_flags(cpu, (uint8_t)(cpu->index_y - v)); break; }
 
-        // --- DEC ---
         case 0xC6: rmw_dec(cpu, bus, addr_zp(cpu, bus)); break;
         case 0xD6: rmw_dec(cpu, bus, addr_zpx(cpu, bus)); break;
         case 0xCE: rmw_dec(cpu, bus, addr_abs(cpu, bus)); break;
         case 0xDE: rmw_dec(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- DEX, DEY ---
         case 0xCA: read_byte(cpu, bus, cpu->program_counter); cpu->index_x--; update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0x88: read_byte(cpu, bus, cpu->program_counter); cpu->index_y--; update_zero_and_negative_flags(cpu, cpu->index_y); break;
 
-        // --- EOR ---
         case 0x49: cpu->accumulator ^= addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x45: cpu->accumulator ^= read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x55: cpu->accumulator ^= read_byte(cpu, bus, addr_zpx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
@@ -585,17 +551,14 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x41: cpu->accumulator ^= read_byte(cpu, bus, addr_indx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x51: cpu->accumulator ^= read_indy(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
 
-        // --- INC ---
         case 0xE6: rmw_inc(cpu, bus, addr_zp(cpu, bus)); break;
         case 0xF6: rmw_inc(cpu, bus, addr_zpx(cpu, bus)); break;
         case 0xEE: rmw_inc(cpu, bus, addr_abs(cpu, bus)); break;
         case 0xFE: rmw_inc(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- INX, INY ---
         case 0xE8: read_byte(cpu, bus, cpu->program_counter); cpu->index_x++; update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0xC8: read_byte(cpu, bus, cpu->program_counter); cpu->index_y++; update_zero_and_negative_flags(cpu, cpu->index_y); break;
 
-        // --- JMP ---
         case 0x4C: {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             uint8_t high = read_byte(cpu, bus, cpu->program_counter);
@@ -618,7 +581,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- JSR ---
         case 0x20: {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             read_byte(cpu, bus, (uint16_t)(0x0100 | cpu->stack_pointer));
@@ -629,7 +591,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- LDA ---
         case 0xA9: cpu->accumulator = addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0xA5: cpu->accumulator = read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0xB5: cpu->accumulator = read_byte(cpu, bus, addr_zpx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
@@ -639,21 +600,18 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0xA1: cpu->accumulator = read_byte(cpu, bus, addr_indx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0xB1: cpu->accumulator = read_indy(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
 
-        // --- LDX ---
         case 0xA2: cpu->index_x = addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0xA6: cpu->index_x = read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0xB6: cpu->index_x = read_byte(cpu, bus, addr_zpy(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0xAE: cpu->index_x = read_byte(cpu, bus, addr_abs(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0xBE: cpu->index_x = read_abs_indexed(cpu, bus, cpu->index_y); update_zero_and_negative_flags(cpu, cpu->index_x); break;
 
-        // --- LDY ---
         case 0xA0: cpu->index_y = addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->index_y); break;
         case 0xA4: cpu->index_y = read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_y); break;
         case 0xB4: cpu->index_y = read_byte(cpu, bus, addr_zpx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_y); break;
         case 0xAC: cpu->index_y = read_byte(cpu, bus, addr_abs(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->index_y); break;
         case 0xBC: cpu->index_y = read_abs_indexed(cpu, bus, cpu->index_x); update_zero_and_negative_flags(cpu, cpu->index_y); break;
 
-        // --- LSR ---
         case 0x4A:
             read_byte(cpu, bus, cpu->program_counter);
             set_flag(cpu, FLAG_CARRY, (cpu->accumulator & 0x01) != 0);
@@ -665,7 +623,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x4E: rmw_lsr(cpu, bus, addr_abs(cpu, bus)); break;
         case 0x5E: rmw_lsr(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- NOP ---
         case 0xEA: case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA:
             read_byte(cpu, bus, cpu->program_counter);
             break;
@@ -685,7 +642,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             read_abs_indexed(cpu, bus, cpu->index_x);
             break;
 
-        // --- ORA ---
         case 0x09: cpu->accumulator |= addr_imm(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x05: cpu->accumulator |= read_byte(cpu, bus, addr_zp(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x15: cpu->accumulator |= read_byte(cpu, bus, addr_zpx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
@@ -695,7 +651,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x01: cpu->accumulator |= read_byte(cpu, bus, addr_indx(cpu, bus)); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0x11: cpu->accumulator |= read_indy(cpu, bus); update_zero_and_negative_flags(cpu, cpu->accumulator); break;
 
-        // --- PHA, PHP, PLA, PLP ---
         case 0x48: read_byte(cpu, bus, cpu->program_counter); stack_push(cpu, bus, cpu->accumulator); break;
         case 0x08: read_byte(cpu, bus, cpu->program_counter); stack_push(cpu, bus, (uint8_t)(cpu->status_flags | FLAG_BREAK_COMMAND | FLAG_UNUSED)); break;
         case 0x68:
@@ -710,7 +665,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             cpu->status_flags = (uint8_t)((stack_pull(cpu, bus) & ~FLAG_BREAK_COMMAND) | FLAG_UNUSED);
             break;
 
-        // --- ROL ---
         case 0x2A: {
             read_byte(cpu, bus, cpu->program_counter);
             uint8_t old_c = get_flag(cpu, FLAG_CARRY) ? 1 : 0;
@@ -724,7 +678,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x2E: rmw_rol(cpu, bus, addr_abs(cpu, bus)); break;
         case 0x3E: rmw_rol(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- ROR ---
         case 0x6A: {
             read_byte(cpu, bus, cpu->program_counter);
             uint8_t old_c = get_flag(cpu, FLAG_CARRY) ? 0x80 : 0x00;
@@ -738,7 +691,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x6E: rmw_ror(cpu, bus, addr_abs(cpu, bus)); break;
         case 0x7E: rmw_ror(cpu, bus, addr_abs_indexed_w(cpu, bus, cpu->index_x)); break;
 
-        // --- RTI ---
         case 0x40: {
             read_byte(cpu, bus, cpu->program_counter);
             read_byte(cpu, bus, (uint16_t)(0x0100 | cpu->stack_pointer));
@@ -749,7 +701,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- RTS ---
         case 0x60: {
             read_byte(cpu, bus, cpu->program_counter);
             read_byte(cpu, bus, (uint16_t)(0x0100 | cpu->stack_pointer));
@@ -760,7 +711,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- SBC ---
         case 0xE9: case 0xEB: do_sbc(cpu, addr_imm(cpu, bus)); break;
         case 0xE5: do_sbc(cpu, read_byte(cpu, bus, addr_zp(cpu, bus))); break;
         case 0xF5: do_sbc(cpu, read_byte(cpu, bus, addr_zpx(cpu, bus))); break;
@@ -770,12 +720,10 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0xE1: do_sbc(cpu, read_byte(cpu, bus, addr_indx(cpu, bus))); break;
         case 0xF1: do_sbc(cpu, read_indy(cpu, bus)); break;
 
-        // --- SEC, SED, SEI ---
         case 0x38: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_CARRY, true); break;
         case 0xF8: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_DECIMAL_MODE, true); break;
         case 0x78: read_byte(cpu, bus, cpu->program_counter); set_flag(cpu, FLAG_INTERRUPT_DISABLE, true); break;
 
-        // --- STA ---
         case 0x85: write_byte(cpu, bus, addr_zp(cpu, bus), cpu->accumulator); break;
         case 0x95: write_byte(cpu, bus, addr_zpx(cpu, bus), cpu->accumulator); break;
         case 0x8D: write_byte(cpu, bus, addr_abs(cpu, bus), cpu->accumulator); break;
@@ -784,17 +732,14 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0x81: write_byte(cpu, bus, addr_indx(cpu, bus), cpu->accumulator); break;
         case 0x91: write_byte(cpu, bus, addr_indy_w(cpu, bus), cpu->accumulator); break;
 
-        // --- STX ---
         case 0x86: write_byte(cpu, bus, addr_zp(cpu, bus), cpu->index_x); break;
         case 0x96: write_byte(cpu, bus, addr_zpy(cpu, bus), cpu->index_x); break;
         case 0x8E: write_byte(cpu, bus, addr_abs(cpu, bus), cpu->index_x); break;
 
-        // --- STY ---
         case 0x84: write_byte(cpu, bus, addr_zp(cpu, bus), cpu->index_y); break;
         case 0x94: write_byte(cpu, bus, addr_zpx(cpu, bus), cpu->index_y); break;
         case 0x8C: write_byte(cpu, bus, addr_abs(cpu, bus), cpu->index_y); break;
 
-        // --- Register Transfers ---
         case 0xAA: read_byte(cpu, bus, cpu->program_counter); cpu->index_x = cpu->accumulator; update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0x8A: read_byte(cpu, bus, cpu->program_counter); cpu->accumulator = cpu->index_x; update_zero_and_negative_flags(cpu, cpu->accumulator); break;
         case 0xA8: read_byte(cpu, bus, cpu->program_counter); cpu->index_y = cpu->accumulator; update_zero_and_negative_flags(cpu, cpu->index_y); break;
@@ -802,7 +747,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         case 0xBA: read_byte(cpu, bus, cpu->program_counter); cpu->index_x = cpu->stack_pointer; update_zero_and_negative_flags(cpu, cpu->index_x); break;
         case 0x9A: read_byte(cpu, bus, cpu->program_counter); cpu->stack_pointer = cpu->index_x; break;
 
-        // --- Unofficial Instructions ---
         case 0x03: rmw_slo(cpu, bus, addr_indx(cpu, bus)); break;
         case 0x07: rmw_slo(cpu, bus, addr_zp(cpu, bus)); break;
         case 0x17: rmw_slo(cpu, bus, addr_zpx(cpu, bus)); break;
@@ -842,7 +786,7 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
 
         case 0xA3: { uint8_t v = read_byte(cpu, bus, addr_indx(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xA7: { uint8_t v = read_byte(cpu, bus, addr_zp(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
-        case 0xB7: { uint8_t v = read_byte(cpu, bus, addr_zpy(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
+        case 0xB7: { uint8_t v = read_byte(cpu, bus, addr_zpy(cpu, bus)); cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xAF: { uint8_t v = read_byte(cpu, bus, addr_abs(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xBF: { uint8_t v = read_abs_indexed(cpu, bus, cpu->index_y); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xB3: { uint8_t v = read_indy(cpu, bus); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
@@ -1010,7 +954,6 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
         }
 
-        // --- JAM / KIL / HLT ---
         case 0x02: case 0x12: case 0x22: case 0x32: case 0x42: case 0x52:
         case 0x62: case 0x72: case 0x92: case 0xB2: case 0xD2: case 0xF2:
             read_byte(cpu, bus, cpu->program_counter);
