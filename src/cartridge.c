@@ -118,10 +118,15 @@ static bool initialize_mapper(Cartridge *cart) {
         case 11:  mapper_011_init(cart); break;
         case 19:  mapper_019_init(cart); break;
         case 23:  mapper_023_init(cart); break;
+        case 24:  mapper_024_init(cart); break;
+        case 26:  mapper_026_init(cart); break;
         case 34:  mapper_034_init(cart); break;
+        case 64:  mapper_064_init(cart); break;
         case 66:  mapper_066_init(cart); break;
         case 69:  mapper_069_init(cart); break;
-        case 71:  mapper_071_init(cart); break; // Added Mapper 71
+        case 71:  mapper_071_init(cart); break;
+        case 78:  mapper_078_init(cart); break;
+        case 118: mapper_118_init(cart); break;
         case 206: mapper_206_init(cart); break;
         case 227: mapper_227_init(cart); break;
         default:
