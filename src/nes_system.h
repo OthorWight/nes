@@ -45,6 +45,12 @@ struct NES {
     uint8_t    controller_shift[2];
     uint8_t    controller_strobe;
 
+    // Zapper Light Gun State
+    bool       zapper_trigger;
+    bool       zapper_light;
+    int        zapper_x;
+    int        zapper_y;
+
     // Frame completion flag for frontend vsync
     bool       frame_ready;
 };

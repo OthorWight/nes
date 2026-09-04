@@ -53,7 +53,26 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
             nes->controller_shift[1] >>= 1;
             nes->controller_shift[1] |= 0x80;
         }
-        return val | 0x40;
+
+        // Update zapper_light based on screen buffer color at (zapper_x, zapper_y)
+        bool light_detected = false;
+        int x = nes->zapper_x;
+        int y = nes->zapper_y;
+        if (x >= 0 && x < 256 && y >= 0 && y < 240) {
+            uint32_t pixel = nes->ppu.screen_buffer[y * 256 + x];
+            uint8_t r = (pixel >> 16) & 0xFF;
+            uint8_t g = (pixel >> 8) & 0xFF;
+            uint8_t b = pixel & 0xFF;
+            if (r > 150 && g > 150 && b > 150) {
+                light_detected = true;
+            }
+        }
+        nes->zapper_light = light_detected;
+
+        uint8_t zapper_bit3 = nes->zapper_light ? 0x00 : 0x08;
+        uint8_t zapper_bit4 = nes->zapper_trigger ? 0x10 : 0x00;
+
+        return (val & 0x01) | zapper_bit3 | zapper_bit4 | 0x40;
     }
 
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->cpu_read) {

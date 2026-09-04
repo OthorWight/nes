@@ -1221,6 +1221,37 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+                    if (event.button.button == SDL_BUTTON_LEFT) {
+                        int mx = event.button.x;
+                        int my = event.button.y;
+                        if (mx < 0) mx = 0;
+                        if (mx > 255) mx = 255;
+                        if (my < 0) my = 0;
+                        if (my > 239) my = 239;
+                        nes_sys.zapper_x = mx;
+                        nes_sys.zapper_y = my;
+                        nes_sys.zapper_trigger = true;
+                    }
+                }
+            } else if (event.type == SDL_MOUSEBUTTONUP) {
+                if (current_state == GUI_STATE_GAMEPLAY) {
+                    if (event.button.button == SDL_BUTTON_LEFT) {
+                        nes_sys.zapper_trigger = false;
+                    }
+                }
+            } else if (event.type == SDL_MOUSEMOTION) {
+                if (current_state == GUI_STATE_GAMEPLAY) {
+                    int mx = event.motion.x;
+                    int my = event.motion.y;
+                    if (mx < 0) mx = 0;
+                    if (mx > 255) mx = 255;
+                    if (my < 0) my = 0;
+                    if (my > 239) my = 239;
+                    nes_sys.zapper_x = mx;
+                    nes_sys.zapper_y = my;
+                }
             } else if (event.type == SDL_CONTROLLERDEVICEADDED) {
                 if (!game_controller) {
                     game_controller = SDL_GameControllerOpen(event.cdevice.which);
