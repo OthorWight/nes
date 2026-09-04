@@ -786,7 +786,7 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
 
         case 0xA3: { uint8_t v = read_byte(cpu, bus, addr_indx(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xA7: { uint8_t v = read_byte(cpu, bus, addr_zp(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
-        case 0xB7: { uint8_t v = read_byte(cpu, bus, addr_zpy(cpu, bus)); cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
+        case 0xB7: { uint8_t v = read_byte(cpu, bus, addr_zpy(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xAF: { uint8_t v = read_byte(cpu, bus, addr_abs(cpu, bus)); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xBF: { uint8_t v = read_abs_indexed(cpu, bus, cpu->index_y); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
         case 0xB3: { uint8_t v = read_indy(cpu, bus); cpu->accumulator = v; cpu->index_x = v; update_zero_and_negative_flags(cpu, v); break; }
