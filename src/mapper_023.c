@@ -70,7 +70,7 @@ static uint8_t m023_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -103,7 +103,7 @@ static void m023_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -188,7 +188,7 @@ static void m023_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     uint32_t bank = ((uint32_t)d->chr_high[slot] << 4) | (d->chr_low[slot] & 0x0F);
     uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
 
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t m023_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -227,6 +227,7 @@ static const MapperInterface m023_interface = {
 
 void mapper_023_init(Cartridge *cart) {
     VRC24Data *data = calloc(1, sizeof(VRC24Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m023_interface;
     m023_reset(cart);

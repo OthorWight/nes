@@ -23,7 +23,7 @@ static void mmc1_reset(Cartridge *c) {
     d->chr_bank_1 = 0;
     d->prg_bank = 0;
     d->last_write_cycle = 0;
-    c->mirroring = MIRROR_HORIZONTAL;
+    c->mirroring = MIRROR_ONE_SCREEN_LOW;
 }
 
 static void mmc1_destroy(Cartridge *c) {
@@ -36,7 +36,7 @@ static uint8_t mmc1_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return (d->prg_bank & 0x10) ? cartridge_open_bus(c) : cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -67,8 +67,8 @@ static void mmc1_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     MMC1Data *d = (MMC1Data*)c->mapper_data;
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
-        if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+        if (!(d->prg_bank & 0x10) && c->prg_ram && c->prg_ram_size > 0) {
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -150,7 +150,7 @@ static void mmc1_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 
     uint32_t offset = (bank % total_4k) * 4096 + (addr & 0x0FFF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t mmc1_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -197,6 +197,7 @@ static const MapperInterface mmc1_interface = {
 
 void mapper_001_init(Cartridge *cart) {
     MMC1Data *data = calloc(1, sizeof(MMC1Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &mmc1_interface;
     mmc1_reset(cart);

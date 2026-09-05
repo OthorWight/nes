@@ -61,7 +61,7 @@ static uint8_t m019_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -105,7 +105,7 @@ static void m019_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -171,7 +171,7 @@ static void m019_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     if (total_1k == 0) return;
 
     uint32_t offset = ((uint32_t)bank % total_1k) * 1024 + (addr & 0x03FF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t m019_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -221,6 +221,7 @@ static const MapperInterface m019_interface = {
 
 void mapper_019_init(Cartridge *cart) {
     Namco163Data *data = calloc(1, sizeof(Namco163Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m019_interface;
     m019_reset(cart);

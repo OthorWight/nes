@@ -35,7 +35,7 @@ static uint8_t mmc2_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -66,7 +66,7 @@ static void mmc2_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -135,7 +135,7 @@ static void mmc2_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 
     uint32_t offset = bank * 4096 + (addr & 0x0FFF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t mmc2_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -170,6 +170,7 @@ static const MapperInterface mmc2_interface = {
 
 void mapper_009_init(Cartridge *cart) {
     MMC2Data *data = calloc(1, sizeof(MMC2Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &mmc2_interface;
     mmc2_reset(cart);

@@ -26,7 +26,7 @@ static uint8_t m034_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFC) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -47,7 +47,7 @@ static void m034_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFC) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -90,7 +90,7 @@ static void m034_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
         uint32_t bank = (addr < 0x1000) ? d->chr_bank_0 : d->chr_bank_1;
         uint32_t offset = (bank % total_4k) * 4096 + (addr & 0x0FFF);
-        c->chr_rom[offset % c->chr_rom_size] = val;
+        cartridge_chr_write(c, offset % c->chr_rom_size, val);
     }
 }
 
@@ -122,6 +122,7 @@ static const MapperInterface m034_interface = {
 
 void mapper_034_init(Cartridge *cart) {
     BNROMNINAData *data = calloc(1, sizeof(BNROMNINAData));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m034_interface;
     m034_reset(cart);

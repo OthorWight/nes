@@ -61,11 +61,11 @@ static uint8_t fme7_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
             uint32_t bank = (reg & 0x3F) % total_8k;
             return c->prg_rom[bank * 8192 + (addr - 0x6000)];
         } else {
-            // Bit 7 is 1: Map RAM into $6000-$7FFF (Bit 6 is ignored for reads)
-            if (c->prg_ram && c->prg_ram_size > 0) {
+            // RAM selected; bit 6 enables the RAM chip.
+            if ((reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
                 return c->prg_ram[(addr - 0x6000) % c->prg_ram_size];
             }
-            return 0;
+            return cartridge_open_bus(c);
         }
     }
 
@@ -151,7 +151,7 @@ static void fme7_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     uint32_t bank = d->chr_banks[(addr / 1024) & 0x07];
     uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t fme7_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -184,6 +184,7 @@ static const MapperInterface fme7_interface = {
 
 void mapper_069_init(Cartridge *cart) {
     FME7Data *data = calloc(1, sizeof(FME7Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &fme7_interface;
     fme7_reset(cart);

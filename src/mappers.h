@@ -3,6 +3,9 @@
 
 #include "cartridge.h"
 
+// Shared implementation; use the board-specific entry points below.
+void mapper_mmc3_init(Cartridge *cart);
+
 void mapper_000_init(Cartridge *cart);
 void mapper_001_init(Cartridge *cart);
 void mapper_002_init(Cartridge *cart);

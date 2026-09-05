@@ -79,10 +79,10 @@ static uint8_t m024_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        if (c->prg_ram && c->prg_ram_size > 0) {
+        if (d->ram_enable && c->prg_ram && c->prg_ram_size > 0) {
             return c->prg_ram[(addr - 0x6000) % c->prg_ram_size];
         }
-        return 0;
+        return cartridge_open_bus(c);
     }
 
     if (addr >= 0x8000) {
@@ -252,7 +252,7 @@ static void m024_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 
     uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t m024_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -293,6 +293,7 @@ static const MapperInterface vrc6_interface = {
 
 void mapper_024_init(Cartridge *cart) {
     VRC6Data *data = calloc(1, sizeof(VRC6Data));
+    if (!data) return;
     data->swap_a0_a1 = false; // VRC6a
     cart->mapper_data = data;
     cart->vtable = &vrc6_interface;
@@ -301,6 +302,7 @@ void mapper_024_init(Cartridge *cart) {
 
 void mapper_026_init(Cartridge *cart) {
     VRC6Data *data = calloc(1, sizeof(VRC6Data));
+    if (!data) return;
     data->swap_a0_a1 = true;  // VRC6b
     cart->mapper_data = data;
     cart->vtable = &vrc6_interface;

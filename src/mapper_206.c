@@ -107,7 +107,7 @@ static void m206_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 
     uint32_t offset = (bank % total_1k) * 1024 + (addr & 0x03FF);
-    c->chr_rom[offset % c->chr_rom_size] = val;
+    cartridge_chr_write(c, offset % c->chr_rom_size, val);
 }
 
 static uint16_t m206_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -137,6 +137,7 @@ static const MapperInterface m206_interface = {
 
 void mapper_206_init(Cartridge *cart) {
     DxROMData *data = calloc(1, sizeof(DxROMData));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m206_interface;
     m206_reset(cart);

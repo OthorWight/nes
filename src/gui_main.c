@@ -916,7 +916,7 @@ int main(int argc, char *argv[]) {
 
                 SDL_Rect src_rect = { 0, 0, 256, 240 };
                 if (nes_sys.cart != NULL) {
-                    uint8_t mapper = nes_sys.cart->mapper_id;
+                    uint16_t mapper = nes_sys.cart->mapper_id;
                     if (mapper == 0 || mapper == 4 || mapper == 206 || mapper == 227) {
                         src_rect.x = 8;
                         src_rect.y = 8;

@@ -61,7 +61,7 @@ static uint8_t m227_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -77,7 +77,7 @@ static void m227_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     (void)val;
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -90,14 +90,14 @@ static void m227_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 static uint8_t m227_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
     if (addr < 0x2000 && c->chr_rom_size > 0) {
         *handled = true;
-        return c->chr_rom[addr & 0x1FFF];
+        return c->chr_rom[(addr & 0x1FFF) % c->chr_rom_size];
     }
     return 0;
 }
 
 static void m227_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     if (addr < 0x2000 && c->chr_rom_size > 0) {
-        c->chr_rom[addr & 0x1FFF] = val;
+        cartridge_chr_write(c, addr & 0x1FFF, val);
     }
 }
 
@@ -128,6 +128,7 @@ static const MapperInterface m227_interface = {
 
 void mapper_227_init(Cartridge *cart) {
     M227Data *data = calloc(1, sizeof(M227Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m227_interface;
     m227_reset(cart);

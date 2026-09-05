@@ -90,7 +90,7 @@ static uint8_t m064_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         *handled = true;
-        return (c->prg_ram && c->prg_ram_size > 0) ? c->prg_ram[addr - 0x6000] : 0;
+        return cartridge_ram_read(c, addr - 0x6000);
     }
 
     if (addr >= 0x8000) {
@@ -120,7 +120,7 @@ static void m064_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         if (c->prg_ram && c->prg_ram_size > 0) {
-            c->prg_ram[addr - 0x6000] = val;
+            cartridge_ram_write(c, addr - 0x6000, val);
         }
         return;
     }
@@ -216,7 +216,7 @@ static void m064_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     uint8_t slot = (addr / 1024) & 0x07;
     uint32_t bank = m064_get_chr_bank(d, slot);
 
-    c->chr_rom[(bank % total_1k) * 1024 + (addr & 0x03FF)] = val;
+    cartridge_chr_write(c, (bank % total_1k) * 1024 + (addr & 0x03FF), val);
 }
 
 static uint16_t m064_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {
@@ -259,6 +259,7 @@ static const MapperInterface m064_interface = {
 
 void mapper_064_init(Cartridge *cart) {
     M064Data *data = calloc(1, sizeof(M064Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m064_interface;
     m064_reset(cart);

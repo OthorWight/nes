@@ -65,7 +65,7 @@ static void m078_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
         if (total_8k == 0) return;
 
         uint32_t offset = (d->chr_bank % total_8k) * 8192 + (addr & 0x1FFF);
-        c->chr_rom[offset % c->chr_rom_size] = val;
+        cartridge_chr_write(c, offset % c->chr_rom_size, val);
     }
 }
 
@@ -96,6 +96,7 @@ static const MapperInterface m078_interface = {
 
 void mapper_078_init(Cartridge *cart) {
     M078Data *data = calloc(1, sizeof(M078Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m078_interface;
     m078_reset(cart);

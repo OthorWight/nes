@@ -22,6 +22,27 @@ typedef enum {
 } MirroringMode;
 
 typedef struct {
+    bool nes2;
+    uint16_t mapper_id;
+    uint8_t submapper;
+    uint8_t timing; // 0 NTSC, 1 PAL, 2 dual-region, 3 Dendy
+    MirroringMode mirroring;
+    bool battery;
+    bool trainer;
+    uint32_t prg_rom_size; // Declared bytes, before address-line padding
+    uint32_t chr_rom_size;
+    uint32_t prg_ram_size;
+    uint32_t prg_nvram_size;
+    uint32_t chr_ram_size;
+    uint32_t chr_nvram_size;
+} CartridgeInfo;
+
+// Parsing is independent of mapper support; loading checks board capabilities.
+bool cartridge_parse_header(const uint8_t header[16], CartridgeInfo *info,
+                            char *error, size_t error_size);
+Cartridge *cartridge_load_ex(NES *nes, const char *path, char *error, size_t error_size);
+
+typedef struct {
     // Explicit field codec; reads operate on a staged cartridge, never the live one.
     void     (*state)(Cartridge *c, StateIO *io);
     size_t   state_size; // In-memory mapper allocation size, not the file layout.
@@ -46,12 +67,14 @@ struct Cartridge {
     const MapperInterface *vtable;
     NES          *nes;
 
-    uint8_t       mapper_id;
+    uint16_t      mapper_id;
+    CartridgeInfo info; // Immutable header/configuration, also covered by ROM identity
+    bool          chr_is_ram;
     MirroringMode mirroring;
 
     uint8_t      *prg_rom;
     uint32_t      prg_rom_size;
-    uint8_t      *chr_rom;
+    uint8_t      *chr_rom; // CHR backing (ROM or RAM); chr_is_ram controls writes
     uint32_t      chr_rom_size;
     uint8_t      *prg_ram;
     uint32_t      prg_ram_size;
@@ -71,6 +94,11 @@ bool       cartridge_load_battery(Cartridge *cart);
 bool       cartridge_set_save_path(Cartridge *cart, const char *path);
 // Destruction performs no I/O. Call cartridge_save_battery and check it first.
 void       cartridge_free(Cartridge *cart);
+
+uint8_t    cartridge_open_bus(const Cartridge *cart);
+uint8_t    cartridge_ram_read(const Cartridge *cart, uint32_t offset);
+void       cartridge_ram_write(Cartridge *cart, uint32_t offset, uint8_t value);
+void       cartridge_chr_write(Cartridge *cart, uint32_t offset, uint8_t value);
 
 uint16_t   cartridge_default_remap_ciram(MirroringMode mode, uint16_t addr);
 

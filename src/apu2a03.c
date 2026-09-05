@@ -328,7 +328,7 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
 uint8_t apu_read_reg(NES *nes, uint16_t address) {
     APU2A03 *apu = &nes->apu;
     if (address == 0x4015) {
-        uint8_t data = 0;
+        uint8_t data = nes->cpu_open_bus & 0x20;
         if (apu->pulse_length_counter[0] > 0) data |= 0x01;
         if (apu->pulse_length_counter[1] > 0) data |= 0x02;
         if (apu->triangle_length_counter > 0) data |= 0x04;
@@ -342,7 +342,7 @@ uint8_t apu_read_reg(NES *nes, uint16_t address) {
 
         return data;
     }
-    return 0;
+    return nes->cpu_open_bus;
 }
 
 static void apu_frame_counter_reset(APU2A03 *apu) {

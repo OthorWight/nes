@@ -69,7 +69,7 @@ static void m066_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
         uint32_t bank = d->chr_bank % total_8k;
         uint32_t offset = bank * 8192 + (addr & 0x1FFF);
-        c->chr_rom[offset % c->chr_rom_size] = val;
+        cartridge_chr_write(c, offset % c->chr_rom_size, val);
     }
 }
 
@@ -100,6 +100,7 @@ static const MapperInterface m066_interface = {
 
 void mapper_066_init(Cartridge *cart) {
     GxROMData *data = calloc(1, sizeof(GxROMData));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &m066_interface;
     m066_reset(cart);

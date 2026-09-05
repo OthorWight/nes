@@ -334,7 +334,7 @@ static uint8_t mmc5_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
 static void mmc5_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     if (addr < 0x2000 && c->chr_rom_size > 0) {
-        c->chr_rom[addr % c->chr_rom_size] = val;
+        cartridge_chr_write(c, addr % c->chr_rom_size, val);
     }
 }
 
@@ -415,6 +415,7 @@ static const MapperInterface mmc5_interface = {
 
 void mapper_005_init(Cartridge *cart) {
     MMC5Data *data = calloc(1, sizeof(MMC5Data));
+    if (!data) return;
     cart->mapper_data = data;
     cart->vtable = &mmc5_interface;
     mmc5_reset(cart);

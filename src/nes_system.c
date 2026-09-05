@@ -20,7 +20,7 @@ void nes_reset(NES *nes) {
     cpu_set_irq_line(&nes->cpu, 0, false);
 }
 
-uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
+static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
     if (addr <= 0x1FFF) {
         return nes->wram[addr & 0x07FF];
     }
@@ -29,9 +29,8 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
         return ppu_read_reg(nes, 0x2000 | (addr & 0x0007));
     }
 
-    if (addr >= 0x4000 && addr <= 0x4015) {
-        return apu_read_reg(nes, addr);
-    }
+    if (addr == 0x4015) return apu_read_reg(nes, addr);
+    if (addr >= 0x4000 && addr < 0x4015) return nes->cpu_open_bus;
 
     if (addr == 0x4016) {
         uint8_t val = 0;
@@ -42,7 +41,7 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
             nes->controller_shift[0] >>= 1;
             nes->controller_shift[0] |= 0x80;
         }
-        return val | 0x40;
+        return val | (nes->cpu_open_bus & 0xE0);
     }
 
     if (addr == 0x4017) {
@@ -57,7 +56,7 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
 
         // Standard controllers do not drive the Zapper light/trigger bits.
         if (!nes->zapper_enabled) {
-            return (val & 0x01) | 0x40;
+            return (val & 0x01) | (nes->cpu_open_bus & 0xE0);
         }
 
         NES_ZapperWatchdog *watch = &nes->zapper_watchdog;
@@ -89,7 +88,7 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
         uint8_t zapper_bit3 = nes->zapper_light ? 0x00 : 0x08;
         uint8_t zapper_bit4 = nes->zapper_trigger ? 0x10 : 0x00;
 
-        return (val & 0x01) | zapper_bit3 | zapper_bit4 | 0x40;
+        return (val & 0x01) | zapper_bit3 | zapper_bit4 | (nes->cpu_open_bus & 0xE0);
     }
 
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->cpu_read) {
@@ -98,7 +97,13 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
         if (handled) return data;
     }
 
-    return (addr >> 8);
+    return nes->cpu_open_bus;
+}
+
+uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
+    uint8_t value = cpu_bus_read_value(nes, addr);
+    nes->cpu_open_bus = value;
+    return value;
 }
 
 void nes_reset_zapper_watchdog(NES *nes) {
@@ -140,6 +145,7 @@ static inline void nes_step_subsystems(NES *nes) {
 }
 
 void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
+    nes->cpu_open_bus = data;
     if (addr <= 0x1FFF) {
         nes->wram[addr & 0x07FF] = data;
         return;
@@ -185,8 +191,9 @@ void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     }
 
     if (addr == 0x4016) {
+        bool was_high = nes->controller_strobe != 0;
         nes->controller_strobe = (data & 1);
-        if (nes->controller_strobe) {
+        if (was_high || nes->controller_strobe) {
             nes->controller_shift[0] = nes->controller_state[0];
             nes->controller_shift[1] = nes->controller_state[1];
         }

@@ -143,7 +143,7 @@ static uint8_t m071_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 static void m071_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     /* Mapper 71 cartridges normally use fixed 8 KiB CHR RAM. */
     if (c && addr < 0x2000 && c->chr_rom && c->chr_rom_size > 0) {
-        c->chr_rom[addr % c->chr_rom_size] = val;
+        cartridge_chr_write(c, addr % c->chr_rom_size, val);
     }
 }
 
