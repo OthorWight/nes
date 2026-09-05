@@ -138,6 +138,35 @@ The `build.sh` script checks for packages on Debian/RHEL/Homebrew, installs any 
    ```
 2. The executable `nes_emulator` will compile inside `build/` and run automatically.
 
+### Build-only and test commands
+
+| Action | Linux / macOS | Windows |
+| --- | --- | --- |
+| Build and launch (default) | `./build.sh` | `build.bat` |
+| Build without launching | `./build.sh --build-only` | `build.bat --build-only` |
+| Build and run core tests | `./build.sh --test` | `build.bat --test` |
+| Show command help | `./build.sh --help` | `build.bat --help` |
+
+`--run` explicitly selects the default build-and-launch behavior. Commands can
+also be invoked by their full path from another working directory.
+
+Build-only and test modes do not install dependencies, open the GUI, or pause
+for input. Install prerequisites beforehand when using them in automation.
+Build-only needs the compiler and SDL2 development libraries (plus `pkg-config`
+on Linux/macOS). Test mode only needs the C compiler; SDL2 and game ROMs are not
+required. Windows selects MSVC when available, otherwise GCC; use a Visual Studio
+developer command prompt for MSVC.
+
+Test mode discovers `tests/*.c`, builds each as a separate executable against the
+emulation core, and runs it immediately. It prints each test's result and a final
+pass count. Compilation errors, failed tests, and missing prerequisites return a
+nonzero exit code; an invalid command returns exit code 2. Test executables are
+written to the Git-ignored `build/tests/` directory. Test mode does not rebuild
+the GUI executable; run build-only as well to validate the full application.
+
+See [hardware test coverage](tests/README.md) for CPU/APU/PPU clock, DMA, interrupt,
+register-bus, and input checks, their reference material, and remaining gaps.
+
 ---
 
 ## Save Directories

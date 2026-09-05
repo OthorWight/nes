@@ -5,6 +5,9 @@ build/*.py
 build/Games
 build/PPUtest
 build/saves
+build/tests/
+build/include/
+build/SDL2.dll
 #build/ i want to keep executables in github to share with a friend
 
 # Third-party dependencies
@@ -18,3 +21,6 @@ SDL2/
 *.o
 *.obj
 .DS_Store
+
+# Local project planning
+/PLANNED_FEATURES.md
