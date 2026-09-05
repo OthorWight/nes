@@ -54,6 +54,11 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
             nes->controller_shift[1] |= 0x80;
         }
 
+        // Standard controllers do not drive the Zapper light/trigger bits.
+        if (!nes->zapper_enabled) {
+            return (val & 0x01) | 0x40;
+        }
+
         // Update zapper_light based on screen buffer color at (zapper_x, zapper_y)
         bool light_detected = false;
         int x = nes->zapper_x;
@@ -158,13 +163,18 @@ void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     }
 }
 
-uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
+void nes_ppu_bus_set_address(NES *nes, uint16_t addr) {
     addr &= 0x3FFF;
     uint16_t old_addr = nes->ppu.bus_address;
     nes->ppu.bus_address = addr;
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_addr_change) {
         nes->cart->vtable->ppu_addr_change(nes->cart, old_addr, addr);
     }
+}
+
+uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
+    addr &= 0x3FFF;
+    nes_ppu_bus_set_address(nes, addr);
 
     if (addr < 0x2000) {
         if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_read) {
@@ -199,11 +209,7 @@ uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
 
 void nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     addr &= 0x3FFF;
-    uint16_t old_addr = nes->ppu.bus_address;
-    nes->ppu.bus_address = addr;
-    if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_addr_change) {
-        nes->cart->vtable->ppu_addr_change(nes->cart, old_addr, addr);
-    }
+    nes_ppu_bus_set_address(nes, addr);
 
     if (addr < 0x2000) {
         if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_write) {

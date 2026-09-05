@@ -46,6 +46,7 @@ struct NES {
     uint8_t    controller_strobe;
 
     // Zapper Light Gun State
+    bool       zapper_enabled; // Port 2 light gun; false selects standard controllers
     bool       zapper_trigger;
     bool       zapper_light;
     int        zapper_x;
@@ -60,6 +61,7 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr);
 void    nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data);
 uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr);
 void    nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data);
+void    nes_ppu_bus_set_address(NES *nes, uint16_t addr);
 
 // Clock Driver
 void    nes_init(NES *nes);

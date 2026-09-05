@@ -604,6 +604,19 @@ void ppu_step(NES *nes) {
     }
 
     if (rendering_enabled && rendering_scanline) {
+        /* The idle dot drives the upcoming background pattern address without
+           reading it.  Holding the last nametable address through dot 0 would
+           create a second qualified MMC3 A12 rise on every scanline when the
+           background uses $1000.  Dot 1 starts the next nametable fetch. */
+        if (ppu->cycle == 0) {
+            uint16_t table = (ppu->ppu_ctrl & 0x10) ? 0x1000 : 0x0000;
+            uint16_t pattern_addr = table |
+                ((uint16_t)ppu->bg_next_tile_id << 4) | ppu_get_fine_y(ppu->v);
+            nes_ppu_bus_set_address(nes, pattern_addr);
+        } else if (ppu->cycle == 1) {
+            ppu->bg_next_tile_id = nes_ppu_bus_read(nes, 0x2000 | (ppu->v & 0x0FFF));
+        }
+
         /*
          * Background pipeline.  The shifters advance on dots 2-257 and
          * 322-337.  A new tile is loaded at the start of every 8-dot fetch
@@ -678,7 +691,8 @@ void ppu_step(NES *nes) {
             ppu->v = (ppu->v & 0x841F) | (ppu->t & 0x7BE0);
         }
 
-        if (ppu->cycle == 338 || ppu->cycle == 340) {
+        /* The first dummy nametable fetch is already issued at dot 337 above. */
+        if (ppu->cycle == 339) {
             uint16_t nt_addr = 0x2000 | (ppu->v & 0x0FFF);
             ppu->bg_next_tile_id = nes_ppu_bus_read(nes, nt_addr);
         }
@@ -775,4 +789,3 @@ void ppu_step(NES *nes) {
         }
     }
 }
-

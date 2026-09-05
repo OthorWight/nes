@@ -286,6 +286,8 @@ static void get_settings_filepath(char *out_path, size_t max_len) {
     }
 }
 
+static bool zapper_enabled = false;
+
 static void save_emulator_settings(void) {
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
@@ -303,7 +305,7 @@ static void save_emulator_settings(void) {
     FILE *f = fopen(filepath, "wb");
     if (!f) return;
 
-    uint32_t version = 3;
+    uint32_t version = 4;
     fwrite(&version, sizeof(version), 1, f);
     fwrite(&master_volume, sizeof(master_volume), 1, f);
     int temp_muted = audio_muted ? 1 : 0;
@@ -315,10 +317,13 @@ static void save_emulator_settings(void) {
     fwrite(&temp_debug, sizeof(temp_debug), 1, f);
     fwrite(control_mappings, sizeof(SDL_Keycode), CONTROL_COUNT, f);
     fwrite(controller_button_mappings, sizeof(SDL_GameControllerButton), CONTROL_COUNT, f);
+    int temp_zapper = zapper_enabled ? 1 : 0;
+    fwrite(&temp_zapper, sizeof(temp_zapper), 1, f);
     fclose(f);
 }
 
 static void load_emulator_settings(void) {
+    zapper_enabled = false;
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -326,7 +331,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 3) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 4) {
         fclose(f);
         return;
     }
@@ -346,9 +351,15 @@ static void load_emulator_settings(void) {
     } else if (version == 2) {
         fread(control_mappings, sizeof(SDL_Keycode), 8, f);
         fread(controller_button_mappings, sizeof(SDL_GameControllerButton), 8, f);
-    } else if (version == 3) {
+    } else if (version >= 3) {
         fread(control_mappings, sizeof(SDL_Keycode), CONTROL_COUNT, f);
         fread(controller_button_mappings, sizeof(SDL_GameControllerButton), CONTROL_COUNT, f);
+    }
+    if (version >= 4) {
+        int temp_zapper = 0;
+        if (fread(&temp_zapper, sizeof(temp_zapper), 1, f) == 1) {
+            zapper_enabled = (temp_zapper == 1);
+        }
     }
     fclose(f);
 }
@@ -931,6 +942,7 @@ int main(int argc, char *argv[]) {
     );
 
     nes_init(&nes_sys);
+    nes_sys.zapper_enabled = zapper_enabled;
 
     cpu_bus_bridge.bus_context = &nes_sys;
     cpu_bus_bridge.read = cpu_bridge_read;
@@ -1242,7 +1254,7 @@ int main(int argc, char *argv[]) {
                 }
                 draw_string(renderer, "UP/DN: Nav | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
-                char scale_buf[64], mute_buf[64], vol_buf[64], fs_buf[64], debug_buf[64];
+                char scale_buf[64], mute_buf[64], vol_buf[64], fs_buf[64], debug_buf[64], port_buf[64];
                 if (window_scale == 5) {
                     sprintf(scale_buf, "1. Window Scale: Maximized");
                 } else {
@@ -1260,27 +1272,30 @@ int main(int argc, char *argv[]) {
 
                 sprintf(fs_buf,    "4. Fullscreen:   %s", fullscreen ? "ON" : "OFF");
                 sprintf(debug_buf, "5. Console Debug:%s", console_debug_enabled ? "ON" : "OFF");
+                sprintf(port_buf, "6. Port 2: %s", zapper_enabled ? "Zapper" : "Controller");
 
                 uint32_t col0 = (menu_selection == 0) ? 0xFFFFFF : 0x888888;
                 uint32_t col1 = (menu_selection == 1) ? 0xFFFFFF : 0x888888;
                 uint32_t col2 = (menu_selection == 2) ? 0xFFFFFF : 0x888888;
                 uint32_t col3 = (menu_selection == 3) ? 0xFFFFFF : 0x888888;
                 uint32_t col4 = (menu_selection == 4) ? 0xFFFFFF : 0x888888;
+                uint32_t col5 = (menu_selection == 5) ? 0xFFFFFF : 0x888888;
 
                 draw_string(renderer, scale_buf, 40, 70, col0);
                 draw_string(renderer, mute_buf,  40, 90, col1);
                 draw_string(renderer, vol_buf,   40, 110, col2);
                 draw_string(renderer, fs_buf,    40, 130, col3);
                 draw_string(renderer, debug_buf, 40, 150, col4);
+                draw_string(renderer, port_buf,  40, 170, col5);
 
                 SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
                 SDL_Rect box = { 32, 68 + menu_selection * 20, 190, 11 };
                 SDL_RenderDrawRect(renderer, &box);
 
                 if (menu_selection == 2) {
-                    draw_string(renderer, "Use Left/Right to adjust", 24, 175, 0xFFFF00);
+                    draw_string(renderer, "Use Left/Right to adjust", 24, 200, 0xFFFF00);
                 } else {
-                    draw_string(renderer, "Press Enter to Toggle setting", 20, 175, 0xFFFF00);
+                    draw_string(renderer, "Press Enter to Toggle setting", 20, 200, 0xFFFF00);
                 }
             }
 
@@ -1293,7 +1308,7 @@ int main(int argc, char *argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_MOUSEBUTTONDOWN) {
-                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active && nes_sys.zapper_enabled) {
                     if (event.button.button == SDL_BUTTON_LEFT) {
                         int mx = event.button.x;
                         int my = event.button.y;
@@ -1307,13 +1322,11 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (event.type == SDL_MOUSEBUTTONUP) {
-                if (current_state == GUI_STATE_GAMEPLAY) {
-                    if (event.button.button == SDL_BUTTON_LEFT) {
-                        nes_sys.zapper_trigger = false;
-                    }
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    nes_sys.zapper_trigger = false;
                 }
             } else if (event.type == SDL_MOUSEMOTION) {
-                if (current_state == GUI_STATE_GAMEPLAY) {
+                if (current_state == GUI_STATE_GAMEPLAY && nes_sys.zapper_enabled) {
                     int mx = event.motion.x;
                     int my = event.motion.y;
                     if (mx < 0) mx = 0;
@@ -1465,7 +1478,7 @@ int main(int argc, char *argv[]) {
                                     else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
                                     else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
-                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 4;
+                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 5;
                                     else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = (CONTROL_COUNT + 1);
                                 }
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
@@ -1477,7 +1490,7 @@ int main(int argc, char *argv[]) {
                                 else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
-                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 4) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 5) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > (CONTROL_COUNT + 1)) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
@@ -1563,6 +1576,7 @@ int main(int argc, char *argv[]) {
                                     }
 
                                     nes_init(&nes_sys);
+                                    nes_sys.zapper_enabled = zapper_enabled;
 
                                     Cartridge *cart = cartridge_load(&nes_sys, rom_files[menu_selection]);
                                     if (!cart) {
@@ -1670,6 +1684,11 @@ int main(int argc, char *argv[]) {
                                         printf("\033[H\033[2J");
                                         fflush(stdout);
                                     }
+                                } else if (menu_selection == 5) {
+                                    zapper_enabled = !zapper_enabled;
+                                    nes_sys.zapper_enabled = zapper_enabled;
+                                    nes_sys.zapper_trigger = false;
+                                    nes_sys.zapper_light = false;
                                 }
                                 save_emulator_settings();
                             }

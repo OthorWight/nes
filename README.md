@@ -15,6 +15,10 @@
 *   **Back/Share**: NES Select
 *   **Start/Options**: NES Start
 
+### Zapper
+
+In **Settings**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. The selection is saved; switch back to **Controller** for standard games. Controller is the default.
+
 ### Quick Save & Quick Load
 *   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
 *   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
@@ -63,13 +67,11 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 *   **Mapper 64 (RAMBO-1)**: PRG/CHR banking, mirroring, and IRQ counter.
 *   **Mapper 66 (GxROM)**: Early multi-bank arcade selections.
 *   **Mapper 69 (FME-7)**: Precision IRQ interval timing counters (*Batman Return of the Joker*).
-*   **Mapper 206 (DxROM)**: Nintendo-style early MMC3 variants.
-*   **Mapper 227 (Karateka)**: Obscure multi-cart configurations.
-
----
 *   **Mapper 71 (Camerica)**: PRG banking and mirroring control, including Bee 52 compatibility.
 *   **Mapper 78 (Holy Diver)**: PRG/CHR banking and mirroring control.
 *   **Mapper 118 (TxSROM)**: PRG/CHR banking, mirroring, and IRQ counter.
+*   **Mapper 206 (DxROM)**: Nintendo-style early MMC3 variants.
+*   **Mapper 227 (Karateka)**: Obscure multi-cart configurations.
 
 ## Real-Time Step Debugger
 
