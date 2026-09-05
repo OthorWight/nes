@@ -844,6 +844,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
     char rom_meta[64];
     char time_meta[32];
     if (fread(rom_meta, 1, 64, f) != 64 || fread(time_meta, 1, 32, f) != 32) { fclose(f); return; }
+    nes_reset_zapper_watchdog(&nes_sys);
     if (fread(nes_sys.wram, 1, sizeof(nes_sys.wram), f) != sizeof(nes_sys.wram)) { fclose(f); return; }
     if (fread(nes_sys.ciram, 1, sizeof(nes_sys.ciram), f) != sizeof(nes_sys.ciram)) { fclose(f); return; }
     if (fread(nes_sys.controller_state, 1, sizeof(nes_sys.controller_state), f) != sizeof(nes_sys.controller_state)) { fclose(f); return; }
@@ -950,6 +951,9 @@ int main(int argc, char *argv[]) {
     cpu_bus_bridge.cycle_tick = NULL;
 
     bool running = true;
+    bool cursor_visible = true;
+    uint32_t last_mouse_activity = SDL_GetTicks();
+    const uint32_t cursor_idle_ms = 2000;
     SDL_Event event;
     scan_rom_directory();
 
@@ -977,6 +981,8 @@ int main(int argc, char *argv[]) {
                     }
                     nes_clock_tick(&nes_sys);
                 }
+
+                if (nes_sys.frame_ready) nes_check_zapper_stall(&nes_sys);
 
                 uint64_t emu_end_tick = SDL_GetPerformanceCounter();
                 debug_emu_ticks += (emu_end_tick - frame_start_tick);
@@ -1023,6 +1029,16 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     draw_string(renderer, notification_text, x, y, 0x00FF00);
+                }
+
+                if (nes_sys.zapper_watchdog.stalled) {
+                    SDL_Rect warning_box = { 8, 156, 240, 60 };
+                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                    SDL_RenderFillRect(renderer, &warning_box);
+                    draw_string(renderer, "Possible light-gun hang", 16, 164, 0xFFFF00);
+                    draw_string(renderer, "ESC > Settings > Port 2", 16, 176, 0xFFFFFF);
+                    draw_string(renderer, "Select Controller", 16, 188, 0xFFFFFF);
+                    draw_string(renderer, "then resume the game.", 16, 200, 0xFFFFFF);
                 }
 
                 SDL_RenderPresent(renderer);
@@ -1305,6 +1321,10 @@ int main(int argc, char *argv[]) {
         }
 
         while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_MOUSEMOTION ||
+                event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
+                last_mouse_activity = SDL_GetTicks();
+            }
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_MOUSEBUTTONDOWN) {
@@ -1689,6 +1709,7 @@ int main(int argc, char *argv[]) {
                                     nes_sys.zapper_enabled = zapper_enabled;
                                     nes_sys.zapper_trigger = false;
                                     nes_sys.zapper_light = false;
+                                    nes_reset_zapper_watchdog(&nes_sys);
                                 }
                                 save_emulator_settings();
                             }
@@ -1842,8 +1863,25 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+
+        uint32_t cursor_now = SDL_GetTicks();
+        uint32_t window_flags = SDL_GetWindowFlags(window);
+        bool can_hide_cursor = current_state == GUI_STATE_GAMEPLAY &&
+            nes_sys.cart != NULL && !debugger_active && !nes_sys.zapper_enabled &&
+            (window_flags & SDL_WINDOW_INPUT_FOCUS) &&
+            (window_flags & SDL_WINDOW_MOUSE_FOCUS);
+        if (!can_hide_cursor) {
+            last_mouse_activity = cursor_now;
+        }
+        bool show_cursor = !can_hide_cursor ||
+            (uint32_t)(cursor_now - last_mouse_activity) < cursor_idle_ms;
+        if (show_cursor != cursor_visible) {
+            SDL_ShowCursor(show_cursor ? SDL_ENABLE : SDL_DISABLE);
+            cursor_visible = show_cursor;
+        }
     }
 
+    SDL_ShowCursor(SDL_ENABLE);
     if (game_controller) {
         SDL_GameControllerClose(game_controller);
     }

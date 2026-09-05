@@ -21,6 +21,14 @@ typedef struct {
     uint32_t ppu_divider;
 } NES_Clock;
 
+typedef struct {
+    uint16_t reads;
+    uint16_t poll_pc;
+    uint16_t stalled_frames;
+    bool mixed_pcs;
+    bool stalled;
+} NES_ZapperWatchdog;
+
 #include "cpu6502.h"
 #include "ppu2c02.h"
 #include "apu2a03.h"
@@ -51,6 +59,7 @@ struct NES {
     bool       zapper_light;
     int        zapper_x;
     int        zapper_y;
+    NES_ZapperWatchdog zapper_watchdog;
 
     // Frame completion flag for frontend vsync
     bool       frame_ready;
@@ -67,5 +76,8 @@ void    nes_ppu_bus_set_address(NES *nes, uint16_t addr);
 void    nes_init(NES *nes);
 void    nes_reset(NES *nes);
 void    nes_clock_tick(NES *nes);
+// Call once per completed frame; this detects a suspected polling hang.
+void    nes_check_zapper_stall(NES *nes);
+void    nes_reset_zapper_watchdog(NES *nes);
 
 #endif

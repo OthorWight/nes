@@ -19,6 +19,8 @@
 
 In **Settings**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. The selection is saved; switch back to **Controller** for standard games. Controller is the default.
 
+If a game repeatedly polls the light gun on a black screen for about three seconds, an OSD warning suggests switching Port 2 back to Controller. This detects suspected polling hangs such as Armadillo's boot loop; it does not automatically change the selected device.
+
 ### Quick Save & Quick Load
 *   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
 *   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).

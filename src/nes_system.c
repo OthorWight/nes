@@ -9,6 +9,7 @@ void nes_init(NES *nes) {
 }
 
 void nes_reset(NES *nes) {
+    nes_reset_zapper_watchdog(nes);
     cpu_trigger_reset(&nes->cpu);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->reset) {
         nes->cart->vtable->reset(nes->cart);
@@ -59,6 +60,17 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
             return (val & 0x01) | 0x40;
         }
 
+        NES_ZapperWatchdog *watch = &nes->zapper_watchdog;
+        if (watch->reads == 0) {
+            if (watch->stalled_frames && watch->poll_pc != nes->cpu.program_counter) {
+                watch->stalled_frames = 0;
+            }
+            watch->poll_pc = nes->cpu.program_counter;
+        } else if (watch->poll_pc != nes->cpu.program_counter) {
+            watch->mixed_pcs = true;
+        }
+        if (watch->reads < UINT16_MAX) watch->reads++;
+
         // Update zapper_light based on screen buffer color at (zapper_x, zapper_y)
         bool light_detected = false;
         int x = nes->zapper_x;
@@ -87,6 +99,34 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
     }
 
     return (addr >> 8);
+}
+
+void nes_reset_zapper_watchdog(NES *nes) {
+    memset(&nes->zapper_watchdog, 0, sizeof(nes->zapper_watchdog));
+}
+
+void nes_check_zapper_stall(NES *nes) {
+    NES_ZapperWatchdog *watch = &nes->zapper_watchdog;
+    // Normal controller reads and short Zapper detection/shot sequences should
+    // not warn. Require sustained tight polling at one instruction, with the
+    // light bit high and a black screen while rendering remains disabled.
+    bool suspect = nes->zapper_enabled && !nes->zapper_trigger &&
+        !nes->zapper_light && !(nes->ppu.ppu_mask & 0x18) &&
+        watch->reads >= 256 && !watch->mixed_pcs;
+    if (suspect) {
+        for (size_t i = 0; i < sizeof(nes->ppu.screen_buffer) /
+                               sizeof(nes->ppu.screen_buffer[0]); i++) {
+            if (nes->ppu.screen_buffer[i] & 0x00FFFFFF) {
+                suspect = false;
+                break;
+            }
+        }
+    }
+    if (!suspect) watch->stalled_frames = 0;
+    else if (watch->stalled_frames < 180) watch->stalled_frames++;
+    watch->stalled = (watch->stalled_frames >= 180);
+    watch->reads = 0;
+    watch->mixed_pcs = false;
 }
 
 static inline void nes_step_subsystems(NES *nes) {
