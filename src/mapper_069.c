@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -158,7 +159,18 @@ static uint16_t fme7_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_069_state(Cartridge *c, StateIO *io) {
+    FME7Data *d = (FME7Data *)c->mapper_data;
+    d->cmd = state_u8(io, d->cmd);
+    state_bytes(io, d->chr_banks, sizeof(d->chr_banks));
+    state_bytes(io, d->prg_banks, sizeof(d->prg_banks));
+    d->irq_ctrl = state_u8(io, d->irq_ctrl);
+    d->irq_counter = state_u16(io, d->irq_counter);
+}
+
 static const MapperInterface fme7_interface = {
+    .state = mapper_069_state,
+    .state_size = sizeof(FME7Data),
     .reset = fme7_reset,
     .destroy = fme7_destroy,
     .cpu_read = fme7_cpu_read,

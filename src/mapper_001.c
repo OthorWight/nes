@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 
@@ -168,7 +169,21 @@ static uint16_t mmc1_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(mode, addr);
 }
 
+static void mapper_001_state(Cartridge *c, StateIO *io) {
+    MMC1Data *d = (MMC1Data *)c->mapper_data;
+    d->shift_reg = state_u8(io, d->shift_reg);
+    d->write_count = state_u8(io, d->write_count);
+    d->control = state_u8(io, d->control);
+    d->chr_bank_0 = state_u8(io, d->chr_bank_0);
+    d->chr_bank_1 = state_u8(io, d->chr_bank_1);
+    d->prg_bank = state_u8(io, d->prg_bank);
+    d->last_write_cycle = state_u64(io, d->last_write_cycle);
+    if (d->write_count > 4) io->ok = false;
+}
+
 static const MapperInterface mmc1_interface = {
+    .state = mapper_001_state,
+    .state_size = sizeof(MMC1Data),
     .reset = mmc1_reset,
     .destroy = mmc1_destroy,
     .cpu_read = mmc1_cpu_read,

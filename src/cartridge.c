@@ -1,6 +1,8 @@
 #include "cartridge.h"
 #include "mappers.h"
 #include "nes_system.h"
+#include "state_io.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,15 +73,16 @@ static inline MirroringMode ines_get_mirroring(uint8_t flags6) {
     return (flags6 & 0x01) ? MIRROR_VERTICAL : MIRROR_HORIZONTAL;
 }
 
-static void generate_save_filepath(char *dest, const char *src, size_t max_len) {
-    strncpy(dest, src, max_len - 5);
-    dest[max_len - 5] = '\0';
-    char *ext = strrchr(dest, '.');
-    if (ext) {
-        strcpy(ext, ".sav");
-    } else {
-        strcat(dest, ".sav");
-    }
+static bool generate_save_filepath(char *dest, const char *src, size_t max_len) {
+    const char *ext = strrchr(src, '.');
+    const char *slash = strrchr(src, '/');
+    const char *backslash = strrchr(src, '\\');
+    size_t stem = strlen(src);
+    if (ext && (!slash || ext > slash) && (!backslash || ext > backslash)) stem = (size_t)(ext - src);
+    if (stem + 5 > max_len) return false;
+    memcpy(dest, src, stem);
+    memcpy(dest + stem, ".sav", 5);
+    return true;
 }
 
 uint16_t cartridge_default_remap_ciram(MirroringMode mode, uint16_t addr) {
@@ -174,12 +177,14 @@ Cartridge* cartridge_load(NES *nes, const char *filepath) {
     cart->mapper_id = ines_get_mapper_id(flags6, flags7);
     cart->mirroring = ines_get_mirroring(flags6);
 
-    if (ines_has_trainer(flags6)) {
-        fseek(f, TRAINER_SIZE, SEEK_CUR);
+    if (ines_has_trainer(flags6) && fseek(f, TRAINER_SIZE, SEEK_CUR) != 0) {
+        cartridge_free(cart);
+        fclose(f);
+        return NULL;
     }
 
     cart->prg_rom = malloc(cart->prg_rom_size);
-    if (cart->prg_rom_size > 0 && fread(cart->prg_rom, 1, cart->prg_rom_size, f) != cart->prg_rom_size) {
+    if (!cart->prg_rom || cart->prg_rom_size == 0 || fread(cart->prg_rom, 1, cart->prg_rom_size, f) != cart->prg_rom_size) {
         fprintf(stderr, "Error: Failed to read PRG-ROM data\n");
         cartridge_free(cart);
         fclose(f);
@@ -189,7 +194,7 @@ Cartridge* cartridge_load(NES *nes, const char *filepath) {
 
     if (cart->chr_rom_size > 0) {
         cart->chr_rom = malloc(cart->chr_rom_size);
-        if (fread(cart->chr_rom, 1, cart->chr_rom_size, f) != cart->chr_rom_size) {
+        if (!cart->chr_rom || fread(cart->chr_rom, 1, cart->chr_rom_size, f) != cart->chr_rom_size) {
             fprintf(stderr, "Error: Failed to read CHR-ROM data\n");
             cartridge_free(cart);
             fclose(f);
@@ -206,39 +211,62 @@ Cartridge* cartridge_load(NES *nes, const char *filepath) {
     cart->prg_ram_size = PRG_RAM_DEFAULT_SIZE;
     cart->prg_ram = calloc(1, cart->prg_ram_size);
 
-    generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath));
-    cart->has_battery = ines_has_battery(flags6);
-    if (cart->has_battery) {
-        FILE *sf = fopen(cart->save_filepath, "rb");
-        if (sf) {
-            fread(cart->prg_ram, 1, cart->prg_ram_size, sf);
-            fclose(sf);
-            printf("Loaded battery-backed save file: %s\n", cart->save_filepath);
-        }
-    }
-
-    if (!initialize_mapper(cart)) {
+    if (!cart->chr_rom || !cart->prg_ram || !initialize_mapper(cart) || !cart->prg_ram ||
+        (cart->vtable->state_size && !cart->mapper_data)) {
         cartridge_free(cart);
         return NULL;
+    }
+    // Capture identity before any mapper or PPU writes can alter CHR memory.
+    cart->rom_identity[0] = state_crc32(header, sizeof(header));
+    cart->rom_identity[1] = state_crc32(cart->prg_rom, cart->prg_rom_size);
+    cart->rom_identity[2] = chr_rom_chunks ? state_crc32(cart->chr_rom, cart->chr_rom_size) : 0;
+    if (!generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath))) {
+        fprintf(stderr, "Battery save path is too long: %s\n", filepath);
+        cartridge_free(cart);
+        return NULL;
+    }
+    cart->has_battery = ines_has_battery(flags6);
+    if (!cartridge_load_battery(cart)) {
+        fprintf(stderr, "Cannot load battery save '%s'; preserving the existing file.\n", cart->save_filepath);
     }
 
     return cart;
 }
 
-void cartridge_save_battery(Cartridge *cart) {
-    if (cart && cart->has_battery && cart->prg_ram) {
-        FILE *sf = fopen(cart->save_filepath, "wb");
-        if (sf) {
-            fwrite(cart->prg_ram, 1, cart->prg_ram_size, sf);
-            fclose(sf);
-            printf("Saved battery-backed progress to: %s\n", cart->save_filepath);
-        }
+bool cartridge_load_battery(Cartridge *cart) {
+    if (!cart || !cart->has_battery || !cart->prg_ram_size) return true;
+    FILE *f = fopen(cart->save_filepath, "rb");
+    if (!f) {
+        if (errno == ENOENT) return true;
+        cart->battery_save_blocked = true;
+        return false;
     }
+    uint8_t *ram = malloc(cart->prg_ram_size);
+    bool ok = ram && fread(ram, 1, cart->prg_ram_size, f) == cart->prg_ram_size &&
+              fgetc(f) == EOF && !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (ok) memcpy(cart->prg_ram, ram, cart->prg_ram_size);
+    free(ram);
+    cart->battery_save_blocked = !ok;
+    return ok;
+}
+
+bool cartridge_set_save_path(Cartridge *cart, const char *path) {
+    if (!cart || !path || !*path || strlen(path) >= sizeof(cart->save_filepath)) return false;
+    strcpy(cart->save_filepath, path);
+    // A canonical save takes precedence. If it does not exist, retain the
+    // legacy ROM-adjacent RAM loaded earlier; never delete that legacy file.
+    return cartridge_load_battery(cart) && !cart->battery_save_blocked;
+}
+
+bool cartridge_save_battery(Cartridge *cart) {
+    if (!cart || !cart->has_battery || !cart->prg_ram_size) return true;
+    if (cart->battery_save_blocked || !cart->prg_ram) return false;
+    return state_atomic_write(cart->save_filepath, cart->prg_ram, cart->prg_ram_size);
 }
 
 void cartridge_free(Cartridge *cart) {
     if (cart) {
-        cartridge_save_battery(cart);
         if (cart->vtable && cart->vtable->destroy) {
             cart->vtable->destroy(cart);
         } else if (cart->mapper_data) {

@@ -11,6 +11,7 @@ extern "C" {
 
 typedef struct NES NES;
 typedef struct Cartridge Cartridge;
+typedef struct StateIO StateIO;
 
 typedef enum {
     MIRROR_HORIZONTAL,
@@ -21,6 +22,10 @@ typedef enum {
 } MirroringMode;
 
 typedef struct {
+    // Explicit field codec; reads operate on a staged cartridge, never the live one.
+    void     (*state)(Cartridge *c, StateIO *io);
+    size_t   state_size; // In-memory mapper allocation size, not the file layout.
+
     void     (*reset)(Cartridge *c);
     void     (*destroy)(Cartridge *c);
 
@@ -51,14 +56,20 @@ struct Cartridge {
     uint8_t      *prg_ram;
     uint32_t      prg_ram_size;
 
+    uint32_t      rom_identity[3]; // Header, initial PRG and CHR CRC32, before writes.
     bool          has_battery;
+    bool          battery_save_blocked; // Preserve an unreadable/corrupt existing save.
     char          save_filepath[512];
 
     void         *mapper_data;
 };
 
 Cartridge* cartridge_load(NES *nes, const char *filepath);
-void       cartridge_save_battery(Cartridge *cart);
+bool       cartridge_save_battery(Cartridge *cart);
+// A missing save is OK; any other read failure leaves RAM intact and blocks writes.
+bool       cartridge_load_battery(Cartridge *cart);
+bool       cartridge_set_save_path(Cartridge *cart, const char *path);
+// Destruction performs no I/O. Call cartridge_save_battery and check it first.
 void       cartridge_free(Cartridge *cart);
 
 uint16_t   cartridge_default_remap_ciram(MirroringMode mode, uint16_t addr);

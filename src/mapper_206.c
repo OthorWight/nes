@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -114,7 +115,15 @@ static uint16_t m206_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_206_state(Cartridge *c, StateIO *io) {
+    DxROMData *d = (DxROMData *)c->mapper_data;
+    d->bank_select = state_u8(io, d->bank_select);
+    state_bytes(io, d->regs, sizeof(d->regs));
+}
+
 static const MapperInterface m206_interface = {
+    .state = mapper_206_state,
+    .state_size = sizeof(DxROMData),
     .reset = m206_reset,
     .destroy = m206_destroy,
     .cpu_read = m206_cpu_read,

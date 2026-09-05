@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -372,7 +373,34 @@ static uint16_t mmc5_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     }
 }
 
+static void mapper_005_state(Cartridge *c, StateIO *io) {
+    MMC5Data *d = (MMC5Data *)c->mapper_data;
+    d->prg_mode = state_u8(io, d->prg_mode);
+    d->chr_mode = state_u8(io, d->chr_mode);
+    state_bytes(io, d->ram_protect, sizeof(d->ram_protect));
+    d->exram_mode = state_u8(io, d->exram_mode);
+    d->nametable_ctrl = state_u8(io, d->nametable_ctrl);
+    d->fill_tile = state_u8(io, d->fill_tile);
+    d->fill_attr = state_u8(io, d->fill_attr);
+    state_bytes(io, d->prg_regs, sizeof(d->prg_regs));
+    for (size_t i = 0; i < 8; ++i) d->chr_regs_a[i] = state_u16(io, d->chr_regs_a[i]);
+    for (size_t i = 0; i < 4; ++i) d->chr_regs_b[i] = state_u16(io, d->chr_regs_b[i]);
+    d->chr_high = state_u8(io, d->chr_high);
+    d->mult_a = state_u8(io, d->mult_a);
+    d->mult_b = state_u8(io, d->mult_b);
+    d->irq_target = state_u8(io, d->irq_target);
+    d->irq_enabled = state_bool(io, d->irq_enabled);
+    d->irq_pending = state_bool(io, d->irq_pending);
+    d->in_frame = state_bool(io, d->in_frame);
+    d->scanline = state_i32(io, d->scanline);
+    state_bytes(io, d->exram, sizeof(d->exram));
+    d->exram_latch = state_u8(io, d->exram_latch);
+    if (d->scanline < 0 || d->scanline > 240 || d->prg_mode > 3 || d->chr_mode > 3 || d->exram_mode > 3) io->ok = false;
+}
+
 static const MapperInterface mmc5_interface = {
+    .state = mapper_005_state,
+    .state_size = sizeof(MMC5Data),
     .reset = mmc5_reset,
     .destroy = mmc5_destroy,
     .cpu_read = mmc5_cpu_read,

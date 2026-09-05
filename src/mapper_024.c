@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -259,7 +260,25 @@ static uint16_t m024_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_024_state(Cartridge *c, StateIO *io) {
+    VRC6Data *d = (VRC6Data *)c->mapper_data;
+    d->prg_bank_16k = state_u8(io, d->prg_bank_16k);
+    d->prg_bank_8k = state_u8(io, d->prg_bank_8k);
+    state_bytes(io, d->chr_regs, sizeof(d->chr_regs));
+    d->chr_mode = state_u8(io, d->chr_mode);
+    d->ram_enable = state_bool(io, d->ram_enable);
+    d->irq_latch = state_u8(io, d->irq_latch);
+    d->irq_ctrl = state_u8(io, d->irq_ctrl);
+    d->irq_counter = state_u8(io, d->irq_counter);
+    d->prescaler = state_i16(io, d->prescaler);
+    d->irq_pending = state_bool(io, d->irq_pending);
+    d->swap_a0_a1 = state_bool(io, d->swap_a0_a1);
+    if (d->prescaler < 1 || d->prescaler > 341 || d->swap_a0_a1 != (c->mapper_id == 26)) io->ok = false;
+}
+
 static const MapperInterface vrc6_interface = {
+    .state = mapper_024_state,
+    .state_size = sizeof(VRC6Data),
     .reset = m024_reset,
     .destroy = m024_destroy,
     .cpu_read = m024_cpu_read,

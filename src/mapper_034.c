@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 
 typedef struct {
@@ -98,7 +99,16 @@ static uint16_t m034_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_034_state(Cartridge *c, StateIO *io) {
+    BNROMNINAData *d = (BNROMNINAData *)c->mapper_data;
+    d->prg_bank = state_u8(io, d->prg_bank);
+    d->chr_bank_0 = state_u8(io, d->chr_bank_0);
+    d->chr_bank_1 = state_u8(io, d->chr_bank_1);
+}
+
 static const MapperInterface m034_interface = {
+    .state = mapper_034_state,
+    .state_size = sizeof(BNROMNINAData),
     .reset = m034_reset,
     .destroy = m034_destroy,
     .cpu_read = m034_cpu_read,

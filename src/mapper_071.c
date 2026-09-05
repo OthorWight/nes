@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -164,7 +165,17 @@ static uint16_t m071_remap_ciram_addr(Cartridge *c,
     return cartridge_default_remap_ciram(mode, addr);
 }
 
+static void mapper_071_state(Cartridge *c, StateIO *io) {
+    CamericaData *d = (CamericaData *)c->mapper_data;
+    d->prg_bank = state_u8(io, d->prg_bank);
+    d->hardwired_mirroring = state_enum(io, d->hardwired_mirroring);
+    d->bee52_compatibility = state_bool(io, d->bee52_compatibility);
+    if ((unsigned)d->hardwired_mirroring > MIRROR_ONE_SCREEN_HIGH) io->ok = false;
+}
+
 static const MapperInterface m071_interface = {
+    .state = mapper_071_state,
+    .state_size = sizeof(CamericaData),
     .reset = m071_reset,
     .destroy = m071_destroy,
     .cpu_read = m071_cpu_read,

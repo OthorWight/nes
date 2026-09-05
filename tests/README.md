@@ -1,12 +1,14 @@
-# Core hardware regression tests
+# Core regression tests
 
 Run `./build.sh --test` on Linux/macOS or `build.bat --test` on Windows.
 Each top-level `.c` file is an executable test suite, automatically discovered by
 the runner. A failed assertion or compilation stops the command with a nonzero
 exit code. No SDL installation, display, audio device, or game ROM is required.
 
-These tests exercise hardware behavior that games depend on, without embedding
-game code, filenames, ROM hashes, or game-specific timing workarounds.
+The hardware tests exercise behavior that games depend on, without embedding
+game code, filenames, ROM hashes, or game-specific timing workarounds. Save suites
+also check application reliability using generated cartridge data in temporary
+subdirectories under `build/tests/`, removed on success.
 
 ## Coverage
 
@@ -20,6 +22,8 @@ game code, filenames, ROM hashes, or game-specific timing workarounds.
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM filtered A12 split timing with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
+| `save_states.c` | All 23 mapper IDs: full in-memory restore, fixed-input replay, frame/audio agreement, partial serial writes and IRQ state; wrong-ROM/version/corrupt/legacy rejection, atomic file replacement and failure checks |
+| `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
 
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus
@@ -74,3 +78,6 @@ Use bounded loops so regressions fail instead of hanging the runner. Prefer a
 small synthetic instruction sequence or register setup over a game dependency.
 If a documented expectation fails, investigate the core; do not silently widen
 the tolerance or encode the current bug as expected behavior.
+
+See [save-state format and test details](../docs/SAVE_STATES.md) for the resume
+boundary, migration policy, and persistence API.

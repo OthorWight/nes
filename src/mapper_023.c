@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -195,7 +196,24 @@ static uint16_t m023_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_023_state(Cartridge *c, StateIO *io) {
+    VRC24Data *d = (VRC24Data *)c->mapper_data;
+    d->prg_bank_0 = state_u8(io, d->prg_bank_0);
+    d->prg_bank_1 = state_u8(io, d->prg_bank_1);
+    d->prg_mode = state_u8(io, d->prg_mode);
+    state_bytes(io, d->chr_low, sizeof(d->chr_low));
+    state_bytes(io, d->chr_high, sizeof(d->chr_high));
+    d->irq_latch = state_u8(io, d->irq_latch);
+    d->irq_ctrl = state_u8(io, d->irq_ctrl);
+    d->irq_counter = state_u8(io, d->irq_counter);
+    d->prescaler = state_i16(io, d->prescaler);
+    d->irq_pending = state_bool(io, d->irq_pending);
+    if (d->prescaler < 1 || d->prescaler > 341) io->ok = false;
+}
+
 static const MapperInterface m023_interface = {
+    .state = mapper_023_state,
+    .state_size = sizeof(VRC24Data),
     .reset = m023_reset,
     .destroy = m023_destroy,
     .cpu_read = m023_cpu_read,

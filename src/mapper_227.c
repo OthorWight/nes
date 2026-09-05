@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -105,7 +106,15 @@ static uint16_t m227_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_227_state(Cartridge *c, StateIO *io) {
+    M227Data *d = (M227Data *)c->mapper_data;
+    d->bank0 = state_u8(io, d->bank0);
+    d->bank1 = state_u8(io, d->bank1);
+}
+
 static const MapperInterface m227_interface = {
+    .state = mapper_227_state,
+    .state_size = sizeof(M227Data),
     .reset = m227_reset,
     .destroy = m227_destroy,
     .cpu_read = m227_cpu_read,

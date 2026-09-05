@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 
 typedef struct {
@@ -142,7 +143,20 @@ static uint16_t mmc2_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_009_state(Cartridge *c, StateIO *io) {
+    MMC2Data *d = (MMC2Data *)c->mapper_data;
+    d->prg_bank = state_u8(io, d->prg_bank);
+    d->chr_bank_0_fd = state_u8(io, d->chr_bank_0_fd);
+    d->chr_bank_0_fe = state_u8(io, d->chr_bank_0_fe);
+    d->chr_bank_1_fd = state_u8(io, d->chr_bank_1_fd);
+    d->chr_bank_1_fe = state_u8(io, d->chr_bank_1_fe);
+    d->latch_0 = state_u8(io, d->latch_0);
+    d->latch_1 = state_u8(io, d->latch_1);
+}
+
 static const MapperInterface mmc2_interface = {
+    .state = mapper_009_state,
+    .state_size = sizeof(MMC2Data),
     .reset = mmc2_reset,
     .destroy = mmc2_destroy,
     .cpu_read = mmc2_cpu_read,

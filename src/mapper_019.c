@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -195,7 +196,18 @@ static uint16_t m019_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return 0;
 }
 
+static void mapper_019_state(Cartridge *c, StateIO *io) {
+    Namco163Data *d = (Namco163Data *)c->mapper_data;
+    state_bytes(io, d->chr_banks, sizeof(d->chr_banks));
+    state_bytes(io, d->nt_banks, sizeof(d->nt_banks));
+    state_bytes(io, d->prg_banks, sizeof(d->prg_banks));
+    d->irq_counter = state_u16(io, d->irq_counter);
+    d->irq_enabled = state_bool(io, d->irq_enabled);
+}
+
 static const MapperInterface m019_interface = {
+    .state = mapper_019_state,
+    .state_size = sizeof(Namco163Data),
     .reset = m019_reset,
     .destroy = m019_destroy,
     .cpu_read = m019_cpu_read,

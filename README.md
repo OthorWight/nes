@@ -46,7 +46,7 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 
 ### System Features
 *   **Audio/Video Output**: Pure SDL2-driven audio queue (44.1 kHz downsampled) and scaling logic (1x-5x, Fullscreen support).
-*   **Save States**: 10 automatic rolling slots (`quick_0` through `quick_9`) to ensure you never accidentally overwrite a good save, alongside limitless timestamped manual saves.
+*   **Save States**: 10 rolling slots (`quick_0` through `quick_9`) plus timestamped manual saves. Versioned, ROM-checked states preserve CPU/PPU/APU and mapper execution state; invalid loads leave the running game intact.
 *   **On-Screen Display (OSD)**: Outlined, double-pass drop-shadow OSD notifications (e.g., "STATE SAVED") rendered on top of active gameplay.
 *   **Input**: Real-time hot-plugging support for USB/Bluetooth gamepads with analog deadzones and a fully-mappable keyboard interface.
 *   **Zapper Light Gun Support**: Fully emulated light gun logic using host mouse clicks, validating screen pixel luminance values at the cursor target.
@@ -110,7 +110,7 @@ F7:BRK | UP/DN:Nav | ESC:Menu
 
 *   **Expansion Audio**: Emulation for cartridge-based expansion audio synthesis (such as Namco 163, Sunsoft 5B, or Konami VRC6/VRC7 sound chips) is not yet supported.
 *   **NTSC/PAL Select**: Emulation runs at NTSC clock/divider speeds by default; dynamic PAL system toggle options are not yet implemented.
-*   **Save State Compression**: States are written as uncompressed binary blobs; adding GZIP/Deflate serialization is planned.
+*   **Save State Compression**: States use an explicit, versioned binary format; optional compression remains planned.
 
 ---
 
@@ -164,12 +164,18 @@ nonzero exit code; an invalid command returns exit code 2. Test executables are
 written to the Git-ignored `build/tests/` directory. Test mode does not rebuild
 the GUI executable; run build-only as well to validate the full application.
 
-See [hardware test coverage](tests/README.md) for CPU/APU/PPU clock, DMA, interrupt,
-register-bus, and input checks, their reference material, and remaining gaps.
+See [test coverage](tests/README.md) for CPU/APU/PPU timing, DMA, interrupt, input,
+and save reliability checks, their reference material, and remaining gaps.
 
 ---
 
 ## Save Directories
-*   **Saves (`.sav`)**: Battery-backed progress (WRAM/SRAM) is flushed to the matching game file directory automatically on exit.
+
+*   **Saves (`.sav`)**: Battery-backed PRG RAM is saved on exit and ROM changes to `saves/<RomName_Without_Extension>/<RomName_Without_Extension>.sav` beside the executable. Existing ROM-adjacent saves are imported when no canonical save exists; legacy files are preserved.
 *   **Save States (`.state`)**: Quicksaves and timestamped manual saves are stored in a dedicated subfolder structure separated by game name under:
     `saves/<RomName_Without_Extension>/`
+
+State and battery writes replace the destination only after the temporary file is
+written successfully. Failed operations show an OSD error. **Older unversioned
+`.state` files are unsupported; create new states with this build.** Valid battery
+`.sav` files keep their raw format. See [save reliability and format details](docs/SAVE_STATES.md).

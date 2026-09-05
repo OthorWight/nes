@@ -14,17 +14,6 @@
  * It supplies the externally visible OAM bus and the sticky overflow flag;
  * the existing renderer continues to fetch and draw sprites.
  */
-typedef struct {
-    const PPU2C02 *owner;
-    uint8_t secondary[32];
-    uint8_t bus;
-    uint8_t n;
-    uint8_t m;
-    uint8_t secondary_index;
-    bool done;
-} Bee52OAMEvalState;
-
-static Bee52OAMEvalState bee52_oam_eval;
 
 static inline bool bee52_ppu_rendering_enabled(const PPU2C02 *p) {
     return (p->ppu_mask & 0x18u) != 0;
@@ -42,68 +31,61 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
     const int sl = p->scanline;
     const int cy = p->cycle;
 
-    if (bee52_oam_eval.owner != p) {
-        memset(&bee52_oam_eval, 0, sizeof(bee52_oam_eval));
-        bee52_oam_eval.owner = p;
-        bee52_oam_eval.bus = 0xFFu;
-        memset(bee52_oam_eval.secondary, 0xFF, sizeof(bee52_oam_eval.secondary));
-    }
-
     if (!bee52_ppu_rendering_enabled(p) || sl < 0 || sl >= 240) {
         return;
     }
 
     if (cy == 1) {
-        bee52_oam_eval.n = 0;
-        bee52_oam_eval.m = 0;
-        bee52_oam_eval.secondary_index = 0;
-        bee52_oam_eval.done = false;
-        bee52_oam_eval.bus = 0xFFu;
-        memset(bee52_oam_eval.secondary, 0xFF, sizeof(bee52_oam_eval.secondary));
+        p->oam_eval.n = 0;
+        p->oam_eval.m = 0;
+        p->oam_eval.secondary_index = 0;
+        p->oam_eval.done = false;
+        p->oam_eval.bus = 0xFFu;
+        memset(p->oam_eval.secondary, 0xFF, sizeof(p->oam_eval.secondary));
     }
 
     /* Secondary OAM clear: the internal OAM bus reads as $FF. */
     if (cy >= 1 && cy <= 64) {
-        bee52_oam_eval.bus = 0xFFu;
+        p->oam_eval.bus = 0xFFu;
         return;
     }
 
     if (cy >= 65 && cy <= 256) {
         if (cy == 65) {
-            bee52_oam_eval.n = 0;
-            bee52_oam_eval.m = 0;
-            bee52_oam_eval.secondary_index = 0;
-            bee52_oam_eval.done = false;
+            p->oam_eval.n = 0;
+            p->oam_eval.m = 0;
+            p->oam_eval.secondary_index = 0;
+            p->oam_eval.done = false;
         }
 
-        if (bee52_oam_eval.done || bee52_oam_eval.n >= 64u) {
-            bee52_oam_eval.bus = 0xFFu;
-            bee52_oam_eval.done = true;
+        if (p->oam_eval.done || p->oam_eval.n >= 64u) {
+            p->oam_eval.bus = 0xFFu;
+            p->oam_eval.done = true;
             return;
         }
 
         if (cy & 1) {
             /* Odd evaluation cycles read primary OAM. */
-            unsigned index = ((unsigned)bee52_oam_eval.n << 2) | bee52_oam_eval.m;
-            bee52_oam_eval.bus = p->oam_ram[index & 0xFFu];
+            unsigned index = ((unsigned)p->oam_eval.n << 2) | p->oam_eval.m;
+            p->oam_eval.bus = p->oam_ram[index & 0xFFu];
             return;
         }
 
         /* Even cycles process/copy the byte read on the preceding odd cycle. */
-        if (bee52_oam_eval.secondary_index < 32u) {
-            if (bee52_oam_eval.m == 0u) {
-                if (bee52_sprite_y_in_range(p, bee52_oam_eval.bus)) {
-                    bee52_oam_eval.secondary[bee52_oam_eval.secondary_index++] = bee52_oam_eval.bus;
-                    bee52_oam_eval.m = 1u;
+        if (p->oam_eval.secondary_index < 32u) {
+            if (p->oam_eval.m == 0u) {
+                if (bee52_sprite_y_in_range(p, p->oam_eval.bus)) {
+                    p->oam_eval.secondary[p->oam_eval.secondary_index++] = p->oam_eval.bus;
+                    p->oam_eval.m = 1u;
                 } else {
-                    bee52_oam_eval.n++;
+                    p->oam_eval.n++;
                 }
             } else {
-                bee52_oam_eval.secondary[bee52_oam_eval.secondary_index++] = bee52_oam_eval.bus;
-                bee52_oam_eval.m++;
-                if (bee52_oam_eval.m >= 4u) {
-                    bee52_oam_eval.m = 0u;
-                    bee52_oam_eval.n++;
+                p->oam_eval.secondary[p->oam_eval.secondary_index++] = p->oam_eval.bus;
+                p->oam_eval.m++;
+                if (p->oam_eval.m >= 4u) {
+                    p->oam_eval.m = 0u;
+                    p->oam_eval.n++;
                 }
             }
         } else {
@@ -111,15 +93,15 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
                currently tested byte is in range, increments M too.  This is
                the diagonal overflow bug and can test tile/attribute/X bytes
                as Y values. */
-            if (bee52_sprite_y_in_range(p, bee52_oam_eval.bus)) {
+            if (bee52_sprite_y_in_range(p, p->oam_eval.bus)) {
                 p->ppu_status |= 0x20u;
-                bee52_oam_eval.m = (uint8_t)((bee52_oam_eval.m + 1u) & 3u);
+                p->oam_eval.m = (uint8_t)((p->oam_eval.m + 1u) & 3u);
             }
-            bee52_oam_eval.n++;
+            p->oam_eval.n++;
         }
 
-        if (bee52_oam_eval.n >= 64u) {
-            bee52_oam_eval.done = true;
+        if (p->oam_eval.n >= 64u) {
+            p->oam_eval.done = true;
         }
         return;
     }
@@ -130,13 +112,13 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
         unsigned sprite = phase >> 3;
         unsigned byte = (phase >> 1) & 3u;
         unsigned index = (sprite << 2) | byte;
-        bee52_oam_eval.bus = bee52_oam_eval.secondary[index & 31u];
+        p->oam_eval.bus = p->oam_eval.secondary[index & 31u];
         p->oam_addr = 0;
         return;
     }
 
     if (cy >= 321 && cy <= 340) {
-        bee52_oam_eval.bus = p->oam_ram[0];
+        p->oam_eval.bus = p->oam_ram[0];
         p->oam_addr = 0;
     }
 }
@@ -145,7 +127,7 @@ static uint8_t bee52_ppu_oamdata_read(PPU2C02 *p) {
     const int sl = p->scanline;
     const int cy = p->cycle;
     if (bee52_ppu_rendering_enabled(p) && sl >= 0 && sl < 240 && cy >= 1 && cy <= 340) {
-        return bee52_oam_eval.bus;
+        return p->oam_eval.bus;
     }
     return p->oam_ram[p->oam_addr];
 }
@@ -276,6 +258,9 @@ static void ppu_evaluate_sprites(NES *nes, int target_scanline) {
 }
 
 void ppu_init(PPU2C02 *ppu) {
+    memset(&ppu->oam_eval, 0, sizeof(ppu->oam_eval));
+    ppu->oam_eval.bus = 0xFF;
+    memset(ppu->oam_eval.secondary, 0xFF, sizeof(ppu->oam_eval.secondary));
     memset(ppu->palette_ram, 0x0F, sizeof(ppu->palette_ram));
     memset(ppu->oam_ram, 0, sizeof(ppu->oam_ram));
     memset(ppu->screen_buffer, 0, sizeof(ppu->screen_buffer));

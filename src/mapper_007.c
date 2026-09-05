@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 
 typedef struct {
@@ -73,7 +74,14 @@ static uint16_t axrom_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_007_state(Cartridge *c, StateIO *io) {
+    AxROMData *d = (AxROMData *)c->mapper_data;
+    d->prg_bank = state_u8(io, d->prg_bank);
+}
+
 static const MapperInterface axrom_interface = {
+    .state = mapper_007_state,
+    .state_size = sizeof(AxROMData),
     .reset = axrom_reset,
     .destroy = axrom_destroy,
     .cpu_read = axrom_cpu_read,

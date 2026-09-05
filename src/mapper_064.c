@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include "nes_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -70,7 +71,7 @@ static void m064_ppu_dot(Cartridge *c, uint16_t addr) {
     bool current_a12 = (addr & 0x1000) != 0;
 
     if (!current_a12) {
-        d->a12_low_count++;
+        if (d->a12_low_count < 8) d->a12_low_count++;
     } else {
         if (!d->last_a12 && current_a12) {
             if (d->a12_low_count >= 8) {
@@ -223,7 +224,27 @@ static uint16_t m064_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_064_state(Cartridge *c, StateIO *io) {
+    M064Data *d = (M064Data *)c->mapper_data;
+    d->bank_select = state_u8(io, d->bank_select);
+    state_bytes(io, d->regs, sizeof(d->regs));
+    d->chr_1k_mode = state_bool(io, d->chr_1k_mode);
+    d->prg_mode = state_bool(io, d->prg_mode);
+    d->chr_mode = state_bool(io, d->chr_mode);
+    d->irq_latch = state_u8(io, d->irq_latch);
+    d->irq_counter = state_u8(io, d->irq_counter);
+    d->irq_enabled = state_bool(io, d->irq_enabled);
+    d->irq_reload = state_bool(io, d->irq_reload);
+    d->irq_mode = state_u8(io, d->irq_mode);
+    d->cycle_prescaler = state_u8(io, d->cycle_prescaler);
+    d->last_a12 = state_bool(io, d->last_a12);
+    d->a12_low_count = state_i32(io, d->a12_low_count);
+    if (d->a12_low_count < 0 || d->a12_low_count > 8 || d->cycle_prescaler > 3 || d->irq_mode > 1) io->ok = false;
+}
+
 static const MapperInterface m064_interface = {
+    .state = mapper_064_state,
+    .state_size = sizeof(M064Data),
     .reset = m064_reset,
     .destroy = m064_destroy,
     .cpu_read = m064_cpu_read,

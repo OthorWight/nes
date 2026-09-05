@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 
 static uint8_t nrom_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
     if (addr >= 0x6000 && addr <= 0x7FFF) {
@@ -42,7 +43,14 @@ static uint16_t nrom_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_000_state(Cartridge *c, StateIO *io) {
+    (void)c;
+    (void)io;
+}
+
 static const MapperInterface nrom_interface = {
+    .state = mapper_000_state,
+    .state_size = 0,
     .reset = NULL,
     .destroy = NULL,
     .cpu_read = nrom_cpu_read,

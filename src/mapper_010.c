@@ -1,5 +1,6 @@
 #include "mappers.h"
 #include "cartridge.h"
+#include "state_io.h"
 #include <stdlib.h>
 
 typedef struct {
@@ -131,7 +132,20 @@ static uint16_t mmc4_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_c
     return cartridge_default_remap_ciram(c->mirroring, addr);
 }
 
+static void mapper_010_state(Cartridge *c, StateIO *io) {
+    MMC4Data *d = (MMC4Data *)c->mapper_data;
+    d->prg_bank = state_u8(io, d->prg_bank);
+    d->chr_bank_0_fd = state_u8(io, d->chr_bank_0_fd);
+    d->chr_bank_0_fe = state_u8(io, d->chr_bank_0_fe);
+    d->chr_bank_1_fd = state_u8(io, d->chr_bank_1_fd);
+    d->chr_bank_1_fe = state_u8(io, d->chr_bank_1_fe);
+    d->latch_0 = state_u8(io, d->latch_0);
+    d->latch_1 = state_u8(io, d->latch_1);
+}
+
 static const MapperInterface mmc4_interface = {
+    .state = mapper_010_state,
+    .state_size = sizeof(MMC4Data),
     .reset = mmc4_reset,
     .destroy = mmc4_destroy,
     .cpu_read = mmc4_cpu_read,

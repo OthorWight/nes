@@ -7,6 +7,15 @@
 typedef struct NES NES;
 
 typedef struct {
+    uint8_t secondary[32];
+    uint8_t bus;
+    uint8_t n;
+    uint8_t m;
+    uint8_t secondary_index;
+    bool done;
+} PPUOAMEvalState;
+
+typedef struct {
     uint8_t x;
     uint8_t low_byte;
     uint8_t high_byte;
@@ -15,6 +24,7 @@ typedef struct {
 } ScanlineSprite;
 
 typedef struct {
+    PPUOAMEvalState oam_eval;
     uint8_t palette_ram[32];
     uint8_t oam_ram[256];
 

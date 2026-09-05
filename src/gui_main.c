@@ -12,6 +12,7 @@
 #include <SDL2/SDL.h>
 #include "nes_system.h"
 #include "debugger.h"
+#include "save_state.h"
 
 NES nes_sys;
 static CPUBus cpu_bus_bridge;
@@ -207,33 +208,20 @@ static void get_state_file_info(const char *filename, char *out_buf, size_t max_
         snprintf(out_buf, max_len, "%.40s: [Error Opening]", filename);
         return;
     }
-    uint32_t magic = 0;
-    if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != 0x53544154) {
-        snprintf(out_buf, max_len, "%.40s: [Invalid]", filename);
-        fclose(f);
-        return;
-    }
-    char rom_meta[64] = {0};
-    char time_meta[32] = {0};
-    if (fread(rom_meta, 1, 64, f) != 64 || fread(time_meta, 1, 32, f) != 32) {
-        snprintf(out_buf, max_len, "%.40s: [Corrupt]", filename);
-        fclose(f);
-        return;
-    }
+    unsigned char magic[8] = {0};
+    size_t count = fread(magic, 1, sizeof(magic), f);
     fclose(f);
-
-    char *ext = strrchr(rom_meta, '.');
-    if (ext && (strcmp(ext, ".nes") == 0 || strcmp(ext, ".NES") == 0)) {
-        *ext = '\0';
+    if (count != 8 || memcmp(magic, "NESSTATE", 8) != 0) {
+        snprintf(out_buf, max_len, "%.40s: [Old or invalid state]", filename);
+        return;
     }
-
-    char clean_filename[128];
-    strncpy(clean_filename, filename, sizeof(clean_filename) - 1);
-    clean_filename[sizeof(clean_filename) - 1] = '\0';
-    char *state_ext = strrchr(clean_filename, '.');
-    if (state_ext) *state_ext = '\0';
-
-    snprintf(out_buf, max_len, "%.40s: %s", clean_filename, time_meta);
+    struct stat st;
+    char time_meta[32] = "";
+    if (stat(filepath, &st) == 0) {
+        struct tm *tm_info = localtime(&st.st_mtime);
+        if (tm_info) strftime(time_meta, sizeof(time_meta), "%m/%d %H:%M", tm_info);
+    }
+    snprintf(out_buf, max_len, "%.40s: %s", filename, time_meta);
 }
 
 static void get_clean_rom_name(char *out_buf, size_t max_len) {
@@ -242,38 +230,28 @@ static void get_clean_rom_name(char *out_buf, size_t max_len) {
     if (ext) *ext = '\0';
 }
 
-static void save_battery_ram(void) {
-    if (!nes_sys.cart || !nes_sys.cart->prg_ram || nes_sys.cart->prg_ram_size == 0) return;
+static bool save_battery_ram(void) {
+    if (cartridge_save_battery(nes_sys.cart)) return true;
+    show_notification("BATTERY SAVE FAILED");
+    notification_timer = 180;
+    fprintf(stderr, "Battery save failed: %s\n", nes_sys.cart->save_filepath);
+    return false;
+}
+
+static bool load_battery_ram(void) {
+    if (!nes_sys.cart) return true;
     char rom_name_clean[256];
     get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s.sav", save_state_dir, rom_name_clean);
-    FILE *f = fopen(filepath, "wb");
-    if (f) {
-        fwrite(nes_sys.cart->prg_ram, 1, nes_sys.cart->prg_ram_size, f);
-        fclose(f);
+    if (!cartridge_set_save_path(nes_sys.cart, filepath)) {
+        nes_sys.cart->battery_save_blocked = true;
+        show_notification("BATTERY LOAD FAILED");
+        fprintf(stderr, "Battery load failed; existing saves protected: %s\n", filepath);
+        notification_timer = 180;
+        return false;
     }
-}
-
-static void load_battery_ram(void) {
-    if (!nes_sys.cart || !nes_sys.cart->prg_ram || nes_sys.cart->prg_ram_size == 0) return;
-    char rom_name_clean[256];
-    get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
-    char filepath[1024];
-    snprintf(filepath, sizeof(filepath), "%s/%s.sav", save_state_dir, rom_name_clean);
-    FILE *f = fopen(filepath, "rb");
-    if (f) {
-        fread(nes_sys.cart->prg_ram, 1, nes_sys.cart->prg_ram_size, f);
-        fclose(f);
-    }
-}
-
-static void cleanup_default_sav(void) {
-    char rom_name_clean[256];
-    get_clean_rom_name(rom_name_clean, sizeof(rom_name_clean));
-    char default_sav[512];
-    snprintf(default_sav, sizeof(default_sav), "%s.sav", rom_name_clean);
-    remove(default_sav);
+    return true;
 }
 
 static void get_settings_filepath(char *out_path, size_t max_len) {
@@ -554,6 +532,31 @@ void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t
     }
 }
 
+static void draw_notification(SDL_Renderer *renderer) {
+    if (notification_timer > 0) {
+        notification_timer--;
+        int text_w = (int)strlen(notification_text) * 8;
+        int x = 256 - text_w - 12;
+        int y = 240 - 8 - 12;
+
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = -2; dy <= 2; dy++) {
+                if (abs(dx) == 2 || abs(dy) == 2) {
+                    draw_string(renderer, notification_text, x + dx, y + dy, 0xFFFFFF);
+                }
+            }
+        }
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                if (dx != 0 || dy != 0) {
+                    draw_string(renderer, notification_text, x + dx, y + dy, 0x000000);
+                }
+            }
+        }
+        draw_string(renderer, notification_text, x, y, 0x00FF00);
+    }
+}
+
 static void push_synthetic_key(SDL_Keycode sym, Uint32 type) {
     SDL_Event new_event;
     SDL_zero(new_event);
@@ -777,112 +780,31 @@ static void update_console_debug(CPU6502 *cpu) {
 }
 
 static void save_emulator_state(const char *dir, const char *filename) {
-    if (!nes_sys.cart) return;
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
-    FILE *f = fopen(filepath, "wb");
-    if (!f) return;
-
-    uint32_t magic = 0x53544154;
-    fwrite(&magic, sizeof(magic), 1, f);
-
-    char rom_meta[64] = {0};
-    snprintf(rom_meta, sizeof(rom_meta), "%.63s", loaded_rom_name);
-    fwrite(rom_meta, 1, 64, f);
-
-    time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
-    char time_meta[32] = {0};
-    if (tm_info) {
-        strftime(time_meta, sizeof(time_meta), "%m/%d %H:%M", tm_info);
+    NES_StateResult result = nes_state_save(&nes_sys, filepath);
+    show_notification(result == NES_STATE_OK ? "STATE SAVED" : nes_state_message(result));
+    if (result != NES_STATE_OK) {
+        notification_timer = 180;
+        fprintf(stderr, "%s: %s\n", filepath, nes_state_message(result));
     }
-    fwrite(time_meta, 1, 32, f);
-
-    fwrite(nes_sys.wram, 1, sizeof(nes_sys.wram), f);
-    fwrite(nes_sys.ciram, 1, sizeof(nes_sys.ciram), f);
-    fwrite(nes_sys.controller_state, 1, sizeof(nes_sys.controller_state), f);
-    fwrite(nes_sys.controller_shift, 1, sizeof(nes_sys.controller_shift), f);
-    fwrite(&nes_sys.cpu, sizeof(CPU6502), 1, f);
-    fwrite(nes_sys.ppu.palette_ram, 1, sizeof(nes_sys.ppu.palette_ram), f);
-    fwrite(nes_sys.ppu.oam_ram, 1, sizeof(nes_sys.ppu.oam_ram), f);
-    fwrite(&nes_sys.ppu.v, sizeof(nes_sys.ppu.v), 1, f);
-    fwrite(&nes_sys.ppu.t, sizeof(nes_sys.ppu.t), 1, f);
-    fwrite(&nes_sys.ppu.x, sizeof(nes_sys.ppu.x), 1, f);
-    fwrite(&nes_sys.ppu.w, sizeof(nes_sys.ppu.w), 1, f);
-    fwrite(&nes_sys.ppu.ppu_ctrl, sizeof(nes_sys.ppu.ppu_ctrl), 1, f);
-    fwrite(&nes_sys.ppu.ppu_mask, sizeof(nes_sys.ppu.ppu_mask), 1, f);
-    fwrite(&nes_sys.ppu.ppu_status, sizeof(nes_sys.ppu.ppu_status), 1, f);
-    fwrite(&nes_sys.ppu.oam_addr, sizeof(nes_sys.ppu.oam_addr), 1, f);
-    fwrite(&nes_sys.ppu.buffered_data, sizeof(nes_sys.ppu.buffered_data), 1, f);
-    fwrite(&nes_sys.ppu.scanline, sizeof(nes_sys.ppu.scanline), 1, f);
-    fwrite(&nes_sys.ppu.cycle, sizeof(nes_sys.ppu.cycle), 1, f);
-    fwrite(&nes_sys.apu, sizeof(APU2A03), 1, f);
-
-    uint32_t mirroring_val = (uint32_t)nes_sys.cart->mirroring;
-    fwrite(&mirroring_val, sizeof(mirroring_val), 1, f);
-
-    uint32_t prg_ram_sz = (nes_sys.cart->prg_ram != NULL) ? nes_sys.cart->prg_ram_size : 0;
-    fwrite(&prg_ram_sz, sizeof(prg_ram_sz), 1, f);
-    if (prg_ram_sz > 0) {
-        fwrite(nes_sys.cart->prg_ram, 1, prg_ram_sz, f);
-    }
-    fclose(f);
 }
 
 static void load_emulator_state(const char *dir, const char *filename) {
-    if (!nes_sys.cart) return;
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
-    FILE *f = fopen(filepath, "rb");
-    if (!f) return;
-
-    uint32_t magic = 0;
-    if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != 0x53544154) {
-        fclose(f);
-        return;
+    NES_StateResult result = nes_state_load(&nes_sys, filepath);
+    show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
+    if (result == NES_STATE_OK) {
+        if (audio_device) SDL_ClearQueuedAudio(audio_device);
+        zapper_enabled = nes_sys.zapper_enabled;
+        debugger_view_pc = nes_sys.cpu.program_counter;
+        debugger_selected_line = 0;
+        clear_view_history(debugger_view_pc);
+    } else {
+        notification_timer = 180;
+        fprintf(stderr, "%s: %s\n", filepath, nes_state_message(result));
     }
-    char rom_meta[64];
-    char time_meta[32];
-    if (fread(rom_meta, 1, 64, f) != 64 || fread(time_meta, 1, 32, f) != 32) { fclose(f); return; }
-    nes_reset_zapper_watchdog(&nes_sys);
-    if (fread(nes_sys.wram, 1, sizeof(nes_sys.wram), f) != sizeof(nes_sys.wram)) { fclose(f); return; }
-    if (fread(nes_sys.ciram, 1, sizeof(nes_sys.ciram), f) != sizeof(nes_sys.ciram)) { fclose(f); return; }
-    if (fread(nes_sys.controller_state, 1, sizeof(nes_sys.controller_state), f) != sizeof(nes_sys.controller_state)) { fclose(f); return; }
-    if (fread(nes_sys.controller_shift, 1, sizeof(nes_sys.controller_shift), f) != sizeof(nes_sys.controller_shift)) { fclose(f); return; }
-    if (fread(&nes_sys.cpu, sizeof(CPU6502), 1, f) != 1) { fclose(f); return; }
-    if (fread(nes_sys.ppu.palette_ram, 1, sizeof(nes_sys.ppu.palette_ram), f) != sizeof(nes_sys.ppu.palette_ram)) { fclose(f); return; }
-    if (fread(nes_sys.ppu.oam_ram, 1, sizeof(nes_sys.ppu.oam_ram), f) != sizeof(nes_sys.ppu.oam_ram)) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.v, sizeof(nes_sys.ppu.v), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.t, sizeof(nes_sys.ppu.t), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.x, sizeof(nes_sys.ppu.x), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.w, sizeof(nes_sys.ppu.w), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.ppu_ctrl, sizeof(nes_sys.ppu.ppu_ctrl), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.ppu_mask, sizeof(nes_sys.ppu.ppu_mask), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.ppu_status, sizeof(nes_sys.ppu.ppu_status), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.oam_addr, sizeof(nes_sys.ppu.oam_addr), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.buffered_data, sizeof(nes_sys.ppu.buffered_data), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.scanline, sizeof(nes_sys.ppu.scanline), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.ppu.cycle, sizeof(nes_sys.ppu.cycle), 1, f) != 1) { fclose(f); return; }
-    if (fread(&nes_sys.apu, sizeof(APU2A03), 1, f) != 1) { fclose(f); return; }
-
-    uint32_t mirroring_val = 0;
-    if (fread(&mirroring_val, sizeof(mirroring_val), 1, f) != 1) { fclose(f); return; }
-    nes_sys.cart->mirroring = (MirroringMode)mirroring_val;
-
-    uint32_t prg_ram_sz = 0;
-    if (fread(&prg_ram_sz, sizeof(prg_ram_sz), 1, f) == 1 && prg_ram_sz > 0) {
-        if (nes_sys.cart->prg_ram != NULL && nes_sys.cart->prg_ram_size >= prg_ram_sz) {
-            if (fread(nes_sys.cart->prg_ram, 1, prg_ram_sz, f) != prg_ram_sz) {}
-        } else if (nes_sys.cart->prg_ram != NULL) {
-            if (fread(nes_sys.cart->prg_ram, 1, nes_sys.cart->prg_ram_size, f) != nes_sys.cart->prg_ram_size) {}
-            if (prg_ram_sz > nes_sys.cart->prg_ram_size) {
-                fseek(f, prg_ram_sz - nes_sys.cart->prg_ram_size, SEEK_CUR);
-            }
-        } else {
-            fseek(f, prg_ram_sz, SEEK_CUR);
-        }
-    }
-    fclose(f);
 }
 
 int main(int argc, char *argv[]) {
@@ -961,6 +883,7 @@ int main(int argc, char *argv[]) {
         if (current_state == GUI_STATE_GAMEPLAY && nes_sys.cart != NULL) {
             if (debugger_active) {
                 debugger_render(renderer, &nes_sys.cpu);
+                draw_notification(renderer);
                 SDL_RenderPresent(renderer);
                 SDL_Delay(16);
                 update_console_debug(&nes_sys.cpu);
@@ -1008,28 +931,7 @@ int main(int argc, char *argv[]) {
                 }
                 SDL_RenderCopy(renderer, texture, &src_rect, NULL);
 
-                if (notification_timer > 0) {
-                    notification_timer--;
-                    int text_w = (int)strlen(notification_text) * 8;
-                    int x = 256 - text_w - 12;
-                    int y = 240 - 8 - 12;
 
-                    for (int dx = -2; dx <= 2; dx++) {
-                        for (int dy = -2; dy <= 2; dy++) {
-                            if (abs(dx) == 2 || abs(dy) == 2) {
-                                draw_string(renderer, notification_text, x + dx, y + dy, 0xFFFFFF);
-                            }
-                        }
-                    }
-                    for (int dx = -1; dx <= 1; dx++) {
-                        for (int dy = -1; dy <= 1; dy++) {
-                            if (dx != 0 || dy != 0) {
-                                draw_string(renderer, notification_text, x + dx, y + dy, 0x000000);
-                            }
-                        }
-                    }
-                    draw_string(renderer, notification_text, x, y, 0x00FF00);
-                }
 
                 if (nes_sys.zapper_watchdog.stalled) {
                     SDL_Rect warning_box = { 8, 156, 240, 60 };
@@ -1041,6 +943,7 @@ int main(int argc, char *argv[]) {
                     draw_string(renderer, "then resume the game.", 16, 200, 0xFFFFFF);
                 }
 
+                draw_notification(renderer);
                 SDL_RenderPresent(renderer);
 
                 if (audio_device != 0 && nes_sys.apu.audio_buffer_idx > 0) {
@@ -1315,18 +1218,19 @@ int main(int argc, char *argv[]) {
                 }
             }
 
+            draw_notification(renderer);
             SDL_RenderPresent(renderer);
             SDL_Delay(16);
             update_console_debug(&nes_sys.cpu);
         }
 
-        while (SDL_PollEvent(&event)) {
+        while (running && SDL_PollEvent(&event)) {
             if (event.type == SDL_MOUSEMOTION ||
                 event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
                 last_mouse_activity = SDL_GetTicks();
             }
             if (event.type == SDL_QUIT) {
-                running = false;
+                if (save_battery_ram()) running = false;
             } else if (event.type == SDL_MOUSEBUTTONDOWN) {
                 if (current_state == GUI_STATE_GAMEPLAY && !debugger_active && nes_sys.zapper_enabled) {
                     if (event.button.button == SDL_BUTTON_LEFT) {
@@ -1386,12 +1290,10 @@ int main(int argc, char *argv[]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), true);
                         save_emulator_state(save_state_dir, filename);
-                        show_notification("STATE SAVED");
                     } else if (event.cbutton.button == controller_button_mappings[9]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), false);
                         load_emulator_state(save_state_dir, filename);
-                        show_notification("STATE LOADED");
                     } else {
                         for (int i = 0; i < 8; i++) {
                             if (event.cbutton.button == controller_button_mappings[i]) {
@@ -1572,7 +1474,7 @@ int main(int argc, char *argv[]) {
                                     current_state = GUI_STATE_MENU_SETTINGS;
                                     menu_selection = 0;
                                 } else if (menu_selection == 6) {
-                                    running = false;
+                                    if (save_battery_ram()) running = false;
                                 }
                             } else if (current_state == GUI_STATE_MENU_CONTROLS) {
                                 if (menu_selection == 0) {
@@ -1589,10 +1491,9 @@ int main(int argc, char *argv[]) {
                             } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
                                 if (rom_file_count > 0) {
                                     if (nes_sys.cart) {
-                                        save_battery_ram();
+                                        if (!save_battery_ram()) continue;
                                         cartridge_free(nes_sys.cart);
                                         nes_sys.cart = NULL;
-                                        cleanup_default_sav();
                                     }
 
                                     nes_init(&nes_sys);
@@ -1639,7 +1540,11 @@ int main(int argc, char *argv[]) {
                                         nes_reset(&nes_sys);
                                         cpu_reset(&nes_sys.cpu, &cpu_bus_bridge);
                                         debugger_init();
-                                        load_battery_ram();
+                                        if (!load_battery_ram()) {
+                                            cartridge_free(nes_sys.cart);
+                                            nes_sys.cart = NULL;
+                                            continue;
+                                        }
                                         debugger_active = console_debug_enabled;
                                         debugger_logging_active = false;
                                         if (debugger_active) {
@@ -1722,12 +1627,10 @@ int main(int argc, char *argv[]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), true);
                         save_emulator_state(save_state_dir, filename);
-                        show_notification("STATE SAVED");
                     } else if (sym == control_mappings[9]) {
                         char filename[128];
                         get_rolling_quicksave_filename(filename, sizeof(filename), false);
                         load_emulator_state(save_state_dir, filename);
-                        show_notification("STATE LOADED");
                     } else {
                         switch (sym) {
                             case SDLK_f:
@@ -1899,9 +1802,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (nes_sys.cart) {
-        save_battery_ram();
         cartridge_free(nes_sys.cart);
-        cleanup_default_sav();
     }
     save_emulator_settings();
     return 0;
