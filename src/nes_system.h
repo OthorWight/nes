@@ -43,36 +43,30 @@ struct NES {
     NES_Clock  clock;
     NES_Lines  lines;
 
-    // Physical RAM on board
-    uint8_t    wram[2048];       // 2KB CPU Internal RAM ($0000-$07FF mirrored)
-    uint8_t    ciram[4096];      // 4KB PPU Internal Nametable RAM (Expanded to support 4-screen mirroring natively)
+    uint8_t    wram[2048];
+    uint8_t    ciram[4096]; // Includes the extra 2 KiB used by four-screen boards.
 
-    // Controller & Open Bus State
     uint8_t    cpu_open_bus;
     uint8_t    controller_state[2];
     uint8_t    controller_shift[2];
     uint8_t    controller_strobe;
 
-    // Zapper Light Gun State
-    bool       zapper_enabled; // Port 2 light gun; false selects standard controllers
+    bool       zapper_enabled;
     bool       zapper_trigger;
     bool       zapper_light;
     int        zapper_x;
     int        zapper_y;
     NES_ZapperWatchdog zapper_watchdog;
 
-    // Frame completion flag for frontend vsync
     bool       frame_ready;
 };
 
-// Bus Interface
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr);
 void    nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data);
 uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr);
 void    nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data);
 void    nes_ppu_bus_set_address(NES *nes, uint16_t addr);
 
-// Clock Driver
 void    nes_init(NES *nes);
 void    nes_reset(NES *nes);
 void    nes_clock_tick(NES *nes);

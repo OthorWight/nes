@@ -70,7 +70,6 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
         }
         if (watch->reads < UINT16_MAX) watch->reads++;
 
-        // Update zapper_light based on screen buffer color at (zapper_x, zapper_y)
         bool light_detected = false;
         int x = nes->zapper_x;
         int y = nes->zapper_y;
@@ -288,23 +287,16 @@ void nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     nes->ppu.palette_ram[pal_addr] = data;
 }
 
-// ----------------------------------------------------------------------
-// Cycle-accurate CPU/PPU synchronization hooks
-// ----------------------------------------------------------------------
-
-// Ticks the PPU exactly 3 times for every 1 CPU cycle, including dummy cycles.
 static void nes_cpu_cycle_tick_wrapper(void *context) {
     NES *nes = (NES*)context;
     nes_step_subsystems(nes);
 }
 
-// Emits a memory read WITHOUT batching PPU ticks (handled by cycle_tick now)
 static uint8_t nes_cpu_bus_read_wrapper(void *context, uint16_t addr) {
     NES *nes = (NES*)context;
     return nes_cpu_bus_read(nes, addr); 
 }
 
-// Emits a memory write WITHOUT batching PPU ticks (handled by cycle_tick now)
 static void nes_cpu_bus_write_wrapper(void *context, uint16_t addr, uint8_t data) {
     NES *nes = (NES*)context;
     nes_cpu_bus_write(nes, addr, data);
@@ -318,8 +310,7 @@ void nes_clock_tick(NES *nes) {
     bus.read = nes_cpu_bus_read_wrapper;
     bus.write = nes_cpu_bus_write_wrapper;
     
-    // This locks the PPU execution to the internal CPU sub-cycles (dummy and memory ticks)
-    bus.cycle_tick = nes_cpu_cycle_tick_wrapper; 
+    bus.cycle_tick = nes_cpu_cycle_tick_wrapper;
 
     cpu_step(&nes->cpu, &bus);
 }

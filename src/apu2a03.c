@@ -29,7 +29,7 @@ static const uint16_t NOISE_PERIOD[16] = {
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068
 };
 
-// NTSC DMC timer periods in CPU cycles.
+// NTSC periods in CPU cycles.
 static const uint16_t DMC_RATE_TABLE[16] = {
     428, 380, 340, 320, 286, 254, 226, 214,
     190, 160, 142, 128, 106,  84,  72,  54
@@ -73,7 +73,7 @@ static bool is_sweep_muting(APU2A03 *apu, int ch) {
 
 static void dmc_fetch(APU2A03 *apu, NES *nes) {
     if (apu->dmc_bytes_remaining > 0 && nes) {
-        nes->cpu.stall_cycles += 4; // Accurately stall the CPU while DMA reads memory
+        nes->cpu.stall_cycles += 4;
         apu->dmc_buffer = nes_cpu_bus_read(nes, apu->dmc_current_addr);
         apu->dmc_buffer_empty = false;
         apu->dmc_current_addr = (apu->dmc_current_addr + 1) | 0x8000;

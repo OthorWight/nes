@@ -46,7 +46,6 @@ typedef struct {
     bool frame_complete;
     bool nmi_suppressed;
 
-    // 16-bit shift registers for background rendering
     uint16_t bg_shifter_pattern_low;
     uint16_t bg_shifter_pattern_high;
     uint16_t bg_shifter_attrib_low;

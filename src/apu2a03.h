@@ -85,7 +85,6 @@ typedef struct {
     bool     frame_irq_active;
     uint32_t frame_cycles;
 
-    // $4017 reset is delayed by 3 or 4 CPU cycles depending on APU phase.
     bool     frame_counter_reset_pending;
     uint8_t  frame_counter_reset_delay;
 

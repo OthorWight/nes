@@ -16,13 +16,6 @@ typedef struct {
     bool bee52_compatibility;
 } CamericaData;
 
-/*
- * Standard reflected CRC-32 (polynomial 0xEDB88320).
- *
- * Mapper 71 iNES dumps are old enough that some known headers carry the wrong
- * hardwired-mirroring bit.  Using the PRG checksum gives us a narrow database
- * correction without changing the behavior of every Mapper 71 cartridge.
- */
 static uint32_t m071_crc32(const uint8_t *data, size_t size) {
     uint32_t crc = 0xFFFFFFFFu;
 
@@ -52,12 +45,7 @@ static MirroringMode m071_detect_hardwired_mirroring(const Cartridge *c,
         return MIRROR_HORIZONTAL;
     }
 
-    /*
-     * Bee 52 (USA), PRG CRC32 6C93377C, needs the [A B A B] CIRAM layout.
-     * In this codebase that layout is named MIRROR_VERTICAL.  The commonly
-     * circulated iNES image has the opposite header bit, which produces the
-     * repeated wooden columns and broken Camerica logo seen in the report.
-     */
+    /* Bee 52's common dump has the opposite mirroring bit in its header. */
     return is_bee52 ? MIRROR_VERTICAL : c->mirroring;
 }
 
@@ -96,7 +84,6 @@ static uint8_t m071_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         return 0;
     }
 
-    /* $8000-$BFFF is switchable; $C000-$FFFF is fixed to the last bank. */
     uint32_t bank = (addr < 0xC000)
         ? ((uint32_t)d->prg_bank % total_16k_banks)
         : (total_16k_banks - 1u);
@@ -111,11 +98,7 @@ static void m071_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
         return;
     }
 
-    /*
-     * BF9097 compatibility for Fire Hawk.  Begin with the fixed header/database
-     * mode and switch to one-screen mirroring only after a $9000-$9FFF write.
-     * Writes to $8000-$8FFF are intentionally ignored.
-     */
+    /* BF9097 changes from hardwired to one-screen mirroring on $9000 writes. */
     if (!d->bee52_compatibility && addr >= 0x9000 && addr <= 0x9FFF) {
         c->mirroring = (val & 0x10)
             ? MIRROR_ONE_SCREEN_HIGH
@@ -123,7 +106,6 @@ static void m071_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
         return;
     }
 
-    /* BF9093/BF9097 PRG bank register: $C000-$FFFF, low four bits. */
     if (addr >= 0xC000) {
         d->prg_bank = val & 0x0F;
     }
@@ -141,7 +123,6 @@ static uint8_t m071_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 }
 
 static void m071_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
-    /* Mapper 71 cartridges normally use fixed 8 KiB CHR RAM. */
     if (c && addr < 0x2000 && c->chr_rom && c->chr_rom_size > 0) {
         cartridge_chr_write(c, addr % c->chr_rom_size, val);
     }
@@ -208,4 +189,3 @@ void mapper_071_init(Cartridge *cart) {
     cart->vtable = &m071_interface;
     m071_reset(cart);
 }
-

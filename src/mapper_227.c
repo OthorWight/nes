@@ -16,19 +16,20 @@ static void m227_update_banks(Cartridge *c, uint16_t addr) {
     uint32_t bank0 = 0;
     uint32_t bank1 = 0;
 
-    if (addr & 0x0080) { // Mode 1 (A7 = 1)
-        if (addr & 0x0001) { // S = 1 (A0 = 1)
+    // A7 selects the banking mode; A0 selects paired or fixed-bank mapping.
+    if (addr & 0x0080) {
+        if (addr & 0x0001) {
             bank0 = prg;
             bank1 = (prg & 0x38) | ((addr & 0x0200) ? 7 : 0);
-        } else { // S = 0 (A0 = 0)
+        } else {
             bank0 = prg;
             bank1 = prg;
         }
-    } else { // Mode 0 (A7 = 0)
-        if (addr & 0x0001) { // S = 1 (A0 = 1) -> 32 KB mode
+    } else {
+        if (addr & 0x0001) {
             bank0 = prg & ~1;
             bank1 = (prg & ~1) | 1;
-        } else { // S = 0 (A0 = 0) -> 16 KB mode with fixed bank
+        } else {
             bank0 = prg;
             bank1 = (prg & 0x38) | ((addr & 0x0200) ? 7 : 0);
         }

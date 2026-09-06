@@ -2,18 +2,8 @@
 #include "nes_system.h"
 #include <string.h>
 
-/*
- * Bee 52 / 2C02 OAM evaluation compatibility
- *
- * Bee 52 reads $2004 while rendering and also consumes PPUSTATUS.5.  During
- * rendering, $2004 exposes the PPU's internal OAM data bus; it is not a
- * direct read of primary OAM[OAMADDR].  A scanline-at-a-time sprite counter
- * cannot reproduce that bus or the 2C02 diagonal sprite-overflow bug.
- *
- * This small cycle state machine runs beside the existing sprite renderer.
- * It supplies the externally visible OAM bus and the sticky overflow flag;
- * the existing renderer continues to fetch and draw sprites.
- */
+/* Cycle-level OAM evaluation supplies the rendering-time $2004 bus and the
+   2C02 diagonal sprite-overflow behavior. */
 
 static inline bool bee52_ppu_rendering_enabled(const PPU2C02 *p) {
     return (p->ppu_mask & 0x18u) != 0;
@@ -44,7 +34,6 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
         memset(p->oam_eval.secondary, 0xFF, sizeof(p->oam_eval.secondary));
     }
 
-    /* Secondary OAM clear: the internal OAM bus reads as $FF. */
     if (cy >= 1 && cy <= 64) {
         p->oam_eval.bus = 0xFFu;
         return;
@@ -65,13 +54,11 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
         }
 
         if (cy & 1) {
-            /* Odd evaluation cycles read primary OAM. */
             unsigned index = ((unsigned)p->oam_eval.n << 2) | p->oam_eval.m;
             p->oam_eval.bus = p->oam_ram[index & 0xFFu];
             return;
         }
 
-        /* Even cycles process/copy the byte read on the preceding odd cycle. */
         if (p->oam_eval.secondary_index < 32u) {
             if (p->oam_eval.m == 0u) {
                 if (bee52_sprite_y_in_range(p, p->oam_eval.bus)) {
@@ -107,7 +94,6 @@ static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
     }
 
     if (cy >= 257 && cy <= 320) {
-        /* Sprite fetch phase repeatedly exposes bytes from secondary OAM. */
         unsigned phase = (unsigned)(cy - 257);
         unsigned sprite = phase >> 3;
         unsigned byte = (phase >> 1) & 3u;
@@ -571,7 +557,6 @@ void ppu_step(NES *nes) {
        the current PPU dot before CPU-visible register reads can occur. */
     bee52_ppu_oam_eval_tick(ppu);
 
-    /* Status flags are cleared on dot 1 of the pre-render scanline. */
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 1) {
         ppu->ppu_status &= (uint8_t)~0xE0;
         ppu->nmi_occurred = false;
@@ -579,7 +564,6 @@ void ppu_step(NES *nes) {
         ppu_update_nmi(ppu, nes);
     }
 
-    /* VBlank starts on scanline 241, dot 1. */
     if (ppu->scanline == 241 && ppu->cycle == 1) {
         ppu->nmi_occurred = true;
         ppu->ppu_status |= 0x80;
@@ -602,11 +586,6 @@ void ppu_step(NES *nes) {
             ppu->bg_next_tile_id = nes_ppu_bus_read(nes, 0x2000 | (ppu->v & 0x0FFF));
         }
 
-        /*
-         * Background pipeline.  The shifters advance on dots 2-257 and
-         * 322-337.  A new tile is loaded at the start of every 8-dot fetch
-         * group, matching the 2C02 fetch schedule.
-         */
         if ((ppu->cycle >= 2 && ppu->cycle <= 257) ||
             (ppu->cycle >= 321 && ppu->cycle <= 337)) {
             ppu_step_shifters(ppu);
@@ -676,13 +655,12 @@ void ppu_step(NES *nes) {
             ppu->v = (ppu->v & 0x841F) | (ppu->t & 0x7BE0);
         }
 
-        /* The first dummy nametable fetch is already issued at dot 337 above. */
+        /* The first dummy nametable fetch was issued at dot 337. */
         if (ppu->cycle == 339) {
             uint16_t nt_addr = 0x2000 | (ppu->v & 0x0FFF);
             ppu->bg_next_tile_id = nes_ppu_bus_read(nes, nt_addr);
         }
 
-        /* Sprite pattern fetches for the following scanline. */
         if (ppu->cycle >= 257 && ppu->cycle <= 320) {
             int offset_cycle = ppu->cycle - 257;
             int spr_idx = offset_cycle / 8;
@@ -745,13 +723,11 @@ void ppu_step(NES *nes) {
         }
     }
 
-    /* Visible pixels are produced on dots 1-256. */
     if (ppu->scanline < SCANLINE_VISIBLE_MAX &&
         ppu->cycle >= 1 && ppu->cycle <= 256) {
         ppu_render_pixel(ppu, ppu->cycle - 1);
     }
 
-    /* Advance to the next PPU dot. */
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 339 &&
         ppu->odd_frame && rendering_enabled) {
         /* Odd NTSC frames omit the final pre-render dot. */

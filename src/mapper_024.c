@@ -51,10 +51,9 @@ static void m024_clock_m2(Cartridge *c) {
 
     bool count_tick = false;
     if (d->irq_ctrl & 0x04) {
-        // Cycle mode: tick every CPU cycle
         count_tick = true;
     } else {
-        // Scanline mode: prescaler divides by 341/3 (~113.66 CPU cycles)
+        // Scanline mode divides 341 PPU dots across three CPU cycles at a time.
         d->prescaler -= 3;
         if (d->prescaler <= 0) {
             d->prescaler += 341;
@@ -92,15 +91,12 @@ static uint8_t m024_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         if (total_8k == 0) return 0;
 
         if (addr < 0xC000) {
-            // $8000-$BFFF: 16KB switchable PRG ROM
             uint32_t bank = d->prg_bank_16k % total_16k;
             return c->prg_rom[bank * 16384 + (addr & 0x3FFF)];
         } else if (addr < 0xE000) {
-            // $C000-$DFFF: 8KB switchable PRG ROM
             uint32_t bank = d->prg_bank_8k % total_8k;
             return c->prg_rom[bank * 8192 + (addr & 0x1FFF)];
         } else {
-            // $E000-$FFFF: Fixed to last 8KB PRG ROM bank
             uint32_t bank = total_8k - 1;
             return c->prg_rom[bank * 8192 + (addr & 0x1FFF)];
         }
@@ -121,43 +117,37 @@ static void m024_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr < 0x8000) return;
 
-    // Decode low register bits: VRC6b (Mapper 26) swaps lines A0 and A1
     uint8_t sub = d->swap_a0_a1
         ? (uint8_t)(((addr & 0x01) << 1) | ((addr & 0x02) >> 1))
         : (uint8_t)(addr & 0x03);
 
     switch (addr & 0xF000) {
         case 0x8000:
-            // 16KB PRG Select ($8000-$BFFF)
             d->prg_bank_16k = val & 0x1F;
             break;
 
         case 0xB000:
             if (sub == 3) {
-                // Mirroring & Control
                 switch ((val >> 2) & 0x03) {
                     case 0: c->mirroring = MIRROR_VERTICAL; break;
                     case 1: c->mirroring = MIRROR_HORIZONTAL; break;
                     case 2: c->mirroring = MIRROR_ONE_SCREEN_LOW; break;
                     case 3: c->mirroring = MIRROR_ONE_SCREEN_HIGH; break;
                 }
-                d->ram_enable = (val & 0x80) != 0; // Bit 7 is WRAM Enable
+                d->ram_enable = (val & 0x80) != 0;
                 d->chr_mode = val & 0x03;
             }
             break;
 
         case 0xC000:
-            // 8KB PRG Select ($C000-$DFFF)
             d->prg_bank_8k = val & 0x1F;
             break;
 
         case 0xD000:
-            // 1KB CHR Select 0..3
             d->chr_regs[sub] = val;
             break;
 
         case 0xE000:
-            // 1KB CHR Select 4..7
             d->chr_regs[4 + sub] = val;
             break;
 
@@ -200,16 +190,13 @@ static uint8_t m024_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     switch (d->chr_mode & 0x03) {
         case 0:
-            // 1KB banking
             bank = d->chr_regs[slot];
             break;
         case 1:
-            // 2KB banking
             bank = (d->chr_regs[slot / 2] & ~1) | (slot & 1);
             break;
         case 2:
         case 3:
-            // 1KB + 2KB banking
             if (slot < 4) {
                 bank = d->chr_regs[slot];
             } else {
@@ -294,7 +281,7 @@ static const MapperInterface vrc6_interface = {
 void mapper_024_init(Cartridge *cart) {
     VRC6Data *data = calloc(1, sizeof(VRC6Data));
     if (!data) return;
-    data->swap_a0_a1 = false; // VRC6a
+    data->swap_a0_a1 = false;
     cart->mapper_data = data;
     cart->vtable = &vrc6_interface;
     m024_reset(cart);
@@ -303,7 +290,7 @@ void mapper_024_init(Cartridge *cart) {
 void mapper_026_init(Cartridge *cart) {
     VRC6Data *data = calloc(1, sizeof(VRC6Data));
     if (!data) return;
-    data->swap_a0_a1 = true;  // VRC6b
+    data->swap_a0_a1 = true;
     cart->mapper_data = data;
     cart->vtable = &vrc6_interface;
     m024_reset(cart);

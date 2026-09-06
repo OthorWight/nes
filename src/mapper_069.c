@@ -57,11 +57,9 @@ static uint8_t fme7_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         uint8_t reg = d->prg_banks[0];
         
         if (!(reg & 0x40)) {
-            // Bit 6 selects RAM; otherwise map ROM into $6000-$7FFF.
             uint32_t bank = (reg & 0x3F) % total_8k;
             return c->prg_rom[bank * 8192 + (addr - 0x6000)];
         } else {
-            // RAM selected; bit 7 enables the RAM chip.
             if ((reg & 0x80) && c->prg_ram && c->prg_ram_size > 0) {
                 return c->prg_ram[(addr - 0x6000) % c->prg_ram_size];
             }
@@ -94,7 +92,6 @@ static void fme7_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
         uint8_t reg = d->prg_banks[0];
-        // Bit 7 must be 1 (RAM Enable) AND Bit 6 must be 1 (Write Enable)
         if ((reg & 0x80) && (reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
             c->prg_ram[(addr - 0x6000) % c->prg_ram_size] = val;
         }

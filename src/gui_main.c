@@ -573,7 +573,6 @@ static int compare_rom_files(const void *a, const void *b) {
 static void scan_rom_directory(void) {
     rom_file_count = 0;
 
-    // 1. Scan current working directory (.)
     DIR *d = opendir(".");
     struct dirent *dir;
     if (d) {
@@ -598,7 +597,6 @@ static void scan_rom_directory(void) {
         closedir(d);
     }
 
-    // 2. Scan executable base path directory
     char *base_path = SDL_GetBasePath();
     if (base_path && rom_file_count < 512) {
         DIR *db = opendir(base_path);
