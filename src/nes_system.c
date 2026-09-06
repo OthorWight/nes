@@ -1,4 +1,5 @@
 #include "nes_system.h"
+#include "diagnostics.h"
 #include <string.h>
 
 void nes_init(NES *nes) {
@@ -101,6 +102,11 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
     uint8_t value = cpu_bus_read_value(nes, addr);
+    if (nes->diagnostics && (addr == 0x4016 || addr == 0x4017)) {
+        ++nes->diagnostics->polls[addr - 0x4016];
+        diagnostics_event(nes, DIAG_INPUT_READ, addr, value);
+    }
+    if (nes->diagnostics) diagnostics_lines(nes);
     // $4015 is internal to the CPU and does not drive the external data bus.
     if (addr != 0x4015) nes->cpu_open_bus = value;
     return value;
@@ -142,9 +148,10 @@ static inline void nes_step_subsystems(NES *nes) {
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->clock_m2) {
         nes->cart->vtable->clock_m2(nes->cart);
     }
+    if (nes->diagnostics) diagnostics_lines(nes);
 }
 
-void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
+static void cpu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
     nes->cpu_open_bus = data;
     if (addr <= 0x1FFF) {
         nes->wram[addr & 0x07FF] = data;
@@ -208,6 +215,21 @@ void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->cpu_write) {
         nes->cart->vtable->cpu_write(nes->cart, addr, data);
     }
+}
+
+void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
+    if (nes->diagnostics) {
+        if (addr >= 0x2000 && addr < 0x4000)
+            diagnostics_event(nes, DIAG_PPU_WRITE, 0x2000 | (addr & 7), data);
+        else if (addr >= 0x4020 && nes->cart)
+            diagnostics_event(nes, DIAG_MAPPER_WRITE, addr, data);
+        else if (addr == 0x4016 && nes->controller_strobe && !(data & 1)) {
+            ++nes->diagnostics->latches;
+            diagnostics_event(nes, DIAG_INPUT_LATCH, addr, nes->controller_state[0]);
+        }
+    }
+    cpu_bus_write_value(nes, addr, data);
+    if (nes->diagnostics) diagnostics_lines(nes);
 }
 
 void nes_ppu_bus_set_address(NES *nes, uint16_t addr) {

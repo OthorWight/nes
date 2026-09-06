@@ -13,6 +13,10 @@
 #include "nes_system.h"
 #include "debugger.h"
 #include "save_state.h"
+#include "state_io.h"
+#include "diagnostics.h"
+#include "frontend_runtime.h"
+#include "rom_preferences.h"
 
 NES nes_sys;
 static CPUBus cpu_bus_bridge;
@@ -31,6 +35,70 @@ static bool audio_muted = false;
 static bool console_debug_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
+static int master_volume = 100;
+static bool performance_visible = false;
+static bool focused = true;
+static FrameScheduler frame_scheduler;
+static AudioQueueMonitor audio_monitor;
+static NESDiagnostics diagnostics;
+static HostInput host_input;
+static double audio_device_ms;
+static double diagnostic_last_time;
+static bool runtime_reset_pending = true;
+static RomPreferences global_preferences = {5, false, false};
+static bool rom_override;
+static bool preferences_inherit = true;
+
+static void clear_host_input(void) {
+    memset(&host_input, 0, sizeof(host_input));
+    memset(nes_sys.controller_state, 0, sizeof(nes_sys.controller_state));
+    nes_sys.zapper_trigger = nes_sys.zapper_light = false;
+    nes_sys.zapper_x = nes_sys.zapper_y = -1;
+}
+
+static double host_time(void) {
+    return (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
+}
+
+static void reset_runtime(void) {
+    frame_scheduler_reset(&frame_scheduler, host_time());
+    diagnostic_last_time = host_time();
+    if (audio_device) {
+        SDL_PauseAudioDevice(audio_device, 1);
+        SDL_ClearQueuedAudio(audio_device);
+    }
+    audio_queue_pause(&audio_monitor);
+    nes_sys.apu.audio_buffer_idx = 0;
+    memset(diagnostics.polls, 0, sizeof(diagnostics.polls));
+    diagnostics.latches = 0;
+    diagnostics_event(&nes_sys, DIAG_RESUME, 0, 0);
+    runtime_reset_pending = false;
+}
+
+static void queue_game_audio(void) {
+    uint32_t count = nes_sys.apu.audio_buffer_idx;
+    if (audio_device && !audio_muted) {
+        uint32_t queued = SDL_GetQueuedAudioSize(audio_device) / sizeof(float);
+        if (audio_queue_observe(&audio_monitor, queued, count)) {
+            SDL_PauseAudioDevice(audio_device, 1);
+            SDL_ClearQueuedAudio(audio_device);
+            queued = 0;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+            nes_sys.apu.audio_buffer[i] *= master_volume / 100.0f;
+        if (SDL_QueueAudio(audio_device, nes_sys.apu.audio_buffer, count * sizeof(float))) {
+            ++audio_monitor.errors;
+        } else {
+            queued += count;
+            audio_monitor.queue_samples = queued;
+            if (!audio_monitor.playing && queued >= AUDIO_PRIME_SAMPLES) {
+                audio_monitor.playing = true;
+                SDL_PauseAudioDevice(audio_device, 0);
+            }
+        }
+    }
+    nes_sys.apu.audio_buffer_idx = 0;
+}
 
 #define CONTROL_COUNT 10
 
@@ -73,7 +141,6 @@ static const SDL_GameControllerButton default_controller_mappings[CONTROL_COUNT]
     SDL_CONTROLLER_BUTTON_Y
 };
 
-static int master_volume = 100;
 static bool control_mode_keyboard = true;
 
 static uint8_t cpu_bridge_read(void *ctx, uint16_t addr) {
@@ -110,6 +177,7 @@ static void play_volume_ding(void) {
 
     if (temp_nes.apu.audio_buffer_idx > 0) {
         SDL_QueueAudio(audio_device, temp_nes.apu.audio_buffer, temp_nes.apu.audio_buffer_idx * sizeof(float));
+        SDL_PauseAudioDevice(audio_device, 0);
     }
 }
 
@@ -266,6 +334,38 @@ static void get_settings_filepath(char *out_path, size_t max_len) {
 
 static bool zapper_enabled = false;
 
+static void rom_preferences_path(char *path, size_t size) {
+    char root[1024]; get_settings_filepath(root, sizeof(root));
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+    snprintf(path, size, "%s/%08X-%08X-%08X.prefs", root,
+        nes_sys.cart->rom_identity[0], nes_sys.cart->rom_identity[1], nes_sys.cart->rom_identity[2]);
+}
+
+static void apply_display(SDL_Window *window) {
+    SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    if (!fullscreen) {
+        SDL_RestoreWindow(window);
+        if (window_scale == 5) SDL_MaximizeWindow(window);
+        else SDL_SetWindowSize(window, 256 * window_scale, 240 * window_scale);
+    }
+}
+
+static void apply_rom_preferences(SDL_Window *window) {
+    RomPreferences value = global_preferences;
+    rom_override = false;
+    if (nes_sys.cart) {
+        char path[1200]; rom_preferences_path(path, sizeof(path));
+        if (!rom_preferences_load(path, nes_sys.cart->rom_identity, global_preferences, &value, &rom_override))
+            show_notification("BAD ROM SETTINGS: DEFAULTS");
+    }
+    preferences_inherit = !rom_override;
+    window_scale = (int)value.scale; fullscreen = value.fullscreen;
+    zapper_enabled = value.zapper; nes_sys.zapper_enabled = zapper_enabled;
+    apply_display(window);
+    clear_host_input(); runtime_reset_pending = true;
+}
+
 static void save_emulator_settings(void) {
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
@@ -280,24 +380,28 @@ static void save_emulator_settings(void) {
     }
     MKDIR(saves_dir);
 
-    FILE *f = fopen(filepath, "wb");
-    if (!f) return;
-
-    uint32_t version = 4;
-    fwrite(&version, sizeof(version), 1, f);
-    fwrite(&master_volume, sizeof(master_volume), 1, f);
-    int temp_muted = audio_muted ? 1 : 0;
-    fwrite(&temp_muted, sizeof(temp_muted), 1, f);
-    fwrite(&window_scale, sizeof(window_scale), 1, f);
-    int temp_fs = fullscreen ? 1 : 0;
-    fwrite(&temp_fs, sizeof(temp_fs), 1, f);
-    int temp_debug = console_debug_enabled ? 1 : 0;
-    fwrite(&temp_debug, sizeof(temp_debug), 1, f);
-    fwrite(control_mappings, sizeof(SDL_Keycode), CONTROL_COUNT, f);
-    fwrite(controller_button_mappings, sizeof(SDL_GameControllerButton), CONTROL_COUNT, f);
-    int temp_zapper = zapper_enabled ? 1 : 0;
-    fwrite(&temp_zapper, sizeof(temp_zapper), 1, f);
-    fclose(f);
+    if (!nes_sys.cart)
+        global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
+    else {
+        char path[1200]; rom_preferences_path(path, sizeof(path));
+        RomPreferences value = {(unsigned)window_scale, fullscreen, zapper_enabled};
+        if (!rom_preferences_save(path, nes_sys.cart->rom_identity, value, !preferences_inherit))
+            show_notification("ROM SETTINGS SAVE FAILED");
+        else rom_override = !preferences_inherit;
+    }
+    uint8_t data[128];
+    StateIO io = {data, sizeof(data), 0, false, true};
+    state_u32(&io, 5);
+    state_i32(&io, master_volume);
+    state_i32(&io, audio_muted ? 1 : 0);
+    state_i32(&io, (int)global_preferences.scale);
+    state_i32(&io, global_preferences.fullscreen ? 1 : 0);
+    state_i32(&io, console_debug_enabled ? 1 : 0);
+    for (unsigned i = 0; i < CONTROL_COUNT; ++i) state_i32(&io, control_mappings[i]);
+    for (unsigned i = 0; i < CONTROL_COUNT; ++i) state_i32(&io, controller_button_mappings[i]);
+    state_i32(&io, global_preferences.zapper ? 1 : 0);
+    state_i32(&io, performance_visible ? 1 : 0);
+    if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
 static void load_emulator_settings(void) {
@@ -309,7 +413,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 4) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 5) {
         fclose(f);
         return;
     }
@@ -339,6 +443,13 @@ static void load_emulator_settings(void) {
             zapper_enabled = (temp_zapper == 1);
         }
     }
+    if (version >= 5) {
+        int temp_perf = 0;
+        if (fread(&temp_perf, sizeof(temp_perf), 1, f) == 1) performance_visible = temp_perf == 1;
+    }
+    if (window_scale < 1 || window_scale > 5) window_scale = 5;
+    if (master_volume < 0 || master_volume > 100) master_volume = 100;
+    global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
     fclose(f);
 }
 
@@ -555,6 +666,33 @@ static void draw_notification(SDL_Renderer *renderer) {
         }
         draw_string(renderer, notification_text, x, y, 0x00FF00);
     }
+}
+
+static void draw_performance(SDL_Renderer *renderer) {
+    DiagnosticSummary s = diagnostics_summary(&diagnostics);
+    SDL_Rect box = {2, 2, 252, 48};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderFillRect(renderer, &box);
+    char line[64];
+    snprintf(line, sizeof(line), "FPS %.1f SPEED %.1f%%", s.fps, s.speed);
+    draw_string(renderer, line, 6, 5, 0xFFFFFF);
+    snprintf(line, sizeof(line), "MAX %.1fMS SPIKES %u", s.max_ms, s.spikes);
+    draw_string(renderer, line, 6, 16, 0xFFFFFF);
+    snprintf(line, sizeof(line), "AUDIO %.0fMS EMPTY %u %s", s.queue_ms, audio_monitor.underruns,
+             !audio_device ? "N/A" : (audio_muted ? "MUTED" : ""));
+    draw_string(renderer, line, 6, 27, 0xFFFFFF);
+    snprintf(line, sizeof(line), "READS %u CHANGES %u TRACE %s", s.polls, s.changed, diagnostics.tracing ? "ON" : "OFF");
+    draw_string(renderer, line, 6, 38, 0xFFFF00);
+}
+
+static void capture_diagnostics(void) {
+    if (!nes_sys.cart) return;
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/diagnostics.log", save_state_dir);
+    bool ok = diagnostics_write(&nes_sys, path, loaded_rom_name, audio_monitor.underruns,
+                                audio_monitor.trims, audio_monitor.errors, audio_device_ms);
+    show_notification(ok ? "DIAGNOSTICS CAPTURED" : "CAPTURE FAILED");
+    if (ok) fprintf(stdout, "Diagnostics: %s\n", path);
 }
 
 static void push_synthetic_key(SDL_Keycode sym, Uint32 type) {
@@ -794,8 +932,9 @@ static void load_emulator_state(const char *dir, const char *filename) {
     NES_StateResult result = nes_state_load(&nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
-        if (audio_device) SDL_ClearQueuedAudio(audio_device);
-        zapper_enabled = nes_sys.zapper_enabled;
+        nes_sys.zapper_enabled = zapper_enabled;
+        clear_host_input();
+        runtime_reset_pending = true;
         debugger_view_pc = nes_sys.cpu.program_counter;
         debugger_selected_line = 0;
         clear_view_history(debugger_view_pc);
@@ -808,7 +947,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         return -1;
     }
 
@@ -826,10 +965,11 @@ int main(int argc, char *argv[]) {
     desired.freq = 44100;
     desired.format = AUDIO_F32SYS;
     desired.channels = 1;
-    desired.samples = 512;
-    audio_device = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+    desired.samples = 1024;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0)
+        audio_device = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
     if (audio_device != 0) {
-        SDL_PauseAudioDevice(audio_device, 0);
+        audio_device_ms = obtained.samples * 1000.0 / obtained.freq;
     }
 
     SDL_Window *window = SDL_CreateWindow(
@@ -838,11 +978,14 @@ int main(int argc, char *argv[]) {
         256 * window_scale, 240 * window_scale,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
+    if (!window) { SDL_Quit(); return 1; }
     if (fullscreen) {
         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    if (!renderer) { SDL_DestroyWindow(window); SDL_Quit(); return 1; }
     SDL_RenderSetLogicalSize(renderer, 256, 240);
 
     if (window_scale == 5) {
@@ -863,6 +1006,7 @@ int main(int argc, char *argv[]) {
     );
 
     nes_init(&nes_sys);
+    nes_sys.diagnostics = &diagnostics;
     nes_sys.zapper_enabled = zapper_enabled;
 
     cpu_bus_bridge.bus_context = &nes_sys;
@@ -877,7 +1021,14 @@ int main(int argc, char *argv[]) {
     SDL_Event event;
     scan_rom_directory();
 
+    bool was_playing = false;
     while (running) {
+        bool playing = current_state == GUI_STATE_GAMEPLAY && nes_sys.cart && !debugger_active && focused;
+        if (runtime_reset_pending || playing != was_playing) {
+            clear_host_input();
+            reset_runtime();
+        }
+        was_playing = playing;
         if (current_state == GUI_STATE_GAMEPLAY && nes_sys.cart != NULL) {
             if (debugger_active) {
                 debugger_render(renderer, &nes_sys.cpu);
@@ -887,6 +1038,7 @@ int main(int argc, char *argv[]) {
                 update_console_debug(&nes_sys.cpu);
             } else {
                 uint64_t frame_start_tick = SDL_GetPerformanceCounter();
+                uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
 
                 nes_sys.frame_ready = false;
                 while (!nes_sys.frame_ready) {
@@ -912,21 +1064,8 @@ int main(int argc, char *argv[]) {
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
 
-                SDL_Rect src_rect = { 0, 0, 256, 240 };
-                if (nes_sys.cart != NULL) {
-                    uint16_t mapper = nes_sys.cart->mapper_id;
-                    if (mapper == 0 || mapper == 4 || mapper == 206 || mapper == 227) {
-                        src_rect.x = 8;
-                        src_rect.y = 8;
-                        src_rect.w = 240;
-                        src_rect.h = 224;
-                    } else if (mapper == 1) {
-                        src_rect.x = 8;
-                        src_rect.y = 0;
-                        src_rect.w = 240;
-                        src_rect.h = 240;
-                    }
-                }
+                GameCrop crop = game_crop(nes_sys.cart->mapper_id);
+                SDL_Rect src_rect = {crop.x, crop.y, crop.w, crop.h};
                 SDL_RenderCopy(renderer, texture, &src_rect, NULL);
 
 
@@ -941,35 +1080,24 @@ int main(int argc, char *argv[]) {
                     draw_string(renderer, "then resume the game.", 16, 200, 0xFFFFFF);
                 }
 
+                if (performance_visible) draw_performance(renderer);
                 draw_notification(renderer);
                 SDL_RenderPresent(renderer);
 
-                if (audio_device != 0 && nes_sys.apu.audio_buffer_idx > 0) {
-                    if (!audio_muted) {
-                        for (uint32_t i = 0; i < nes_sys.apu.audio_buffer_idx; i++) {
-                            nes_sys.apu.audio_buffer[i] *= ((float)master_volume / 100.0f);
-                        }
-                        SDL_QueueAudio(audio_device, nes_sys.apu.audio_buffer, nes_sys.apu.audio_buffer_idx * sizeof(float));
-                        while (SDL_GetQueuedAudioSize(audio_device) > 4096 * sizeof(float)) {
-                            SDL_Delay(1);
-                        }
-                    } else {
-                        static uint32_t last_frame_time = 0;
-                        uint32_t now = SDL_GetTicks();
-                        if (now < last_frame_time + 16) {
-                            SDL_Delay((last_frame_time + 16) - now);
-                        }
-                        last_frame_time = SDL_GetTicks();
+                if (nes_sys.frame_ready) {
+                    queue_game_audio();
+                    uint64_t cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
+                    double wait = frame_scheduler_advance(&frame_scheduler, host_time(), cycles);
+                    while (wait > 0) {
+                        SDL_Delay(wait >= 0.001 ? (Uint32)(wait * 1000) : 0);
+                        wait = frame_scheduler.deadline - host_time();
                     }
-                    nes_sys.apu.audio_buffer_idx = 0;
-                } else {
-                    static uint32_t last_frame_time = 0;
-                    uint32_t now = SDL_GetTicks();
-                    if (now < last_frame_time + 16) {
-                        SDL_Delay((last_frame_time + 16) - now);
-                    }
-                    last_frame_time = SDL_GetTicks();
-                }
+                    double now = host_time();
+                    diagnostics_frame(&nes_sys, cycles, now - diagnostic_last_time,
+                        (double)(emu_end_tick - frame_start_tick) * 1000 / SDL_GetPerformanceFrequency(),
+                        audio_monitor.queue_samples * 1000.0 / AUDIO_RATE);
+                    diagnostic_last_time = now;
+                } else runtime_reset_pending = true;
 
                 uint64_t frame_end_tick = SDL_GetPerformanceCounter();
                 debug_total_ticks += (frame_end_tick - frame_start_tick);
@@ -1171,49 +1299,29 @@ int main(int argc, char *argv[]) {
                 }
                 draw_string(renderer, "UP/DN: Nav | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
-                char scale_buf[64], mute_buf[64], vol_buf[64], fs_buf[64], debug_buf[64], port_buf[64];
-                if (window_scale == 5) {
-                    sprintf(scale_buf, "1. Window Scale: Maximized");
-                } else {
-                    sprintf(scale_buf, "1. Window Scale: %dx", window_scale);
+                char rows[10][64];
+                snprintf(rows[0], sizeof(rows[0]), "Window: %s", window_scale == 5 ? "Maximized" : "");
+                if (window_scale != 5) snprintf(rows[0], sizeof(rows[0]), "Window: %dx", window_scale);
+                snprintf(rows[1], sizeof(rows[1]), "Muted: %s", audio_muted ? "ON" : "OFF");
+                snprintf(rows[2], sizeof(rows[2]), "Volume: %d%%", master_volume);
+                snprintf(rows[3], sizeof(rows[3]), "Fullscreen: %s", fullscreen ? "ON" : "OFF");
+                snprintf(rows[4], sizeof(rows[4]), "Console debug: %s", console_debug_enabled ? "ON" : "OFF");
+                snprintf(rows[5], sizeof(rows[5]), "Port 2: %s", zapper_enabled ? "Zapper" : "Controller");
+                snprintf(rows[6], sizeof(rows[6]), "Use global display/Port 2");
+                snprintf(rows[7], sizeof(rows[7]), "Make display/Port 2 global");
+                snprintf(rows[8], sizeof(rows[8]), "Performance (F2): %s", performance_visible ? "ON" : "OFF");
+                snprintf(rows[9], sizeof(rows[9]), "Event trace: %s", diagnostics.tracing ? "ON" : "OFF");
+                draw_string(renderer, nes_sys.cart ? (rom_override ? "THIS ROM: CUSTOM" : "THIS ROM: GLOBAL DEFAULTS") :
+                            "GLOBAL DEFAULTS", 24, 44, 0x00FFFF);
+                for (int i = 0; i < 10; ++i) {
+                    draw_string(renderer, rows[i], 24, 60 + i * 13,
+                                menu_selection == i ? 0xFFFFFF : 0x888888);
                 }
-                sprintf(mute_buf,  "2. Audio Muted:  %s", audio_muted ? "ON" : "OFF");
-
-                int num_bars = master_volume / 10;
-                char slider[12];
-                for (int i = 0; i < 10; i++) {
-                    slider[i] = (i < num_bars) ? '|' : '.';
-                }
-                slider[10] = '\0';
-                sprintf(vol_buf,   "3. Volume: [%s] %d%%", slider, master_volume);
-
-                sprintf(fs_buf,    "4. Fullscreen:   %s", fullscreen ? "ON" : "OFF");
-                sprintf(debug_buf, "5. Console Debug:%s", console_debug_enabled ? "ON" : "OFF");
-                sprintf(port_buf, "6. Port 2: %s", zapper_enabled ? "Zapper" : "Controller");
-
-                uint32_t col0 = (menu_selection == 0) ? 0xFFFFFF : 0x888888;
-                uint32_t col1 = (menu_selection == 1) ? 0xFFFFFF : 0x888888;
-                uint32_t col2 = (menu_selection == 2) ? 0xFFFFFF : 0x888888;
-                uint32_t col3 = (menu_selection == 3) ? 0xFFFFFF : 0x888888;
-                uint32_t col4 = (menu_selection == 4) ? 0xFFFFFF : 0x888888;
-                uint32_t col5 = (menu_selection == 5) ? 0xFFFFFF : 0x888888;
-
-                draw_string(renderer, scale_buf, 40, 70, col0);
-                draw_string(renderer, mute_buf,  40, 90, col1);
-                draw_string(renderer, vol_buf,   40, 110, col2);
-                draw_string(renderer, fs_buf,    40, 130, col3);
-                draw_string(renderer, debug_buf, 40, 150, col4);
-                draw_string(renderer, port_buf,  40, 170, col5);
-
                 SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                SDL_Rect box = { 32, 68 + menu_selection * 20, 190, 11 };
+                SDL_Rect box = {18, 58 + menu_selection * 13, 226, 11};
                 SDL_RenderDrawRect(renderer, &box);
-
-                if (menu_selection == 2) {
-                    draw_string(renderer, "Use Left/Right to adjust", 24, 200, 0xFFFF00);
-                } else {
-                    draw_string(renderer, "Press Enter to Toggle setting", 20, 200, 0xFFFF00);
-                }
+                draw_string(renderer, "ENTER: Change  F4: Capture", 24, 201, 0xFFFF00);
+                draw_string(renderer, "Volume: LEFT/RIGHT", 24, 215, 0xFFFF00);
             }
 
             draw_notification(renderer);
@@ -1229,35 +1337,28 @@ int main(int argc, char *argv[]) {
             }
             if (event.type == SDL_QUIT) {
                 if (save_battery_ram()) running = false;
-            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
-                if (current_state == GUI_STATE_GAMEPLAY && !debugger_active && nes_sys.zapper_enabled) {
-                    if (event.button.button == SDL_BUTTON_LEFT) {
-                        int mx = event.button.x;
-                        int my = event.button.y;
-                        if (mx < 0) mx = 0;
-                        if (mx > 255) mx = 255;
-                        if (my < 0) my = 0;
-                        if (my > 239) my = 239;
-                        nes_sys.zapper_x = mx;
-                        nes_sys.zapper_y = my;
-                        nes_sys.zapper_trigger = true;
+            } else if (event.type == SDL_WINDOWEVENT) {
+                if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    focused = false;
+                    clear_host_input();
+                    if (current_state == GUI_STATE_GAMEPLAY) {
+                        current_state = GUI_STATE_MENU_MAIN;
+                        menu_selection = 0;
                     }
+                    runtime_reset_pending = true;
+                } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                    focused = true;
+                    clear_host_input();
+                } else if (event.window.event == SDL_WINDOWEVENT_LEAVE) {
+                    nes_sys.zapper_x = nes_sys.zapper_y = -1;
+                    nes_sys.zapper_light = false;
                 }
+            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                if (focused && current_state == GUI_STATE_GAMEPLAY && !debugger_active &&
+                    nes_sys.zapper_enabled && event.button.button == SDL_BUTTON_LEFT)
+                    nes_sys.zapper_trigger = true;
             } else if (event.type == SDL_MOUSEBUTTONUP) {
-                if (event.button.button == SDL_BUTTON_LEFT) {
-                    nes_sys.zapper_trigger = false;
-                }
-            } else if (event.type == SDL_MOUSEMOTION) {
-                if (current_state == GUI_STATE_GAMEPLAY && nes_sys.zapper_enabled) {
-                    int mx = event.motion.x;
-                    int my = event.motion.y;
-                    if (mx < 0) mx = 0;
-                    if (mx > 255) mx = 255;
-                    if (my < 0) my = 0;
-                    if (my > 239) my = 239;
-                    nes_sys.zapper_x = mx;
-                    nes_sys.zapper_y = my;
-                }
+                if (event.button.button == SDL_BUTTON_LEFT) nes_sys.zapper_trigger = false;
             } else if (event.type == SDL_CONTROLLERDEVICEADDED) {
                 if (!game_controller) {
                     game_controller = SDL_GameControllerOpen(event.cdevice.which);
@@ -1266,6 +1367,7 @@ int main(int argc, char *argv[]) {
                 if (game_controller) {
                     SDL_Joystick *joystick = SDL_GameControllerGetJoystick(game_controller);
                     if (joystick && SDL_JoystickInstanceID(joystick) == event.cdevice.which) {
+                        clear_host_input();
                         SDL_GameControllerClose(game_controller);
                         game_controller = NULL;
                         for (int i = 0; i < SDL_NumJoysticks(); ++i) {
@@ -1277,6 +1379,8 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (!focused || !game_controller || event.cbutton.which !=
+                    SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller))) continue;
                 if (rebinding && !control_mode_keyboard) {
                     controller_button_mappings[menu_selection - 1] = event.cbutton.button;
                     save_emulator_settings();
@@ -1295,7 +1399,7 @@ int main(int argc, char *argv[]) {
                     } else {
                         for (int i = 0; i < 8; i++) {
                             if (event.cbutton.button == controller_button_mappings[i]) {
-                                nes_sys.controller_state[0] |= (1 << i);
+                                host_input_button(&host_input.buttons, (unsigned)i, true);
                             }
                         }
                     }
@@ -1315,55 +1419,39 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (event.type == SDL_CONTROLLERBUTTONUP) {
-                if (current_state == GUI_STATE_GAMEPLAY) {
-                    for (int i = 0; i < 8; i++) {
-                        if (event.cbutton.button == controller_button_mappings[i]) {
-                            nes_sys.controller_state[0] &= ~(1 << i);
-                        }
-                    }
-                } else {
-                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-                        push_synthetic_key(SDLK_UP, SDL_KEYUP);
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-                        push_synthetic_key(SDLK_DOWN, SDL_KEYUP);
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                        push_synthetic_key(SDLK_LEFT, SDL_KEYUP);
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                        push_synthetic_key(SDLK_RIGHT, SDL_KEYUP);
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
-                        push_synthetic_key(SDLK_RETURN, SDL_KEYUP);
-                    } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B || event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-                        push_synthetic_key(SDLK_ESCAPE, SDL_KEYUP);
-                    }
-                }
+                if (!game_controller || event.cbutton.which !=
+                    SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller))) continue;
+                for (int i = 0; i < 8; ++i)
+                    if (event.cbutton.button == controller_button_mappings[i])
+                        host_input_button(&host_input.buttons, (unsigned)i, false);
             } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (!focused || !game_controller || event.caxis.which !=
+                    SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller))) continue;
                 if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
-                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
-                        if (event.caxis.value < -16000) {
-                            nes_sys.controller_state[0] |= (1 << 6);
-                            nes_sys.controller_state[0] &= ~(1 << 7);
-                        } else if (event.caxis.value > 16000) {
-                            nes_sys.controller_state[0] |= (1 << 7);
-                            nes_sys.controller_state[0] &= ~(1 << 6);
-                        } else {
-                            nes_sys.controller_state[0] &= ~(1 << 6);
-                            nes_sys.controller_state[0] &= ~(1 << 7);
-                        }
-                    }
-                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
-                        if (event.caxis.value < -16000) {
-                            nes_sys.controller_state[0] |= (1 << 4);
-                            nes_sys.controller_state[0] &= ~(1 << 5);
-                        } else if (event.caxis.value > 16000) {
-                            nes_sys.controller_state[0] |= (1 << 5);
-                            nes_sys.controller_state[0] &= ~(1 << 4);
-                        } else {
-                            nes_sys.controller_state[0] &= ~(1 << 4);
-                            nes_sys.controller_state[0] &= ~(1 << 5);
-                        }
-                    }
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
+                        host_input_axis(&host_input, false, event.caxis.value);
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
+                        host_input_axis(&host_input, true, event.caxis.value);
                 }
             } else if (event.type == SDL_KEYDOWN) {
+                if (!focused || event.key.repeat) continue;
+                if (!rebinding && event.key.keysym.sym == SDLK_F2) {
+                    performance_visible = !performance_visible;
+                    save_emulator_settings();
+                    continue;
+                }
+                if (!rebinding && event.key.keysym.sym == SDLK_F4) {
+                    if (event.key.keysym.mod & KMOD_CTRL) {
+                        diagnostics.tracing = !diagnostics.tracing;
+                        if (diagnostics.tracing) {
+                            diagnostics.event_count = diagnostics.event_head = 0;
+                            diagnostics.overwritten = 0;
+                            diagnostics_event(&nes_sys, DIAG_RESUME, 0, 0);
+                        }
+                        show_notification(diagnostics.tracing ? "EVENT TRACE ON" : "EVENT TRACE OFF");
+                    } else capture_diagnostics();
+                    continue;
+                }
                 if (rebinding) {
                     if (control_mode_keyboard && event.key.keysym.sym != SDLK_ESCAPE) {
                         control_mappings[menu_selection - 1] = event.key.keysym.sym;
@@ -1398,7 +1486,7 @@ int main(int argc, char *argv[]) {
                                     else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
                                     else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
                                     else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
-                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 5;
+                                    else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 9;
                                     else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = (CONTROL_COUNT + 1);
                                 }
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
@@ -1410,7 +1498,7 @@ int main(int argc, char *argv[]) {
                                 else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
-                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 5) menu_selection = 0;
+                                else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 9) menu_selection = 0;
                                 else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > (CONTROL_COUNT + 1)) menu_selection = 0;
                             } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
                             break;
@@ -1495,7 +1583,12 @@ int main(int argc, char *argv[]) {
                                     }
 
                                     nes_init(&nes_sys);
-                                    nes_sys.zapper_enabled = zapper_enabled;
+                                    bool trace_enabled = diagnostics.tracing;
+                                    memset(&diagnostics, 0, sizeof(diagnostics));
+                                    diagnostics.tracing = trace_enabled;
+                                    memset(&audio_monitor, 0, sizeof(audio_monitor));
+                                    nes_sys.diagnostics = &diagnostics;
+                                    apply_rom_preferences(window);
 
                                     char rom_error[128];
                                     Cartridge *cart = cartridge_load_ex(&nes_sys, rom_files[menu_selection], rom_error, sizeof(rom_error));
@@ -1517,6 +1610,7 @@ int main(int argc, char *argv[]) {
 
                                     if (cart) {
                                         nes_sys.cart = cart;
+                                        apply_rom_preferences(window);
                                         strncpy(loaded_rom_name, rom_files[menu_selection], sizeof(loaded_rom_name) - 1);
                                         loaded_rom_name[sizeof(loaded_rom_name) - 1] = '\0';
 
@@ -1543,11 +1637,12 @@ int main(int argc, char *argv[]) {
                                         MKDIR(save_state_dir);
 
                                         nes_reset(&nes_sys);
-                                        cpu_reset(&nes_sys.cpu, &cpu_bus_bridge);
+                                        nes_clock_tick(&nes_sys);
                                         debugger_init();
                                         if (!load_battery_ram()) {
                                             cartridge_free(nes_sys.cart);
                                             nes_sys.cart = NULL;
+                                            apply_rom_preferences(window);
                                             continue;
                                         }
                                         debugger_active = console_debug_enabled;
@@ -1582,6 +1677,7 @@ int main(int argc, char *argv[]) {
                                 }
                             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                                 if (menu_selection == 0) {
+                                    preferences_inherit = false;
                                     window_scale++;
                                     if (window_scale > 5) window_scale = 1;
                                     if (window_scale == 5) {
@@ -1599,9 +1695,11 @@ int main(int argc, char *argv[]) {
                                     }
                                 } else if (menu_selection == 1) {
                                     audio_muted = !audio_muted;
+                                    runtime_reset_pending = true;
                                 } else if (menu_selection == 2) {
                                     play_volume_ding();
                                 } else if (menu_selection == 3) {
+                                    preferences_inherit = false;
                                     fullscreen = !fullscreen;
                                     if (fullscreen) {
                                         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -1615,11 +1713,23 @@ int main(int argc, char *argv[]) {
                                         fflush(stdout);
                                     }
                                 } else if (menu_selection == 5) {
+                                    preferences_inherit = false;
                                     zapper_enabled = !zapper_enabled;
                                     nes_sys.zapper_enabled = zapper_enabled;
                                     nes_sys.zapper_trigger = false;
                                     nes_sys.zapper_light = false;
                                     nes_reset_zapper_watchdog(&nes_sys);
+                                } else if (menu_selection == 6) {
+                                    preferences_inherit = true;
+                                    save_emulator_settings();
+                                    apply_rom_preferences(window);
+                                } else if (menu_selection == 7) {
+                                    global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
+                                    show_notification("GLOBAL DEFAULTS UPDATED");
+                                } else if (menu_selection == 8) {
+                                    performance_visible = !performance_visible;
+                                } else if (menu_selection == 9) {
+                                    diagnostics.tracing = !diagnostics.tracing;
                                 }
                                 save_emulator_settings();
                             }
@@ -1640,6 +1750,7 @@ int main(int argc, char *argv[]) {
                         switch (sym) {
                             case SDLK_f:
                             case SDLK_F11: {
+                            preferences_inherit = false;
                             fullscreen = !fullscreen;
                             if (fullscreen) {
                                 SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -1682,7 +1793,7 @@ int main(int argc, char *argv[]) {
                             } else {
                                 for (int i = 0; i < 8; i++) {
                                     if (event.key.keysym.sym == control_mappings[i]) {
-                                        nes_sys.controller_state[0] |= (1 << i);
+                                        host_input_button(&host_input.keyboard, (unsigned)i, true);
                                     }
                                 }
                             }
@@ -1700,7 +1811,7 @@ int main(int argc, char *argv[]) {
                             } else {
                                 for (int i = 0; i < 8; i++) {
                                     if (event.key.keysym.sym == control_mappings[i]) {
-                                        nes_sys.controller_state[0] |= (1 << i);
+                                        host_input_button(&host_input.keyboard, (unsigned)i, true);
                                     }
                                 }
                             }
@@ -1745,8 +1856,9 @@ int main(int argc, char *argv[]) {
                         }
                         case SDLK_F12: {
                             if (debugger_active) {
-                                cpu_trigger_reset(&nes_sys.cpu);
-                                cpu_step(&nes_sys.cpu, &cpu_bus_bridge);
+                                nes_reset(&nes_sys);
+                                nes_clock_tick(&nes_sys);
+                                runtime_reset_pending = true;
                             }
                             break;
                         }
@@ -1754,7 +1866,7 @@ int main(int argc, char *argv[]) {
                             if (!debugger_active) {
                                 for (int i = 0; i < 8; i++) {
                                     if (event.key.keysym.sym == control_mappings[i]) {
-                                        nes_sys.controller_state[0] |= (1 << i);
+                                        host_input_button(&host_input.keyboard, (unsigned)i, true);
                                     }
                                 }
                             }
@@ -1763,13 +1875,26 @@ int main(int argc, char *argv[]) {
                     }
                 }
         }
-            } else if (event.type == SDL_KEYUP && current_state == GUI_STATE_GAMEPLAY) {
+            } else if (event.type == SDL_KEYUP) {
                 for (int i = 0; i < 8; i++) {
                     if (event.key.keysym.sym == control_mappings[i]) {
-                        nes_sys.controller_state[0] &= ~(1 << i);
+                        host_input_button(&host_input.keyboard, (unsigned)i, false);
                     }
                 }
             }
+        }
+
+        if (current_state != GUI_STATE_GAMEPLAY || debugger_active || !focused)
+            clear_host_input();
+        nes_sys.controller_state[0] = host_input_value(&host_input);
+        if (focused && current_state == GUI_STATE_GAMEPLAY && !debugger_active && nes_sys.zapper_enabled) {
+            int mx, my;
+            float lx, ly;
+            SDL_GetMouseState(&mx, &my);
+            SDL_RenderWindowToLogical(renderer, mx, my, &lx, &ly);
+            if (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS) {
+                game_aim(game_crop(nes_sys.cart->mapper_id), lx, ly, &nes_sys.zapper_x, &nes_sys.zapper_y);
+            } else nes_sys.zapper_x = nes_sys.zapper_y = -1;
         }
 
         uint32_t cursor_now = SDL_GetTicks();
@@ -1789,6 +1914,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    save_emulator_settings();
     SDL_ShowCursor(SDL_ENABLE);
     if (game_controller) {
         SDL_GameControllerClose(game_controller);
@@ -1809,6 +1935,5 @@ int main(int argc, char *argv[]) {
     if (nes_sys.cart) {
         cartridge_free(nes_sys.cart);
     }
-    save_emulator_settings();
     return 0;
 }

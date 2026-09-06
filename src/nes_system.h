@@ -7,6 +7,7 @@
 
 typedef struct NES NES;
 typedef struct Cartridge Cartridge;
+typedef struct NESDiagnostics NESDiagnostics;
 
 typedef struct {
     bool irq_line;      // Low-active wire-OR line (Cartridge + APU)
@@ -59,6 +60,7 @@ struct NES {
     NES_ZapperWatchdog zapper_watchdog;
 
     bool       frame_ready;
+    NESDiagnostics *diagnostics; // Host observation only; excluded from save states.
 };
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr);

@@ -4,7 +4,10 @@ Quick saves, manual saves, and loads use the same core API in `src/save_state.h`
 The frontend reports success only after the operation succeeds. Errors appear
 for three seconds in gameplay, menus, and the debugger, with the path and reason
 also written to stderr. Successful loads clear the SDL audio queue and refresh
-the debugger's view of the program counter.
+the debugger's view of the program counter. The frontend also clears held host
+inputs, rebases pacing and reapplies the selected Port 2 preference. Core state
+decoding itself preserves serialized device/input state for replay. Diagnostic
+history belongs to the host and is excluded from the state format.
 
 ## Compatibility
 

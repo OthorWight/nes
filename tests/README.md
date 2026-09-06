@@ -27,6 +27,15 @@ subdirectories under `build/tests/`, removed on success.
 | `save_states.c` | All 23 mapper IDs: full in-memory restore, fixed-input replay, frame/audio agreement, partial serial writes and IRQ state; wrong-ROM/version/corrupt/legacy rejection, atomic file replacement and failure checks |
 | `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
+| `frontend_behavior.c` | Fractional pacing deadlines, host stalls/resume, audio queue lifecycle, independent input sources, cropped/letterboxed aim and per-ROM preference validation |
+| `diagnostic_capture.c` | Non-consuming memory inspection, bank-aware peeks, input counters, timestamped events, bounded histories, performance summaries and save-state isolation |
+
+The optional `bash tests/sdl/run.sh` requires SDL 2.0.18+ and runs the real frontend
+with dummy drivers and scripted input. It measures audio/muted/unavailable pacing,
+tests focus/disconnect/debugger transitions, per-ROM defaults and SDL coordinate
+conversion, and preserves diagnostic captures under `build/tests/`. It also runs
+a Zapper scanline characterization probe, which reports the existing sensor's
+hardware discrepancy without treating it as an accuracy pass.
 
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus
 accesses, PPU dots, and M2 clocks. The CPU, PPU, APU, and system bus are the normal

@@ -1,5 +1,6 @@
 #include "debugger.h"
 #include "nes_system.h"
+#include "diagnostics.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -150,103 +151,92 @@ static const uint8_t op_modes[256] = {
 };
 
 uint8_t test_bus_peek(uint16_t address) {
-    if (address < 0x2000) {
-        return nes_sys.wram[address & 0x07FF];
-    }
-    if (address >= 0x6000 && address <= 0x7FFF && nes_sys.cart && nes_sys.cart->prg_ram) {
-        return nes_sys.cart->prg_ram[address - 0x6000];
-    }
-    if (address >= 0x8000 && nes_sys.cart && nes_sys.cart->prg_rom) {
-        bool handled = false;
-        if (nes_sys.cart->vtable && nes_sys.cart->vtable->cpu_read) {
-            return nes_sys.cart->vtable->cpu_read(nes_sys.cart, address, &handled);
-        }
-    }
-    return 0;
+    uint8_t value = 0;
+    (void)nes_cpu_peek(&nes_sys, address, &value);
+    return value;
+}
+
+static void peek_text(uint16_t address, char text[3]) {
+    uint8_t value;
+    if (nes_cpu_peek(&nes_sys, address, &value)) snprintf(text, 3, "%02X", value);
+    else memcpy(text, "??", 3);
 }
 
 void disassemble_instruction(uint16_t pc, char *out_buf, size_t max_len, CPU6502 *cpu) {
-    uint8_t op = test_bus_peek(pc);
-    uint8_t b1 = test_bus_peek(pc + 1);
-    uint8_t b2 = test_bus_peek(pc + 2);
-    uint16_t operand = b1 | (b2 << 8);
-
-    char hex_str[16];
-    if (op_bytes[op] == 1) {
-        snprintf(hex_str, sizeof(hex_str), "%02X      ", op);
-    } else if (op_bytes[op] == 2) {
-        snprintf(hex_str, sizeof(hex_str), "%02X %02X   ", op, b1);
-    } else {
-        snprintf(hex_str, sizeof(hex_str), "%02X %02X %02X", op, b1, b2);
+    uint8_t op, b1 = 0, b2 = 0;
+    if (!nes_cpu_peek(&nes_sys, pc, &op)) {
+        snprintf(out_buf, max_len, "??        UNKNOWN");
+        return;
     }
-
-    char asm_str[64];
+    unsigned size = op_bytes[op];
+    bool known = size < 2 || nes_cpu_peek(&nes_sys, (uint16_t)(pc + 1), &b1);
+    known = (size < 3 || nes_cpu_peek(&nes_sys, (uint16_t)(pc + 2), &b2)) && known;
+    char hex[16], first[3], second[3];
+    peek_text((uint16_t)(pc + 1), first);
+    peek_text((uint16_t)(pc + 2), second);
+    if (size == 1) snprintf(hex, sizeof(hex), "%02X      ", op);
+    else if (size == 2) snprintf(hex, sizeof(hex), "%02X %s   ", op, first);
+    else snprintf(hex, sizeof(hex), "%02X %s %s", op, first, second);
+    if (!known) {
+        snprintf(out_buf, max_len, "%s  %s ??", hex, op_names[op]);
+        return;
+    }
+    uint16_t operand = b1 | ((uint16_t)b2 << 8), addr = operand;
+    char assembly[64], value[3];
+    const char *name = op_names[op];
     switch (op_modes[op]) {
-        case MODE_IMP:
-            snprintf(asm_str, sizeof(asm_str), "%s", op_names[op]);
-            break;
-        case MODE_IMM:
-            snprintf(asm_str, sizeof(asm_str), "%s #$%02X", op_names[op], b1);
-            break;
+        case MODE_IMP: snprintf(assembly, sizeof(assembly), "%s", name); break;
+        case MODE_IMM: snprintf(assembly, sizeof(assembly), "%s #$%02X", name, b1); break;
         case MODE_ZP:
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X = #$%02X", op_names[op], b1, test_bus_peek(b1));
-            break;
-        case MODE_ZPX: {
-            uint8_t addr = (b1 + cpu->index_x) & 0xFF;
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X,X @ $%02X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
+        case MODE_ZPX:
         case MODE_ZPY: {
-            uint8_t addr = (b1 + cpu->index_y) & 0xFF;
-            snprintf(asm_str, sizeof(asm_str), "%s $%02X,Y @ $%02X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
+            char suffix = op_modes[op] == MODE_ZPX ? 'X' : 'Y';
+            addr = (uint8_t)(b1 + (op_modes[op] == MODE_ZP ? 0 :
+                (suffix == 'X' ? cpu->index_x : cpu->index_y)));
+            peek_text(addr, value);
+            if (op_modes[op] == MODE_ZP)
+                snprintf(assembly, sizeof(assembly), "%s $%02X = #$%s", name, b1, value);
+            else snprintf(assembly, sizeof(assembly), "%s $%02X,%c @ $%02X = #$%s", name, b1, suffix, addr, value);
             break;
         }
-        case MODE_ABS: {
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X = #$%02X", op_names[op], operand, test_bus_peek(operand));
-            break;
-        }
-        case MODE_ABSX: {
-            uint16_t addr = operand + cpu->index_x;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X,X @ $%04X = #$%02X", op_names[op], operand, addr, test_bus_peek(addr));
-            break;
-        }
+        case MODE_ABS:
+        case MODE_ABSX:
         case MODE_ABSY: {
-            uint16_t addr = operand + cpu->index_y;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X,Y @ $%04X = #$%02X", op_names[op], operand, addr, test_bus_peek(addr));
+            char suffix = op_modes[op] == MODE_ABSX ? 'X' : 'Y';
+            addr += op_modes[op] == MODE_ABS ? 0 : (suffix == 'X' ? cpu->index_x : cpu->index_y);
+            peek_text(addr, value);
+            if (op_modes[op] == MODE_ABS)
+                snprintf(assembly, sizeof(assembly), "%s $%04X = #$%s", name, operand, value);
+            else snprintf(assembly, sizeof(assembly), "%s $%04X,%c @ $%04X = #$%s", name, operand, suffix, addr, value);
             break;
         }
         case MODE_IND: {
-            uint16_t target;
-            if ((operand & 0x00FF) == 0x00FF) {
-                uint8_t low = test_bus_peek(operand);
-                uint8_t high = test_bus_peek(operand & 0xFF00);
-                target = low | (high << 8);
-            } else {
-                target = test_bus_peek(operand) | (test_bus_peek(operand + 1) << 8);
-            }
-            snprintf(asm_str, sizeof(asm_str), "%s ($%04X) = $%04X", op_names[op], operand, target);
+            uint8_t low, high;
+            uint16_t next = (operand & 0xFF00) | ((operand + 1) & 0xFF);
+            if (nes_cpu_peek(&nes_sys, operand, &low) && nes_cpu_peek(&nes_sys, next, &high))
+                snprintf(assembly, sizeof(assembly), "%s ($%04X) = $%04X", name, operand, low | (high << 8));
+            else snprintf(assembly, sizeof(assembly), "%s ($%04X) = $????", name, operand);
             break;
         }
-        case MODE_INDX: {
-            uint8_t ptr = (b1 + cpu->index_x) & 0xFF;
-            uint16_t addr = test_bus_peek(ptr) | (test_bus_peek((ptr + 1) & 0xFF) << 8);
-            snprintf(asm_str, sizeof(asm_str), "%s ($%02X,X) @ $%04X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
-            break;
-        }
+        case MODE_INDX:
         case MODE_INDY: {
-            uint16_t base = test_bus_peek(b1) | (test_bus_peek((b1 + 1) & 0xFF) << 8);
-            uint16_t addr = base + cpu->index_y;
-            snprintf(asm_str, sizeof(asm_str), "%s ($%02X),Y @ $%04X = #$%02X", op_names[op], b1, addr, test_bus_peek(addr));
+            bool indexed_x = op_modes[op] == MODE_INDX;
+            uint8_t ptr = (uint8_t)(b1 + (indexed_x ? cpu->index_x : 0));
+            addr = test_bus_peek(ptr) | ((uint16_t)test_bus_peek((uint8_t)(ptr + 1)) << 8);
+            if (!indexed_x) addr += cpu->index_y;
+            peek_text(addr, value);
+            snprintf(assembly, sizeof(assembly), indexed_x ? "%s ($%02X,X) @ $%04X = #$%s" :
+                     "%s ($%02X),Y @ $%04X = #$%s", name, b1, addr, value);
             break;
         }
-        case MODE_REL: {
-            uint16_t target = pc + 2 + (int8_t)b1;
-            snprintf(asm_str, sizeof(asm_str), "%s $%04X", op_names[op], target);
+        case MODE_REL:
+            snprintf(assembly, sizeof(assembly), "%s $%04X", name, (uint16_t)(pc + 2 + (int8_t)b1));
             break;
-        }
+        default: snprintf(assembly, sizeof(assembly), "UNKNOWN"); break;
     }
-    snprintf(out_buf, max_len, "%s  %s", hex_str, asm_str);
+    snprintf(out_buf, max_len, "%s  %s", hex, assembly);
 }
+
 
 void debugger_init(void) {
     debugger_active = false;
@@ -265,8 +255,9 @@ void debugger_init(void) {
 }
 
 void debugger_step_instruction(CPU6502 *cpu, CPUBus *bus) {
+    (void)bus;
     debugger_log_instruction(cpu);
-    cpu_step(cpu, bus);
+    nes_clock_tick(&nes_sys);
     debugger_view_pc = cpu->program_counter;
     debugger_selected_line = 0;
 }

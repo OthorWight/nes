@@ -17,13 +17,22 @@
 
 ### Zapper
 
-In **Settings**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. The selection is saved; switch back to **Controller** for standard games. Controller is the default.
+In **Settings**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. Port 2 and display preferences are saved per ROM; other games use their own override or the global defaults. Settings includes actions to use or update those defaults. Controller is the initial default. Letterbox clicks count as offscreen aim.
 
 If a game repeatedly polls the light gun on a black screen for about three seconds, an OSD warning suggests switching Port 2 back to Controller. This detects suspected polling hangs such as Armadillo's boot loop; it does not automatically change the selected device.
 
 ### Quick Save & Quick Load
 *   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
 *   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
+
+### Performance and captures
+
+Press `F2` for FPS, emulation speed, frame spikes, audio queue and input diagnostics.
+`Ctrl+F4` toggles recent event tracing; `F4` saves the bounded history to
+`saves/<ROM name>/diagnostics.log`. Audio on, muted, and unavailable share the
+same NTSC frame scheduler. Focus loss pauses the game and clears held inputs.
+See [pacing, input and diagnostics](docs/PACING_DIAGNOSTICS.md) for capture details,
+per-ROM preferences, tests and sensor limitations.
 
 ---
 
@@ -122,7 +131,7 @@ F7:BRK | UP/DN:Nav | ESC:Menu
 ## Build Instructions
 
 ### Prerequisites
-Ensure you have **SDL2** development libraries installed.
+Ensure you have **SDL2 2.0.18 or newer** development libraries installed.
 
 ### Windows (MSVC or GCC / MinGW-w64)
 A unified `build.bat` script is provided which detects your environment, automatically fetches the correct SDL2 development packages if missing, and compiles the emulator.
