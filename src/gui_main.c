@@ -1499,15 +1499,22 @@ int main(int argc, char *argv[]) {
                                     nes_init(&nes_sys);
                                     nes_sys.zapper_enabled = zapper_enabled;
 
-                                    Cartridge *cart = cartridge_load(&nes_sys, rom_files[menu_selection]);
-                                    if (!cart) {
+                                    char rom_error[128];
+                                    Cartridge *cart = cartridge_load_ex(&nes_sys, rom_files[menu_selection], rom_error, sizeof(rom_error));
+                                    if (!cart && strcmp(rom_error, "Cannot open ROM") == 0) {
                                         char *base_path = SDL_GetBasePath();
                                         if (base_path) {
                                             char full_path[1024];
                                             snprintf(full_path, sizeof(full_path), "%s%s", base_path, rom_files[menu_selection]);
-                                            cart = cartridge_load(&nes_sys, full_path);
+                                            cart = cartridge_load_ex(&nes_sys, full_path, rom_error, sizeof(rom_error));
                                             SDL_free(base_path);
                                         }
+                                    }
+
+                                    if (!cart) {
+                                        show_notification(rom_error);
+                                        notification_timer = 180;
+                                        fprintf(stderr, "%s: %s\n", rom_files[menu_selection], rom_error);
                                     }
 
                                     if (cart) {

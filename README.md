@@ -51,7 +51,12 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 *   **Input**: Real-time hot-plugging support for USB/Bluetooth gamepads with analog deadzones and a fully-mappable keyboard interface.
 *   **Zapper Light Gun Support**: Fully emulated light gun logic using host mouse clicks, validating screen pixel luminance values at the cursor target.
 
-### Supported Mappers (iNES)
+### Mapper implementations (iNES and supported NES 2.0 boards)
+
+NES 2.0 parsing includes extended mapper IDs and declared ROM/RAM sizes. Unknown
+submappers, unsupported memory layouts and non-NTSC hardware are reported clearly.
+See [cartridge support and limits](docs/CARTRIDGES.md) for the supported combinations
+and focused regression coverage.
 *   **Mapper 0 (NROM)**: Simple early titles (e.g., *Super Mario Bros.*, *Donkey Kong*).
 *   **Mapper 1 (MMC1)**: Advanced switching supporting horizontal/vertical split screens (*The Legend of Zelda*, *Metroid*).
 *   **Mapper 2 (UxROM)**: Bank-switching PRG-ROM ROMs (*Mega Man*, *Castlevania*).
@@ -171,7 +176,7 @@ and save reliability checks, their reference material, and remaining gaps.
 
 ## Save Directories
 
-*   **Saves (`.sav`)**: Battery-backed PRG RAM is saved on exit and ROM changes to `saves/<RomName_Without_Extension>/<RomName_Without_Extension>.sav` beside the executable. Existing ROM-adjacent saves are imported when no canonical save exists; legacy files are preserved.
+*   **Saves (`.sav`)**: Battery-backed memory (PRG NVRAM followed by CHR NVRAM for NES 2.0; existing iNES PRG RAM format preserved) is saved on exit and ROM changes to `saves/<RomName_Without_Extension>/<RomName_Without_Extension>.sav` beside the executable. Existing ROM-adjacent saves are imported when no canonical save exists; legacy files are preserved.
 *   **Save States (`.state`)**: Quicksaves and timestamped manual saves are stored in a dedicated subfolder structure separated by game name under:
     `saves/<RomName_Without_Extension>/`
 

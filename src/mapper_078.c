@@ -8,10 +8,23 @@ typedef struct {
     uint8_t chr_bank;
 } M078Data;
 
+static void m078_set_mirroring(Cartridge *c, uint8_t val) {
+    // NES 2.0: 1 = Cosmo Carrier (one-screen), 3 = Holy Diver (H/V).
+    // Unspecified boards use the historical iNES alternative-nametable flag.
+    // Consult immutable header metadata, since c->mirroring changes on writes.
+    bool hv = c->info.submapper == 3 ||
+        (c->info.submapper == 0 && c->info.mirroring == MIRROR_FOUR_SCREEN);
+    if (hv)
+        c->mirroring = (val & 0x08) ? MIRROR_VERTICAL : MIRROR_HORIZONTAL;
+    else
+        c->mirroring = (val & 0x08) ? MIRROR_ONE_SCREEN_HIGH : MIRROR_ONE_SCREEN_LOW;
+}
+
 static void m078_reset(Cartridge *c) {
     M078Data *d = (M078Data*)c->mapper_data;
     d->prg_bank = 0;
     d->chr_bank = 0;
+    m078_set_mirroring(c, 0);
 }
 
 static void m078_destroy(Cartridge *c) {
@@ -39,7 +52,7 @@ static void m078_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     if (addr >= 0x8000) {
         d->prg_bank = val & 0x07;
         d->chr_bank = (val >> 4) & 0x0F;
-        c->mirroring = (val & 0x08) ? MIRROR_VERTICAL : MIRROR_HORIZONTAL;
+        m078_set_mirroring(c, val);
     }
 }
 

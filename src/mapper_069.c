@@ -56,13 +56,13 @@ static uint8_t fme7_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         *handled = true;
         uint8_t reg = d->prg_banks[0];
         
-        if (!(reg & 0x80)) {
-            // Bit 7 is 0: Map ROM into $6000-$7FFF
+        if (!(reg & 0x40)) {
+            // Bit 6 selects RAM; otherwise map ROM into $6000-$7FFF.
             uint32_t bank = (reg & 0x3F) % total_8k;
             return c->prg_rom[bank * 8192 + (addr - 0x6000)];
         } else {
-            // RAM selected; bit 6 enables the RAM chip.
-            if ((reg & 0x40) && c->prg_ram && c->prg_ram_size > 0) {
+            // RAM selected; bit 7 enables the RAM chip.
+            if ((reg & 0x80) && c->prg_ram && c->prg_ram_size > 0) {
                 return c->prg_ram[(addr - 0x6000) % c->prg_ram_size];
             }
             return cartridge_open_bus(c);

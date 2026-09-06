@@ -70,6 +70,7 @@ struct Cartridge {
     uint16_t      mapper_id;
     CartridgeInfo info; // Immutable header/configuration, also covered by ROM identity
     bool          chr_is_ram;
+    uint8_t       trainer_data[512]; // Immutable startup bytes when info.trainer is set
     MirroringMode mirroring;
 
     uint8_t      *prg_rom;

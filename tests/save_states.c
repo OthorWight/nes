@@ -92,7 +92,7 @@ static void setup(NES *n) {
     apu_write_reg(n, 0x4015, 0x1F);
     apu_write_reg(n, 0x4017, 0x80);
     nes_ppu_bus_write(n, 0x3F01, 0xC5); // Current bus backing retains upper palette bits.
-    n->cart->chr_rom[17] ^= 0x5A; // Restore mutable backing, not initial ROM.
+    if (n->cart->chr_is_ram) n->cart->chr_rom[17] ^= 0x5A; // Restore mutable backing, not initial ROM.
     n->cart->prg_ram[n->cart->prg_ram_size - 1] = 0x8A;
 }
 
@@ -194,6 +194,13 @@ static void corrupt_and_wrong_states(void) {
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Mapper A12 filter is the final signed i32; invalid even with a good CRC.
     memcpy(bad, good, size); memset(bad + size - 4, 0xFF, 4);
+    refresh_checksum(bad, size);
+    rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
+    // Version 1 still carries CHR bytes, but cannot overwrite cartridge ROM.
+    StateIO mapper_count = {NULL, SIZE_MAX, 0, false, true};
+    n->cart->vtable->state(n->cart, &mapper_count);
+    memcpy(bad, good, size);
+    bad[size - mapper_count.pos - n->cart->chr_rom_size + 17] ^= 0x80;
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     rejection_keeps_machine(n, (uint8_t *)"TATS", 4, NES_STATE_LEGACY);

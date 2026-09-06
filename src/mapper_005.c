@@ -101,6 +101,39 @@ static void mmc5_ppu_dot(Cartridge *c, uint16_t addr) {
     }
 }
 
+// Resolve the same PRG mapping for reads and writes in every banking mode.
+static uint32_t mmc5_prg_offset(MMC5Data *d, uint16_t addr, bool *ram) {
+    if (addr < 0x8000) {
+        *ram = true;
+        return (d->prg_regs[0] & 7) * 8192u + (addr & 0x1FFF);
+    }
+    unsigned slot = (addr - 0x8000) / 8192;
+    uint8_t reg;
+    uint32_t bank;
+    *ram = false;
+    switch (d->prg_mode) {
+        case 0:
+            bank = (d->prg_regs[4] & 0x7C) + slot;
+            break;
+        case 1:
+            reg = d->prg_regs[slot < 2 ? 2 : 4];
+            bank = (reg & 0x7E) + (slot & 1);
+            *ram = slot < 2 && !(reg & 0x80);
+            break;
+        case 2:
+            reg = d->prg_regs[slot < 2 ? 2 : slot + 1];
+            bank = slot < 2 ? (reg & 0x7E) + slot : (reg & 0x7F);
+            *ram = slot < 3 && !(reg & 0x80);
+            break;
+        default:
+            reg = d->prg_regs[slot + 1];
+            bank = reg & 0x7F;
+            *ram = slot < 3 && !(reg & 0x80);
+            break;
+    }
+    return bank * 8192 + (addr & 0x1FFF);
+}
+
 static uint8_t mmc5_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
     MMC5Data *d = (MMC5Data*)c->mapper_data;
 
@@ -122,7 +155,7 @@ static uint8_t mmc5_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         if (addr == 0x5206) {
             return (uint8_t)(((d->mult_a * d->mult_b) >> 8) & 0xFF);
         }
-        return 0;
+        return cartridge_open_bus(c);
     }
 
     if (addr >= 0x5C00 && addr <= 0x5FFF) {
@@ -130,77 +163,12 @@ static uint8_t mmc5_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         return d->exram[addr - 0x5C00];
     }
 
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    if (addr >= 0x6000) {
         *handled = true;
-        if (c->prg_ram && c->prg_ram_size > 0) {
-            uint32_t bank_8k = d->prg_regs[0] & 0x07;
-            uint32_t offset = (bank_8k * 8192) + (addr - 0x6000);
-            return c->prg_ram[offset % c->prg_ram_size];
-        }
-        return 0;
+        bool ram;
+        uint32_t offset = mmc5_prg_offset(d, addr, &ram);
+        return ram ? cartridge_ram_read(c, offset) : c->prg_rom[offset % c->prg_rom_size];
     }
-
-    if (addr >= 0x8000) {
-        *handled = true;
-        uint32_t total_8k_ram = c->prg_ram_size / 8192;
-
-        switch (d->prg_mode) {
-            case 0: {
-                uint8_t reg = d->prg_regs[4];
-                uint32_t bank_8k = reg & 0x7C;
-                if (!(reg & 0x80) && total_8k_ram > 0) {
-                    return c->prg_ram[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_ram_size];
-                }
-                return c->prg_rom[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_rom_size];
-            }
-            case 1: {
-                if (addr < 0xC000) {
-                    uint8_t reg = d->prg_regs[2];
-                    uint32_t bank_8k = reg & 0x7E;
-                    if (!(reg & 0x80) && total_8k_ram > 0) {
-                        return c->prg_ram[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_ram_size];
-                    }
-                    return c->prg_rom[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_rom_size];
-                } else {
-                    uint8_t reg = d->prg_regs[4];
-                    uint32_t bank_8k = reg & 0x7E;
-                    return c->prg_rom[(bank_8k * 8192 + (addr - 0xC000)) % c->prg_rom_size];
-                }
-            }
-            case 2: {
-                if (addr < 0xC000) {
-                    uint8_t reg = d->prg_regs[2];
-                    uint32_t bank_8k = reg & 0x7E;
-                    if (!(reg & 0x80) && total_8k_ram > 0) {
-                        return c->prg_ram[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_ram_size];
-                    }
-                    return c->prg_rom[(bank_8k * 8192 + (addr - 0x8000)) % c->prg_rom_size];
-                } else if (addr < 0xE000) {
-                    uint8_t reg = d->prg_regs[3];
-                    uint32_t bank_8k = reg & 0x7F;
-                    if (!(reg & 0x80) && total_8k_ram > 0) {
-                        return c->prg_ram[(bank_8k * 8192 + (addr - 0xC000)) % c->prg_ram_size];
-                    }
-                    return c->prg_rom[(bank_8k * 8192 + (addr - 0xC000)) % c->prg_rom_size];
-                } else {
-                    uint8_t reg = d->prg_regs[4];
-                    uint32_t bank_8k = reg & 0x7F;
-                    return c->prg_rom[(bank_8k * 8192 + (addr - 0xE000)) % c->prg_rom_size];
-                }
-            }
-            case 3:
-            default: {
-                int slot = (addr - 0x8000) / 8192;
-                uint8_t reg = d->prg_regs[slot + 1];
-                uint32_t bank_8k = reg & 0x7F;
-                if (slot < 3 && !(reg & 0x80) && total_8k_ram > 0) {
-                    return c->prg_ram[(bank_8k * 8192 + (addr & 0x1FFF)) % c->prg_ram_size];
-                }
-                return c->prg_rom[(bank_8k * 8192 + (addr & 0x1FFF)) % c->prg_rom_size];
-            }
-        }
-    }
-
     return 0;
 }
 
@@ -257,30 +225,15 @@ static void mmc5_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
         return;
     }
 
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
-        if (c->prg_ram && mmc5_ram_write_enabled(d) && c->prg_ram_size > 0) {
-            uint32_t bank_8k = d->prg_regs[0] & 0x07;
-            uint32_t offset = (bank_8k * 8192) + (addr - 0x6000);
-            c->prg_ram[offset % c->prg_ram_size] = val;
-        }
-        return;
-    }
-
-    if (addr >= 0x8000 && addr <= 0xDFFF && mmc5_ram_write_enabled(d)) {
-        int slot = (addr - 0x8000) / 8192;
-        if (slot < 3 && !(d->prg_regs[slot + 1] & 0x80) && c->prg_ram_size > 0) {
-            uint32_t bank_8k = d->prg_regs[slot + 1] & 0x07;
-            uint32_t offset = (bank_8k * 8192) + (addr & 0x1FFF);
-            c->prg_ram[offset % c->prg_ram_size] = val;
-        }
+    if (addr >= 0x6000 && mmc5_ram_write_enabled(d)) {
+        bool ram;
+        uint32_t offset = mmc5_prg_offset(d, addr, &ram);
+        if (ram) cartridge_ram_write(c, offset, val);
     }
 }
 
-static uint8_t mmc5_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
+static uint32_t mmc5_chr_offset(Cartridge *c, uint16_t addr) {
     MMC5Data *d = (MMC5Data*)c->mapper_data;
-    if (addr >= 0x2000 || c->chr_rom_size == 0) return 0;
-
-    *handled = true;
 
     bool is_8x16 = (c->nes->ppu.ppu_ctrl & 0x20) != 0;
     bool is_sprite_fetch = (c->nes->ppu.cycle >= 257 && c->nes->ppu.cycle <= 320);
@@ -291,7 +244,7 @@ static uint8_t mmc5_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
         if (total_4k_banks > 0) bank_4k %= total_4k_banks;
         
         uint32_t offset = (bank_4k * 4096) + (addr & 0x0FFF);
-        return c->chr_rom[offset % c->chr_rom_size];
+        return offset % c->chr_rom_size;
     }
 
     bool use_set_a = true;
@@ -329,13 +282,17 @@ static uint8_t mmc5_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
     }
 
     uint32_t offset = (bank_1k * 1024) + (addr & (base_size - 1));
-    return c->chr_rom[offset % c->chr_rom_size];
+    return offset % c->chr_rom_size;
+}
+
+static uint8_t mmc5_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
+    if (addr >= 0x2000 || !c->chr_rom_size) return 0;
+    *handled = true;
+    return c->chr_rom[mmc5_chr_offset(c, addr)];
 }
 
 static void mmc5_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
-    if (addr < 0x2000 && c->chr_rom_size > 0) {
-        cartridge_chr_write(c, addr % c->chr_rom_size, val);
-    }
+    if (addr < 0x2000 && c->chr_rom_size) cartridge_chr_write(c, mmc5_chr_offset(c, addr), val);
 }
 
 static uint16_t mmc5_remap_ciram_addr(Cartridge *c, uint16_t addr, bool *ciram_ce) {

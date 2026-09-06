@@ -22,6 +22,8 @@ subdirectories under `build/tests/`, removed on success.
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM filtered A12 split timing with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
+| `cartridge_loading.c` | iNES/NES 2.0 metadata, extended IDs and sizes, invalid/unsupported/truncated images, ROM padding, absent/small RAM, trainers, CHR NVRAM, mapper 78 header/submapper wiring and reset |
+| `cartridge_bus.c` | External CPU open bus and partial reads, all-mapper ROM protection/RAM writes, RAM enable/protection, MMC3/TxSROM mirroring and bank modes, MMC5 read/write agreement |
 | `save_states.c` | All 23 mapper IDs: full in-memory restore, fixed-input replay, frame/audio agreement, partial serial writes and IRQ state; wrong-ROM/version/corrupt/legacy rejection, atomic file replacement and failure checks |
 | `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
@@ -81,3 +83,6 @@ the tolerance or encode the current bug as expected behavior.
 
 See [save-state format and test details](../docs/SAVE_STATES.md) for the resume
 boundary, migration policy, and persistence API.
+
+See [cartridge and bus support](../docs/CARTRIDGES.md) for loader limits, mapper
+audit details, references and remaining board-specific gaps.

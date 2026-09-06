@@ -102,7 +102,8 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
     uint8_t value = cpu_bus_read_value(nes, addr);
-    nes->cpu_open_bus = value;
+    // $4015 is internal to the CPU and does not drive the external data bus.
+    if (addr != 0x4015) nes->cpu_open_bus = value;
     return value;
 }
 

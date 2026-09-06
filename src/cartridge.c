@@ -82,9 +82,28 @@ static bool supported_board(const CartridgeInfo *i, char *error, size_t size) {
             if (error && size) snprintf(error, size, "Unsupported mapper %u", i->mapper_id);
             return false;
     }
+    if (i->nes2) {
+        // NES 2.0 sizes must fit the implemented address lines. Larger boards
+        // need an outer-bank/submapper implementation, not silent wrapping.
+        uint32_t prg_limit = 64u * 1024 * 1024, chr_limit = 8u * 1024 * 1024;
+        switch (i->mapper_id) {
+            case 0: prg_limit = 32768; chr_limit = 8192; break;
+            case 1: prg_limit = 262144; chr_limit = 131072; break;
+            case 4: prg_limit = 524288; chr_limit = 262144; break;
+            case 5: prg_limit = 1048576; chr_limit = 1048576; break;
+            case 9: prg_limit = 131072; chr_limit = 131072; break;
+            case 10: prg_limit = 262144; chr_limit = 131072; break;
+            case 78: prg_limit = 131072; chr_limit = 131072; break;
+            case 118: prg_limit = 524288; chr_limit = 131072; break;
+            default: break;
+        }
+        if (i->prg_rom_size > prg_limit || i->chr_rom_size > chr_limit)
+            return load_error(error, size, "Extended ROM banking unsupported");
+    }
     // Board-specific NES 2.0 variants (MMC6, bus conflicts, etc.) require
     // separate implementations; never silently run them as submapper zero.
-    if (i->submapper) return load_error(error, size, "Submapper unsupported");
+    if (i->submapper && !(i->mapper_id == 78 && (i->submapper == 1 || i->submapper == 3)))
+        return load_error(error, size, "Submapper unsupported");
     if (i->timing == 1 || i->timing == 3) return load_error(error, size, "PAL/Dendy timing unsupported");
     if (i->prg_rom_size < 16384) return load_error(error, size, "PRG layout unsupported");
     if (i->prg_ram_size && i->prg_nvram_size) return load_error(error, size, "Mixed PRG RAM unsupported");
@@ -101,7 +120,10 @@ static bool supported_board(const CartridgeInfo *i, char *error, size_t size) {
     if (i->nes2 && chr_ram > 8192 && (i->mapper_id == 0 || i->mapper_id == 2 ||
         i->mapper_id == 7 || i->mapper_id == 71 || i->mapper_id == 227))
         return load_error(error, size, "CHR RAM banking unsupported");
-    if (i->mirroring == MIRROR_FOUR_SCREEN && i->mapper_id != 0 && i->mapper_id != 4 && i->mapper_id != 206)
+    // Mapper 78 historically uses this flag to select H/V mirroring wiring,
+    // not extra nametable RAM. Its explicit submappers override that hint.
+    if (i->mirroring == MIRROR_FOUR_SCREEN && i->mapper_id != 0 && i->mapper_id != 4 &&
+        i->mapper_id != 78 && i->mapper_id != 206)
         return load_error(error, size, "Four-screen board unsupported");
     return true;
 }
@@ -157,8 +179,7 @@ Cartridge *cartridge_load_ex(NES *nes, const char *filepath, char *error, size_t
     cart->prg_rom_size = backing_size(info.prg_rom_size, 16384);
     cart->chr_rom_size = cart->chr_is_ram ? info.chr_ram_size + info.chr_nvram_size : backing_size(info.chr_rom_size, 8192);
     cart->prg_ram_size = info.prg_ram_size + info.prg_nvram_size;
-    uint8_t trainer[512];
-    bool ok = !info.trainer || fread(trainer, 1, sizeof(trainer), f) == sizeof(trainer);
+    bool ok = !info.trainer || fread(cart->trainer_data, 1, 512, f) == 512;
     if (ok) cart->prg_rom = read_rom(f, info.prg_rom_size, cart->prg_rom_size);
     if (cart->prg_rom) cart->chr_rom = cart->chr_is_ram ? calloc(1, cart->chr_rom_size) : read_rom(f, info.chr_rom_size, cart->chr_rom_size);
     if (cart->prg_ram_size) cart->prg_ram = calloc(1, cart->prg_ram_size);
@@ -169,7 +190,10 @@ Cartridge *cartridge_load_ex(NES *nes, const char *filepath, char *error, size_t
     if (!generate_save_filepath(cart->save_filepath, filepath, sizeof(cart->save_filepath))) {
         load_error(error, error_size, "Battery save path too long"); cartridge_free(cart); return NULL;
     }
-    cart->rom_identity[0] = state_crc32(header, sizeof(header));
+    uint8_t identity_header[528];
+    memcpy(identity_header, header, 16);
+    if (info.trainer) memcpy(identity_header + 16, cart->trainer_data, 512);
+    cart->rom_identity[0] = state_crc32(identity_header, info.trainer ? 528 : 16);
     cart->rom_identity[1] = state_crc32(cart->prg_rom, cart->prg_rom_size);
     cart->rom_identity[2] = cart->chr_is_ram ? 0 : state_crc32(cart->chr_rom, cart->chr_rom_size);
     // Initialize only after every fallible file/ROM operation. Each mapper
@@ -181,7 +205,7 @@ Cartridge *cartridge_load_ex(NES *nes, const char *filepath, char *error, size_t
         fprintf(stderr, "Cannot load battery save '%s'; preserving the existing file.\n", cart->save_filepath);
     }
     // Trainers are startup data at $7000-$71FF, after battery RAM restoration.
-    if (info.trainer) memcpy(cart->prg_ram + 0x1000, trainer, sizeof(trainer));
+    if (info.trainer) memcpy(cart->prg_ram + 0x1000, cart->trainer_data, 512);
     return cart;
 }
 
@@ -234,7 +258,9 @@ bool cartridge_set_save_path(Cartridge *cart, const char *path) {
     strcpy(cart->save_filepath, path);
     // A canonical save takes precedence. If it does not exist, retain the
     // legacy ROM-adjacent RAM loaded earlier; never delete that legacy file.
-    return cartridge_load_battery(cart) && !cart->battery_save_blocked;
+    bool ok = cartridge_load_battery(cart) && !cart->battery_save_blocked;
+    if (ok && cart->info.trainer) memcpy(cart->prg_ram + 0x1000, cart->trainer_data, 512);
+    return ok;
 }
 
 bool cartridge_save_battery(Cartridge *cart) {

@@ -13,9 +13,10 @@ SAVE**. It omitted mapper registers, CHR memory, and rendering state, so the
 missing information cannot be reconstructed reliably. Existing state files are
 not deleted or converted. Create new quick/manual states with this build.
 
-Battery `.sav` files remain raw PRG RAM, separate from the new state format.
-Their size must match the cartridge's allocated RAM: normally 8 KiB, or 64 KiB
-for the current MMC5 implementation. Partial and oversized files are reported
+Legacy iNES battery `.sav` files remain raw PRG RAM, separate from state files.
+NES 2.0 saves contain declared PRG NVRAM followed by CHR NVRAM, omitting volatile
+RAM. The complete size must match the declared nonvolatile storage. Legacy sizes
+remain normally 8 KiB, or 64 KiB for MMC5. Partial and oversized files are reported
 and protected from automatic overwrite. Old incomplete MMC5 files cannot supply
 the missing banks and are rejected rather than treated as complete progress.
 
@@ -51,13 +52,14 @@ allocation sizes, function pointers, or host addresses are stored.
 | 8 | 4 | Format version, currently 1 |
 | 12 | 4 | Payload byte count |
 | 16 | 4 | CRC32 of payload |
-| 20 | 4 | CRC32 of original 16-byte iNES header |
+| 20 | 4 | CRC32 of original 16-byte NES header plus trainer bytes, if present |
 | 24 | 4 | CRC32 of initial PRG backing after loader padding |
 | 28 | 4 | CRC32 of initial CHR backing, or zero for CHR RAM |
 
 The ROM identity is captured at cartridge load time, before emulation can change
-CHR contents. Renaming a ROM preserves its identity; changing its header or ROM
-contents does not. CRCs detect accidental mismatch/corruption, not intentional
+CHR contents. Renaming a ROM preserves its identity; changing its header, trainer or ROM
+contents does not. States from before trainer identity tracking are rejected for
+trainer-bearing images. CRCs detect accidental mismatch/corruption, not intentional
 forgery. Total file size is bounded to 16 MiB before allocation.
 
 Payload order is defined explicitly by `machine_fields` and `payload` in
@@ -72,8 +74,9 @@ Payload order is defined explicitly by `machine_fields` and `payload` in
 4. NES clocks, lines, WRAM/CIRAM, controller shift/strobe/input state, Zapper
    configuration and watchdog, and frame-ready flag.
 5. Mirroring, mapper ID and cartridge memory sizes, all PRG RAM, and all CHR
-   backing memory. Current mappers can write that backing even on CHR ROM boards;
-   states preserve it without changing that separate emulation behavior.
+   backing memory. For compatibility the version 1 payload still contains CHR ROM
+   bytes; loads verify them against the cartridge and restore only mutable CHR RAM.
+   States containing previously modified CHR ROM are rejected.
 6. All mapper-private fields, explicitly encoded by the mapper. This includes
    MMC1 partial serial writes, MMC3/TxSROM A12 filtering and IRQ state, MMC2/MMC4
    latches, MMC5 ExRAM, bank registers, protection, and VRC counters. Every current

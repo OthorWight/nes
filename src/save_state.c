@@ -199,8 +199,8 @@ static void payload(NES *n, StateIO *io) {
         return;
     }
     state_bytes(io, c->prg_ram, c->prg_ram_size);
-    // Existing mapper implementations can write CHR memory even on ROM boards.
-    // Preserve the entire current backing store until ROM/RAM behavior is split.
+    // Keep the version 1 layout. ROM bytes are verified on load, never restored
+    // over the cartridge ROM; only CHR RAM is mutable.
     state_bytes(io, c->chr_rom, c->chr_rom_size);
     c->vtable->state(c, io);
     if (!valid_machine(n)) io->ok = false;
@@ -272,11 +272,12 @@ NES_StateResult nes_state_decode(NES *n, const uint8_t *data, size_t size) {
         c.nes = staged;
         staged->cart = &c;
         payload(staged, &in);
-        if (!in.ok || in.pos != size) result = NES_STATE_CORRUPT;
+        if (!in.ok || in.pos != size ||
+            (!c.chr_is_ram && memcmp(chr, n->cart->chr_rom, c.chr_rom_size))) result = NES_STATE_CORRUPT;
         else {
             Cartridge *live = n->cart;
             if (c.prg_ram_size) memcpy(live->prg_ram, ram, c.prg_ram_size);
-            if (c.chr_rom_size) memcpy(live->chr_rom, chr, c.chr_rom_size);
+            if (c.chr_is_ram && c.chr_rom_size) memcpy(live->chr_rom, chr, c.chr_rom_size);
             if (c.vtable->state_size) memcpy(live->mapper_data, mapper, c.vtable->state_size);
             live->mirroring = c.mirroring;
             staged->cart = live;

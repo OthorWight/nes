@@ -147,8 +147,8 @@ static uint8_t m019_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
     // Bank values >= $E0 map pattern tables to internal CIRAM
     if (bank >= 0xE0) {
-        *handled = false;
-        return 0;
+        *handled = true;
+        return c->nes->ciram[(bank & 1) * 1024 + (addr & 0x03FF)];
     }
 
     *handled = true;
@@ -165,7 +165,10 @@ static void m019_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
 
     uint8_t slot = (addr / 1024) & 0x07;
     uint8_t bank = d->chr_banks[slot];
-    if (bank >= 0xE0) return;
+    if (bank >= 0xE0) {
+        c->nes->ciram[(bank & 1) * 1024 + (addr & 0x03FF)] = val;
+        return;
+    }
 
     uint32_t total_1k = c->chr_rom_size / 1024;
     if (total_1k == 0) return;

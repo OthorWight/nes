@@ -136,7 +136,7 @@ static void m064_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
             break;
 
         case 0x8001:
-            d->regs[d->bank_select] = val;
+            d->regs[d->bank_select & 15] = val;
             break;
 
         case 0xA000:
