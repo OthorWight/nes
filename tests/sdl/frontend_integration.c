@@ -1,4 +1,5 @@
 // This optional suite exercises the actual SDL frontend with synthetic events.
+#define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <assert.h>
 static int scripted_poll(SDL_Event *event);
@@ -75,7 +76,8 @@ static int scripted_poll(SDL_Event *e) {
             else assert(audio_device);
             current_state = GUI_STATE_MENU_LOAD_ROM;
             menu_selection = 0;
-            key(e, SDL_KEYDOWN, SDLK_RETURN); break;
+            e->type = SDL_MOUSEBUTTONDOWN; e->button.button = SDL_BUTTON_LEFT;
+            e->button.x = 40; e->button.y = 70; break;
         case 1:
             assert(nes_sys.cart && current_state == GUI_STATE_GAMEPLAY);
             virtual_pad = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 0);
@@ -141,7 +143,9 @@ static int scripted_poll(SDL_Event *e) {
             assert(!nes_sys.zapper_enabled && !nes_sys.controller_state[0] && !nes_sys.zapper_trigger);
             break;
         case 17: key(e, SDL_KEYDOWN, SDLK_LEFT); break;
-        case 18: assert(nes_sys.controller_state[0] & 0x40); key(e, SDL_KEYDOWN, SDLK_ESCAPE); break;
+        case 18:
+            assert(nes_sys.controller_state[0] & 0x40);
+            e->type = SDL_MOUSEBUTTONDOWN; e->button.button = SDL_BUTTON_RIGHT; break;
         case 19:
             assert(current_state == GUI_STATE_MENU_MAIN && !nes_sys.controller_state[0]);
             key(e, SDL_KEYUP, SDLK_LEFT); break;
@@ -149,7 +153,11 @@ static int scripted_poll(SDL_Event *e) {
             memset(&diagnostics, 0, sizeof(diagnostics)); diagnostics.tracing = true;
             memset(&audio_monitor, 0, sizeof(audio_monitor));
             runtime_reset_pending = true;
-            key(e, SDL_KEYDOWN, SDLK_RETURN); break;
+            e->type = SDL_MOUSEBUTTONDOWN; e->button.button = SDL_BUTTON_LEFT;
+            e->button.x = 100; e->button.y = 62; break;
+        case 21:
+            assert(current_state == GUI_STATE_GAMEPLAY && !nes_sys.zapper_trigger);
+            break;
         case 140: {
             DiagnosticSummary summary = diagnostics_summary(&diagnostics);
             printf("SDL mode=%s FPS=%.2f speed=%.2f%% queue=%.2fms empty=%u trims=%u\n",

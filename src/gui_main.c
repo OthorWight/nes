@@ -518,6 +518,107 @@ static int rom_scroll_offset = 0;
 static char rom_files[512][256];
 static int rom_file_count = 0;
 
+static int menu_item_count(void) {
+    switch (current_state) {
+        case GUI_STATE_MENU_MAIN: return 7;
+        case GUI_STATE_MENU_LOAD_ROM: return rom_file_count;
+        case GUI_STATE_MENU_SAVE_STATE: return state_file_count + 1;
+        case GUI_STATE_MENU_LOAD_STATE: return state_file_count;
+        case GUI_STATE_MENU_SETTINGS: return 10;
+        case GUI_STATE_MENU_CONTROLS: return CONTROL_COUNT + 2;
+        default: return 0;
+    }
+}
+
+static bool menu_is_file_list(void) {
+    return current_state == GUI_STATE_MENU_LOAD_ROM ||
+        current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE;
+}
+
+// These logical rectangles are shared by drawing and mouse hit testing.
+static SDL_Rect menu_item_rect(int item) {
+    switch (current_state) {
+        case GUI_STATE_MENU_MAIN: return (SDL_Rect){32, 58 + item * 15, 180, 11};
+        case GUI_STATE_MENU_SETTINGS: return (SDL_Rect){18, 58 + item * 13, 226, 11};
+        case GUI_STATE_MENU_CONTROLS:
+            if (item == 0) return (SDL_Rect){12, 43, 232, 11};
+            return (SDL_Rect){16, 60 + (item - 1) * 13, 224, 11};
+        default: return (SDL_Rect){24, 68 + (item - rom_scroll_offset) * 12, 208, 11};
+    }
+}
+
+static int menu_hit_test(int x, int y) {
+    SDL_Point point = {x, y};
+    int start = menu_is_file_list() ? rom_scroll_offset : 0;
+    int end = menu_item_count();
+    if (menu_is_file_list() && end > start + 12) end = start + 12;
+    for (int i = start; i < end; ++i) {
+        if (current_state == GUI_STATE_MENU_MAIN && !nes_sys.cart &&
+            (i == 0 || i == 2 || i == 3)) continue;
+        SDL_Rect rect = menu_item_rect(i);
+        if (SDL_PointInRect(&point, &rect)) return i;
+    }
+    return -1;
+}
+
+static void menu_scroll(int direction) {
+    int count = menu_item_count();
+    if (!count) return;
+    int max_offset = count > 12 ? count - 12 : 0;
+    rom_scroll_offset += direction * 3;
+    if (rom_scroll_offset < 0) rom_scroll_offset = 0;
+    if (rom_scroll_offset > max_offset) rom_scroll_offset = max_offset;
+    if (menu_selection < rom_scroll_offset) menu_selection = rom_scroll_offset;
+    if (menu_selection >= rom_scroll_offset + 12) menu_selection = rom_scroll_offset + 11;
+}
+
+// Return a command for immediate dispatch through the keyboard action handler.
+// SDL already converts motion/button events to the renderer's logical coordinates.
+static SDL_Keycode menu_mouse_command(const SDL_Event *event, SDL_Renderer *renderer) {
+    if (!focused) return SDLK_UNKNOWN;
+    if (event->type == SDL_MOUSEBUTTONDOWN && event->button.button == SDL_BUTTON_RIGHT)
+        return SDLK_ESCAPE;
+    if (current_state == GUI_STATE_GAMEPLAY) return SDLK_UNKNOWN;
+
+    if (event->type == SDL_MOUSEWHEEL) {
+        if (rebinding || !event->wheel.y) return SDLK_UNKNOWN;
+        int direction = event->wheel.y > 0 ? -1 : 1;
+        if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) direction = -direction;
+        int mx, my;
+        float x, y;
+        SDL_GetMouseState(&mx, &my);
+        SDL_RenderWindowToLogical(renderer, mx, my, &x, &y);
+        if (x < 0 || x >= 256 || y < 0 || y >= 240) return SDLK_UNKNOWN;
+        if (current_state == GUI_STATE_MENU_SETTINGS && menu_hit_test((int)x, (int)y) == 2) {
+            menu_selection = 2;
+            return direction < 0 ? SDLK_RIGHT : SDLK_LEFT;
+        }
+        if (menu_is_file_list()) menu_scroll(direction);
+        else return direction < 0 ? SDLK_UP : SDLK_DOWN;
+        return SDLK_UNKNOWN;
+    }
+
+    bool click = event->type == SDL_MOUSEBUTTONDOWN && event->button.button == SDL_BUTTON_LEFT;
+    if (!click && event->type != SDL_MOUSEMOTION) return SDLK_UNKNOWN;
+    int x = click ? event->button.x : event->motion.x;
+    int y = click ? event->button.y : event->motion.y;
+    if (click && current_state != GUI_STATE_MENU_MAIN && x >= 8 && x < 72 && y >= 226 && y < 239)
+        return SDLK_ESCAPE;
+    if (rebinding) return SDLK_UNKNOWN;
+    if (click && menu_is_file_list() && x >= 232 && x < 248) {
+        if (y >= 68 && y < 79) menu_scroll(-1);
+        if (y >= 200 && y < 211) menu_scroll(1);
+        return SDLK_UNKNOWN;
+    }
+    int item = menu_hit_test(x, y);
+    if (item < 0) return SDLK_UNKNOWN;
+    menu_selection = item;
+    if (!click) return SDLK_UNKNOWN;
+    if (current_state == GUI_STATE_MENU_SETTINGS && item == 2 && x >= 204)
+        return x < 224 ? SDLK_LEFT : SDLK_RIGHT;
+    return SDLK_RETURN;
+}
+
 static const uint8_t font8x8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00},
@@ -1131,7 +1232,7 @@ int main(int argc, char *argv[]) {
                     draw_string(renderer, options[i], 40, 60 + i * 15, col);
                     if (i == menu_selection) {
                         SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 32, 58 + i * 15, 180, 11 };
+                        SDL_Rect box = menu_item_rect(i);
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
@@ -1146,7 +1247,7 @@ int main(int argc, char *argv[]) {
                 draw_string(renderer, header_buf, 16, 45, header_col);
                 if (menu_selection == 0) {
                     SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                    SDL_Rect box = { 12, 43, 232, 11 };
+                    SDL_Rect box = menu_item_rect(0);
                     SDL_RenderDrawRect(renderer, &box);
                 }
 
@@ -1190,7 +1291,7 @@ int main(int argc, char *argv[]) {
                     draw_string(renderer, buf, 24, 62 + i * 13, col);
                     if ((i + 1) == menu_selection) {
                         SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 16, 60 + i * 13, 224, 11 };
+                        SDL_Rect box = menu_item_rect(i + 1);
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
@@ -1198,10 +1299,10 @@ int main(int argc, char *argv[]) {
                 draw_string(renderer, "Restore Defaults", 24, 62 + CONTROL_COUNT * 13, def_col);
                 if (menu_selection == (CONTROL_COUNT + 1)) {
                     SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                    SDL_Rect box = { 16, 60 + CONTROL_COUNT * 13, 224, 11 };
+                    SDL_Rect box = menu_item_rect(CONTROL_COUNT + 1);
                     SDL_RenderDrawRect(renderer, &box);
                 }
-                draw_string(renderer, "ENTER/LEFT/RIGHT: Adjust | ESC: Return", 8, 225, 0x888888);
+                draw_string(renderer, "Click/ENTER: Adjust", 16, 210, 0x888888);
             } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
                 draw_string(renderer, "SELECT ROM TO LAUNCH:", 40, 50, 0xFFFF00);
                 if (rom_file_count == 0) {
@@ -1226,7 +1327,7 @@ int main(int argc, char *argv[]) {
                         draw_string(renderer, display_name, 32, 70 + display_row * 12, col);
                         if (i == menu_selection) {
                             SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                            SDL_Rect box = { 24, 68 + display_row * 12, 208, 11 };
+                            SDL_Rect box = menu_item_rect(i);
                             SDL_RenderDrawRect(renderer, &box);
                         }
                     }
@@ -1259,13 +1360,13 @@ int main(int argc, char *argv[]) {
                     draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
                     if (i == menu_selection) {
                         SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                        SDL_Rect box = { 24, 68 + display_row * 12, 208, 11 };
+                        SDL_Rect box = menu_item_rect(i);
                         SDL_RenderDrawRect(renderer, &box);
                     }
                 }
                 if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
                 if (end_idx < total_options) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
-                draw_string(renderer, "UP/DN: Nav | ENTER: Save | ESC: Back", 8, 220, 0x00FFFF);
+                draw_string(renderer, "Click/ENTER: Save", 24, 214, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
                 draw_string(renderer, "SELECT SLOT TO LOAD STATE:", 24, 50, 0xFFFF00);
                 if (state_file_count == 0) {
@@ -1290,14 +1391,14 @@ int main(int argc, char *argv[]) {
                         draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
                         if (i == menu_selection) {
                             SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                            SDL_Rect box = { 24, 68 + display_row * 12, 208, 11 };
+                            SDL_Rect box = menu_item_rect(i);
                             SDL_RenderDrawRect(renderer, &box);
                         }
                     }
                     if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
                     if (end_idx < state_file_count) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
                 }
-                draw_string(renderer, "UP/DN: Nav | ENTER: Load | ESC: Back", 8, 220, 0x00FFFF);
+                draw_string(renderer, "Click/ENTER: Load", 24, 214, 0x00FFFF);
             } else if (current_state == GUI_STATE_MENU_SETTINGS) {
                 char rows[10][64];
                 snprintf(rows[0], sizeof(rows[0]), "Window: %s", window_scale == 5 ? "Maximized" : "");
@@ -1318,12 +1419,18 @@ int main(int argc, char *argv[]) {
                                 menu_selection == i ? 0xFFFFFF : 0x888888);
                 }
                 SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-                SDL_Rect box = {18, 58 + menu_selection * 13, 226, 11};
+                SDL_Rect box = menu_item_rect(menu_selection);
                 SDL_RenderDrawRect(renderer, &box);
-                draw_string(renderer, "ENTER: Change  F4: Capture", 24, 201, 0xFFFF00);
-                draw_string(renderer, "Volume: LEFT/RIGHT", 24, 215, 0xFFFF00);
+                draw_string(renderer, "<", 208, 86, 0x00FFFF);
+                draw_string(renderer, ">", 232, 86, 0x00FFFF);
+                draw_string(renderer, "Click/ENTER: Change", 24, 201, 0xFFFF00);
+                draw_string(renderer, "Volume: </> or wheel", 24, 215, 0xFFFF00);
             }
 
+            if (current_state != GUI_STATE_MENU_MAIN)
+                draw_string(renderer, "< Back", 8, 229, 0x00FFFF);
+            else
+                draw_string(renderer, "Click: Select  RMB: Resume", 24, 229, 0x888888);
             draw_notification(renderer);
             SDL_RenderPresent(renderer);
             SDL_Delay(16);
@@ -1332,8 +1439,15 @@ int main(int argc, char *argv[]) {
 
         while (running && SDL_PollEvent(&event)) {
             if (event.type == SDL_MOUSEMOTION ||
-                event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
+                event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP ||
+                event.type == SDL_MOUSEWHEEL) {
                 last_mouse_activity = SDL_GetTicks();
+                SDL_Keycode command = menu_mouse_command(&event, renderer);
+                if (command != SDLK_UNKNOWN) {
+                    SDL_zero(event);
+                    event.type = SDL_KEYDOWN;
+                    event.key.keysym.sym = command;
+                }
             }
             if (event.type == SDL_QUIT) {
                 if (save_battery_ram()) running = false;

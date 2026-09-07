@@ -8,6 +8,12 @@
 *   **Start**: `Enter`
 *   **Menu/Pause**: `F1` or `Escape`
 
+### Mouse Menus
+*   **Hover** to select an item; **left-click** to activate it.
+*   **Right-click** to open/pause or resume from the main menu, go back from a submenu, or cancel control rebinding. Submenus also have a clickable **Back** button.
+*   **Mouse wheel** scrolls ROM/save lists or moves through other menus. The list arrows are clickable too.
+*   In Settings, click the volume **< / >** arrows or use the wheel over the volume row to adjust it.
+
 ### Gamepad Layout (Standard Xbox/PlayStation)
 *   **D-Pad / Left Stick**: NES Directional Pad
 *   **A Button**: NES Button A
