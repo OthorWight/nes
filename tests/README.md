@@ -70,6 +70,24 @@ expectation. The current checks draw on these references:
   buffered playback, and end-of-sample IRQ behavior.
 - [MMC3](https://www.nesdev.org/wiki/MMC3): filtered A12 clocks and IRQ controls.
 
+## Checksum compatibility and performance
+
+`audio_playback.c` checks continuous resampling and ten-minute simulated playback
+with independent device clocks, block reads and host jitter. Its control cases
+demonstrate that increasing the buffer without correcting clock drift still
+causes underruns/trims. Run `NES_SDL_AUDIO_FRAMES=10800 bash tests/sdl/run.sh`
+for a three-minute SDL dummy-audio integration check as well.
+
+`state_crc.c` checks IEEE CRC-32 known vectors and compatibility with the original
+save-file algorithm, including unaligned data, short tails and framebuffer-sized
+inputs. It protects save, ROM-identity and preference compatibility when checksum
+performance changes.
+
+For repeatable performance measurements without SDL, run
+`bash tests/performance/run.sh [ROM-path [frame-count]]`. With no arguments it
+uses a synthetic rendering fixture. See the
+[benchmark details and measured regression](../docs/PACING_DIAGNOSTICS.md#performance-regression-checks).
+
 ## Limits and next additions
 
 Passing these tests is a regression baseline, not full NES hardware certification.

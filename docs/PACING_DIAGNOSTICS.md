@@ -29,16 +29,25 @@ continue while other logic waits.
 
 ## Audio
 
-Playback starts paused and primes with at least 1,470 mono samples (33.3 ms).
-The queue is limited to 2,940 samples (66.7 ms); excess backlog is cleared and
-primed again. These replace the old 4,096-sample (92.9 ms) threshold and blocking
-wait. Core samples are drained even when muted or the audio device cannot open.
-Samples arrive in frame-sized batches, so startup priming can reach about 50 ms.
-The requested device buffer is 1,024 samples (23.2 ms). In the two-second dummy
-driver comparison, the earlier 512-sample buffer recorded two empty-queue
-indicators; 1,024 samples recorded none, with no queue trims. All three audio
-modes measured 60.10 FPS and 100.00% speed. This is a local buffering baseline,
-not a physical audio-device certification.
+Audio is queued immediately after emulation, before texture upload and video
+presentation can block. Playback starts paused and primes with at least 3,072
+mono samples (69.7 ms), covering three requested 1,024-sample device blocks.
+Frame-sized batches bring startup priming to about 83 ms. This adds roughly two
+frames of startup reserve compared with the former 1,470-sample threshold.
+The 6,144-sample (139.3 ms) queue limit is a recovery guard; normal queue depth is
+around 60 ms after a frame's refill, plus the device/driver's own buffering.
+Excess backlog is cleared and primed again. Core samples are drained even when
+muted or the audio device cannot open.
+
+The host frame clock and the audio device clock can differ slightly. A smoothed
+queue-depth controller targets 2,048 queued samples before refill and adjusts
+the output/input sample ratio by at most +/-1%. Streaming linear interpolation
+preserves fractional phase and the boundary sample between frames. This corrects
+gradual queue drain/growth without changing CPU/PPU timing or game speed. The
+filter smooths the device callback's individual block-sized changes. Its state
+and interpolation history are reset on intentional pauses/loads and are excluded
+from emulated save state. Correction is limited: sustained emulation slowdown or
+a sufficiently long host stall can still exhaust the reserve.
 
 Intentional pauses clear and pause playback. Resume starts with fresh samples.
 An empty queue during active playback increments a counter and re-primes audio.
@@ -85,6 +94,11 @@ frame records and 4,096 events. Frame records include CPU cycles, host interval,
 core execution time, queue depth, per-port read counts, controller latches, held
 buttons, framebuffer checksum, aim and trigger.
 
+Frame history is collected even when the overlay and event tracing are off.
+The checksum uses a byte lookup table with the same IEEE CRC-32 result as save
+files. Trace-only IRQ/NMI observation calls are skipped at the CPU/bus/PPU call
+sites when tracing is disabled; frame history and input counters remain active.
+
 Enable tracing before reproducing a problem. Events cover CPU cartridge-space
 writes, PPU writes, IRQ-source/NMI-line transitions, controller reads/latches and
 resume markers. Each carries CPU PC/cycle and PPU scanline/dot. IRQ values are
@@ -108,6 +122,13 @@ must preserve that assumption or supply a dedicated peek implementation.
 preference corruption/identity, bounded-trace and non-consuming-peek checks.
 Scheduler tests simulate ten minutes with sleep jitter and three audio modes,
 followed by a stall and resume. Existing core and save/replay suites still run.
+`audio_playback.c` separately simulates ten minutes per device-clock offset
+(-0.8%, -0.2%, 0%, +0.2%, +0.8%), with 1,024-sample device reads and occasional
+20 ms late frames. It checks both empty-queue observations and partial device
+reads that would insert silence, plus a 512-sample case. At +/-0.2% drift,
+disabling correction reproduces underruns or queue trims despite the larger
+reserve; correction must eliminate both. Ramp, silence and constant-signal tests
+check interpolation, fractional phase, block boundaries and sample counts.
 
 `bash tests/sdl/run.sh` builds the real frontend with scripted events, virtual
 gamepad and SDL dummy video/audio drivers. It uses an isolated `build/tests/`
@@ -117,12 +138,56 @@ pacing in all audio modes. Dummy drivers do not validate a physical window
 manager, high-DPI monitor or speaker latency. Native Windows and gameplay remain
 manual checks.
 
+To extend the actual frontend's audio-enabled run to about three minutes, use
+`NES_SDL_AUDIO_FRAMES=10800 bash tests/sdl/run.sh`. Muted and unavailable runs
+remain short. The audio-enabled test requires zero empty queues, trims and SDL
+queue errors after the scripted startup/transitions. Dummy audio exercises SDL's
+queue/thread timing; it does not verify physical speakers.
+
+Local validation after the audio changes: the three-minute dummy-audio repeat
+ran at 60.10 FPS / 100.00% speed with zero empty queues or trims and a final
+52.06 ms queue. An initial run alongside core-test compilation reported an
+interruption; its timing was not captured, so its exact cause is unconfirmed.
+The repeat ran without concurrent compilation. The real-time SDL test remains
+sensitive to host load; deterministic drift/jitter coverage is in the core suite.
+
 The optional suite also runs a white-raster Zapper probe using a short 6502
 polling program. The current sensor reports light for the entire white frame;
 it does not reproduce the roughly 19–26 scanline decay measured by Zap Ruder on
 hardware. Beam-aware sensing needs a separate compatibility change and sensor
 state serialization. The probe reports this discrepancy explicitly; it does not
 pass the current behavior as hardware-accurate.
+
+## Performance regression checks
+
+`bash tests/performance/run.sh` measures unpaced core and diagnostic CPU time
+using a synthetic rendering fixture. Optionally pass a ROM path and measured
+frame count, for example:
+
+```sh
+bash tests/performance/run.sh "build/Super Mario Bros.nes" 240
+```
+
+The benchmark warms up for 120 frames, then repeats the same workload with
+diagnostics detached, normal frame history, and event tracing. It reports core,
+diagnostic and total milliseconds per frame, CPU cycles and the final image CRC.
+It does not write game saves. Compare the same ROM/frame count and power profile;
+there are no machine-dependent timing assertions. SDL rendering, frame waits and
+physical audio playback are excluded.
+
+The September 6 diagnostics change (`215e637`) introduced a bit-at-a-time CRC
+over all 245,760 framebuffer bytes on every frame. On a local i7-1355U with the
+powersave governor, that cost about 6–8 ms/frame even with tracing off. The byte
+table reduced this to about 1.5–1.9 ms. In 240-frame ROM runs pinned to CPU 0,
+normal core plus diagnostics changed from 14.39 to 7.84 ms/frame for Super Mario
+Bros. and 12.76 to 8.48 ms/frame for Super Mario Bros. 3. Cycle counts and final
+image CRCs matched. These are short startup/attract sequences; clock scaling
+and host load affect exact numbers.
+
+Text rendering also batches each glyph's pixels into one SDL draw call. A local
+1280x1200 software-renderer comparison measured the overlay at 1.68 versus 1.31
+ms/frame and an outlined notification at 3.13 versus 1.62 ms/frame, with identical
+output image CRCs. Accelerated drivers may have different costs.
 
 References: [SDL logical rendering](https://wiki.libsdl.org/SDL2/SDL_RenderSetLogicalSize),
 [window-to-logical coordinates](https://wiki.libsdl.org/SDL2/SDL_RenderWindowToLogical),

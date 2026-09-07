@@ -106,7 +106,7 @@ uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
         ++nes->diagnostics->polls[addr - 0x4016];
         diagnostics_event(nes, DIAG_INPUT_READ, addr, value);
     }
-    if (nes->diagnostics) diagnostics_lines(nes);
+    if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
     // $4015 is internal to the CPU and does not drive the external data bus.
     if (addr != 0x4015) nes->cpu_open_bus = value;
     return value;
@@ -148,7 +148,7 @@ static inline void nes_step_subsystems(NES *nes) {
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->clock_m2) {
         nes->cart->vtable->clock_m2(nes->cart);
     }
-    if (nes->diagnostics) diagnostics_lines(nes);
+    if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
 }
 
 static void cpu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
@@ -229,7 +229,7 @@ void nes_cpu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
         }
     }
     cpu_bus_write_value(nes, addr, data);
-    if (nes->diagnostics) diagnostics_lines(nes);
+    if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
 }
 
 void nes_ppu_bus_set_address(NES *nes, uint16_t addr) {

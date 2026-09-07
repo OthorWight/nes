@@ -40,6 +40,7 @@ static bool performance_visible = false;
 static bool focused = true;
 static FrameScheduler frame_scheduler;
 static AudioQueueMonitor audio_monitor;
+static AudioResampler audio_resampler;
 static NESDiagnostics diagnostics;
 static HostInput host_input;
 static double audio_device_ms;
@@ -68,6 +69,7 @@ static void reset_runtime(void) {
         SDL_ClearQueuedAudio(audio_device);
     }
     audio_queue_pause(&audio_monitor);
+    memset(&audio_resampler, 0, sizeof(audio_resampler));
     nes_sys.apu.audio_buffer_idx = 0;
     memset(diagnostics.polls, 0, sizeof(diagnostics.polls));
     diagnostics.latches = 0;
@@ -79,17 +81,22 @@ static void queue_game_audio(void) {
     uint32_t count = nes_sys.apu.audio_buffer_idx;
     if (audio_device && !audio_muted) {
         uint32_t queued = SDL_GetQueuedAudioSize(audio_device) / sizeof(float);
-        if (audio_queue_observe(&audio_monitor, queued, count)) {
+        // Enough room for the APU's entire buffer plus the bounded correction.
+        float output[4096 + 64];
+        double ratio = audio_queue_ratio(&audio_monitor, queued);
+        uint32_t output_count = audio_resample(&audio_resampler,
+            nes_sys.apu.audio_buffer, count, ratio, output);
+        if (audio_queue_observe(&audio_monitor, queued, output_count)) {
             SDL_PauseAudioDevice(audio_device, 1);
             SDL_ClearQueuedAudio(audio_device);
             queued = 0;
         }
-        for (uint32_t i = 0; i < count; ++i)
-            nes_sys.apu.audio_buffer[i] *= master_volume / 100.0f;
-        if (SDL_QueueAudio(audio_device, nes_sys.apu.audio_buffer, count * sizeof(float))) {
+        for (uint32_t i = 0; i < output_count; ++i)
+            output[i] *= master_volume / 100.0f;
+        if (SDL_QueueAudio(audio_device, output, output_count * sizeof(float))) {
             ++audio_monitor.errors;
         } else {
-            queued += count;
+            queued += output_count;
             audio_monitor.queue_samples = queued;
             if (!audio_monitor.playing && queued >= AUDIO_PRIME_SAMPLES) {
                 audio_monitor.playing = true;
@@ -725,14 +732,17 @@ static void draw_character(SDL_Renderer *renderer, char c, int x, int y, uint32_
     uint8_t b = color & 0xFF;
 
     SDL_SetRenderDrawColor(renderer, r, g, b, 255);
+    SDL_Point points[64];
+    int count = 0;
     for (int row = 0; row < 8; row++) {
         uint8_t row_byte = font8x8[idx][row];
         for (int col = 0; col < 8; col++) {
             if (row_byte & (0x80 >> col)) {
-                SDL_RenderDrawPoint(renderer, x + col, y + row);
+                points[count++] = (SDL_Point){x + col, y + row};
             }
         }
     }
+    if (count) SDL_RenderDrawPoints(renderer, points, count);
 }
 
 void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t color) {
@@ -1161,6 +1171,8 @@ int main(int argc, char *argv[]) {
                 uint64_t emu_end_tick = SDL_GetPerformanceCounter();
                 debug_emu_ticks += (emu_end_tick - frame_start_tick);
 
+                // Feed the device before texture upload/presentation can block.
+                if (nes_sys.frame_ready) queue_game_audio();
                 SDL_UpdateTexture(texture, NULL, nes_sys.ppu.screen_buffer, 256 * sizeof(uint32_t));
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
@@ -1186,7 +1198,6 @@ int main(int argc, char *argv[]) {
                 SDL_RenderPresent(renderer);
 
                 if (nes_sys.frame_ready) {
-                    queue_game_audio();
                     uint64_t cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
                     double wait = frame_scheduler_advance(&frame_scheduler, host_time(), cycles);
                     while (wait > 0) {

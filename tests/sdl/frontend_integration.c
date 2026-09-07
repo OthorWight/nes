@@ -10,6 +10,8 @@ static int scripted_poll(SDL_Event *event);
 #undef SDL_PollEvent
 
 static unsigned iteration;
+static unsigned capture_iteration = 140;
+static unsigned reported_empty, reported_trims;
 static bool delivered, muted_test, unavailable_test;
 static SDL_JoystickID pad_id;
 static int virtual_pad;
@@ -69,6 +71,37 @@ static void display_and_preferences(void) {
 static int scripted_poll(SDL_Event *e) {
     if (delivered) { delivered = false; ++iteration; return 0; }
     delivered = true; SDL_zero(*e);
+    if (iteration > 21 && (audio_monitor.underruns != reported_empty ||
+                           audio_monitor.trims != reported_trims)) {
+        DiagnosticSummary summary = diagnostics_summary(&diagnostics);
+        fprintf(stderr, "Audio event at frame %u: empty=%u trims=%u max=%.2fms speed=%.2f%% filtered=%.0f\n",
+                iteration, audio_monitor.underruns, audio_monitor.trims,
+                summary.max_ms, summary.speed, audio_monitor.filtered_queue);
+        (void)diagnostics_write(&nes_sys, "audio_event.log", "SDL fixture",
+            audio_monitor.underruns, audio_monitor.trims, audio_monitor.errors, audio_device_ms);
+        reported_empty = audio_monitor.underruns; reported_trims = audio_monitor.trims;
+    }
+    if (iteration == capture_iteration) {
+        DiagnosticSummary summary = diagnostics_summary(&diagnostics);
+        printf("SDL mode=%s FPS=%.2f speed=%.2f%% queue=%.2fms empty=%u trims=%u\n",
+            unavailable_test ? "unavailable" : (muted_test ? "muted" : "audio"),
+            summary.fps, summary.speed, summary.queue_ms, audio_monitor.underruns, audio_monitor.trims);
+        fflush(stdout);
+        assert(summary.speed > 95 && summary.speed < 105);
+        assert(!audio_monitor.errors);
+        if (muted_test || unavailable_test) assert(audio_monitor.queue_samples == 0);
+        else {
+            assert(audio_monitor.queue_samples <= AUDIO_MAX_SAMPLES);
+            assert(audio_monitor.underruns == 0 && audio_monitor.trims == 0);
+        }
+        key(e, SDL_KEYDOWN, SDLK_F4);
+        return 1;
+    }
+    if (iteration == capture_iteration + 1) {
+        assert(!strcmp(notification_text, "DIAGNOSTICS CAPTURED"));
+        e->type = SDL_QUIT;
+        return 1;
+    }
     switch (iteration) {
         case 0:
             audio_muted = muted_test;
@@ -158,25 +191,20 @@ static int scripted_poll(SDL_Event *e) {
         case 21:
             assert(current_state == GUI_STATE_GAMEPLAY && !nes_sys.zapper_trigger);
             break;
-        case 140: {
-            DiagnosticSummary summary = diagnostics_summary(&diagnostics);
-            printf("SDL mode=%s FPS=%.2f speed=%.2f%% queue=%.2fms empty=%u trims=%u\n",
-                unavailable_test ? "unavailable" : (muted_test ? "muted" : "audio"),
-                summary.fps, summary.speed, summary.queue_ms, audio_monitor.underruns, audio_monitor.trims);
-            assert(summary.speed > 95 && summary.speed < 105);
-            assert(!audio_monitor.errors);
-            if (muted_test || unavailable_test) assert(audio_monitor.queue_samples == 0);
-            else assert(audio_monitor.queue_samples <= AUDIO_MAX_SAMPLES);
-            key(e, SDL_KEYDOWN, SDLK_F4); break;
-        }
-        case 141: assert(!strcmp(notification_text, "DIAGNOSTICS CAPTURED")); e->type = SDL_QUIT; break;
-        default: assert(iteration < 142); break;
+        default: assert(iteration < capture_iteration); break;
     }
     return 1;
 }
 int main(int argc, char **argv) {
     muted_test = argc > 1 && !strcmp(argv[1], "muted");
     unavailable_test = argc > 1 && !strcmp(argv[1], "unavailable");
+    const char *audio_frames = getenv("NES_SDL_AUDIO_FRAMES");
+    if (audio_frames && !muted_test && !unavailable_test) {
+        char *end;
+        unsigned long frames = strtoul(audio_frames, &end, 10);
+        assert(*audio_frames && !*end && frames >= 120 && frames <= 36000);
+        capture_iteration = 20 + (unsigned)frames;
+    }
     FILE *f = fopen("fixture.nes", "wb"); assert(f);
     uint8_t header[16] = {'N','E','S',0x1A,2,0};
     assert(fwrite(header, 1, 16, f) == 16);

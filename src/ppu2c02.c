@@ -729,7 +729,7 @@ void ppu_step(NES *nes) {
         ppu_render_pixel(ppu, ppu->cycle - 1);
     }
 
-    if (nes->diagnostics) diagnostics_lines(nes);
+    if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 339 &&
         ppu->odd_frame && rendering_enabled) {
         /* Odd NTSC frames omit the final pre-render dot. */

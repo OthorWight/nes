@@ -16,12 +16,48 @@ bool audio_queue_observe(AudioQueueMonitor *a, uint32_t queued, uint32_t incomin
     bool reset = false;
     if (a->playing && !queued) { ++a->underruns; reset = true; }
     if ((uint64_t)queued + incoming > AUDIO_MAX_SAMPLES) { ++a->trims; reset = true; }
-    if (reset) a->playing = false;
+    if (reset) { a->playing = false; a->filter_ready = false; }
     return reset;
 }
 void audio_queue_pause(AudioQueueMonitor *a) {
     a->playing = false;
     a->queue_samples = 0;
+    a->filter_ready = false;
+}
+double audio_queue_ratio(AudioQueueMonitor *a, uint32_t queued) {
+    if (!a->playing) { a->filter_ready = false; return 1.0; }
+    if (!a->filter_ready) {
+        a->filtered_queue = AUDIO_TARGET_SAMPLES;
+        a->filter_ready = true;
+    }
+    // ~0.8-second smoothing at NTSC frame rate avoids following each device
+    // callback's 1024-sample sawtooth. Full correction at 500 samples of error
+    // keeps enough reserve for late frames even near the correction limit.
+    a->filtered_queue += 0.02 * ((double)queued - a->filtered_queue);
+    double correction = (AUDIO_TARGET_SAMPLES - a->filtered_queue) * 0.00002;
+    if (correction > AUDIO_MAX_RATE_CORRECTION) correction = AUDIO_MAX_RATE_CORRECTION;
+    if (correction < -AUDIO_MAX_RATE_CORRECTION) correction = -AUDIO_MAX_RATE_CORRECTION;
+    return 1.0 + correction;
+}
+
+uint32_t audio_resample(AudioResampler *r, const float *input, uint32_t count,
+                        double ratio, float *output) {
+    if (!count) return 0;
+    uint32_t written = 0;
+    double position = r->position;
+    double step = 1.0 / ratio;
+    // The final input sample is retained for interpolation into the next block.
+    // Carry the fractional position too; restarting it per frame loses samples.
+    while (position < (double)count - 1) {
+        int left = position < 0 ? -1 : (int)position;
+        float a = left < 0 ? r->previous : input[left];
+        float b = input[left + 1];
+        output[written++] = a + (b - a) * (float)(position - left);
+        position += step;
+    }
+    r->position = position - count;
+    r->previous = input[count - 1];
+    return written;
 }
 uint8_t host_input_value(const HostInput *input) {
     return input->keyboard | input->buttons | input->axis;
