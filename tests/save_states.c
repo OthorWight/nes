@@ -132,7 +132,7 @@ static void all_mapper_replay(void) {
         setup(a);
         uint8_t *save; size_t size;
         assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
-        assert(!memcmp(save, "NESSTATE\1\0\0\0", 12));
+        assert(!memcmp(save, "NESSTATE\2\0\0\0", 12));
         assert(nes_state_decode(b, save, size) == NES_STATE_OK);
         equal_machine(a, b);
         for (unsigned i = 0; i < 24000; ++i) {
@@ -192,8 +192,8 @@ static void corrupt_and_wrong_states(void) {
     memcpy(bad, good, size); memset(bad + NES_STATE_HEADER_SIZE + 39, 0xFF, 4);
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
-    // Mapper A12 filter is the final signed i32; invalid even with a good CRC.
-    memcpy(bad, good, size); memset(bad + size - 4, 0xFF, 4);
+    // Mapper A12 filter precedes the two version 2 CPU IRQ booleans.
+    memcpy(bad, good, size); memset(bad + size - 6, 0xFF, 4);
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Version 1 still carries CHR bytes, but cannot overwrite cartridge ROM.
@@ -242,11 +242,41 @@ static void state_files_and_failed_replace(void) {
     assert(remove(sentinel) == 0); assert(SAVE_RMDIR(directory) == 0);
 }
 
+static void irq_poll_state_and_v1_import(void) {
+    puts("  IRQ poll state survives restore; version 1 states still load");
+    char rom[512]; fixture_path(rom, "irq-state.nes");
+    fixture_rom(rom, 0, false, true, 0);
+    NES *n = fixture_load(rom);
+    n->cpu.status_flags = FLAG_UNUSED | FLAG_INTERRUPT_DISABLE;
+    n->cpu.irq_pending = true; n->cpu.irq_poll_valid = true;
+    uint8_t *save; size_t size;
+    assert(nes_state_encode(n, &save, &size) == NES_STATE_OK);
+    n->cpu.irq_pending = false; n->cpu.irq_poll_valid = false;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(n->cpu.irq_pending && n->cpu.irq_poll_valid && !n->cpu.irq_lines);
+    uint64_t before = n->cpu.cycle_count;
+    nes_clock_tick(n);
+    assert(n->cpu.cycle_count - before == 7 && n->cpu.program_counter == 0x0100);
+
+    // Version 2 appends only the poll booleans. Recreate the original layout
+    // and header rather than letting omitted data inherit from the live CPU.
+    size -= 2;
+    StateIO header = {save, size, 8, false, true};
+    state_u32(&header, 1);
+    state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
+    refresh_checksum(save, size);
+    n->cpu.irq_pending = true; n->cpu.irq_poll_valid = true;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(!n->cpu.irq_pending && !n->cpu.irq_poll_valid);
+    free(save); fixture_free(n); assert(remove(rom) == 0);
+}
+
 int main(void) {
     fixture_start("states");
     all_mapper_replay();
     corrupt_and_wrong_states();
     state_files_and_failed_replace();
+    irq_poll_state_and_v1_import();
     assert(SAVE_RMDIR(fixture_dir) == 0);
     puts("Save-state replay, validation and file I/O checks passed.");
     return 0;

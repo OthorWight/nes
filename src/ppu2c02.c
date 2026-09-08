@@ -550,10 +550,6 @@ void ppu_step(NES *nes) {
     const bool rendering_scanline = (ppu->scanline < SCANLINE_VISIBLE_MAX ||
                                      ppu->scanline == SCANLINE_PRERENDER);
 
-    if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_dot) {
-        nes->cart->vtable->ppu_dot(nes->cart, ppu->bus_address);
-    }
-
     /* Update the internal OAM evaluation bus and sprite-overflow timing for
        the current PPU dot before CPU-visible register reads can occur. */
     bee52_ppu_oam_eval_tick(ppu);
@@ -574,16 +570,8 @@ void ppu_step(NES *nes) {
     }
 
     if (rendering_enabled && rendering_scanline) {
-        /* The idle dot drives the upcoming background pattern address without
-           reading it.  Holding the last nametable address through dot 0 would
-           create a second qualified MMC3 A12 rise on every scanline when the
-           background uses $1000.  Dot 1 starts the next nametable fetch. */
-        if (ppu->cycle == 0) {
-            uint16_t table = (ppu->ppu_ctrl & 0x10) ? 0x1000 : 0x0000;
-            uint16_t pattern_addr = table |
-                ((uint16_t)ppu->bg_next_tile_id << 4) | ppu_get_fine_y(ppu->v);
-            nes_ppu_bus_set_address(nes, pattern_addr);
-        } else if (ppu->cycle == 1) {
+        // Dot 0 is idle: keep the previous address until the next real fetch.
+        if (ppu->cycle == 1) {
             ppu->bg_next_tile_id = nes_ppu_bus_read(nes, 0x2000 | (ppu->v & 0x0FFF));
         }
 
@@ -729,6 +717,11 @@ void ppu_step(NES *nes) {
         ppu_render_pixel(ppu, ppu->cycle - 1);
     }
 
+    // Observe this dot's address after the fetch drives the bus, not the
+    // preceding dot's address. MMC3's A12 edge must reach the CPU this cycle.
+    if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_dot) {
+        nes->cart->vtable->ppu_dot(nes->cart, ppu->bus_address);
+    }
     if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 339 &&
         ppu->odd_frame && rendering_enabled) {

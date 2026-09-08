@@ -77,6 +77,7 @@ static void running_apu_delivers_frame_irq_to_cpu(void) {
     assert(s.nes.apu.frame_irq_active);
     assert(s.nes.cpu.program_counter == 0x0200);
     s.nes.cpu.status_flags = FLAG_UNUSED;
+    test_step(&s, 3); // Poll the line with the newly installed I flag.
     test_step(&s, 7);
     assert(s.nes.cpu.program_counter == 0x9000);
     assert(nes_cpu_bus_read(&s.nes, 0x4015) & 0x40);

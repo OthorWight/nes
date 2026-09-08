@@ -11,6 +11,12 @@ history belongs to the host and is excluded from the state format.
 
 ## Compatibility
 
+New saves use version 2, which preserves the CPU's sampled IRQ and whether an
+instruction has established a poll result. Version 1 saves still load; because
+they lack that history, their first boundary uses the former live-line behavior.
+Precise cross-version interrupt timing cannot be recovered from those files.
+Older emulator builds cannot read new version 2 saves.
+
 The former unversioned `STAT` format is rejected with **OLD STATE: CREATE A NEW
 SAVE**. It omitted mapper registers, CHR memory, and rendering state, so the
 missing information cannot be reconstructed reliably. Existing state files are
@@ -42,7 +48,7 @@ the ROM again. Non-battery cartridges do not create automatic `.sav` files.
 Loading a state restores PRG RAM too. Exiting afterward saves that restored
 progress to the battery file, as expected when resuming an older point in a game.
 
-## Version 1 format
+## Version 2 format
 
 All integers use explicit little-endian encoding. Booleans are one byte (`0` or
 `1`); enums and C `int` fields use 32 bits; signed fields use two's complement.
@@ -52,7 +58,7 @@ allocation sizes, function pointers, or host addresses are stored.
 | Header offset | Bytes | Value |
 | --- | --- | --- |
 | 0 | 8 | ASCII `NESSTATE` |
-| 8 | 4 | Format version, currently 1 |
+| 8 | 4 | Format version, currently 2 (version 1 remains readable) |
 | 12 | 4 | Payload byte count |
 | 16 | 4 | CRC32 of payload |
 | 20 | 4 | CRC32 of original 16-byte NES header plus trainer bytes, if present |
@@ -66,9 +72,9 @@ trainer-bearing images. CRCs detect accidental mismatch/corruption, not intentio
 forgery. Total file size is bounded to 16 MiB before allocation.
 
 Payload order is defined explicitly by `machine_fields` and `payload` in
-`src/save_state.c`, followed by the selected mapper's `state` callback:
+`src/save_state.c`, including the selected mapper's `state` callback:
 
-1. All CPU fields, including stalls, pending interrupt/reset latches and cycles.
+1. The version 1 CPU fields, including stalls, interrupt/reset lines and cycles.
 2. All PPU fields: sprite evaluation, OAM, palette backing, scroll/address
    latches, background fetches/shifters, scanline sprites, open-bus decay, dot and
    frame phase, and the complete framebuffer.
@@ -85,6 +91,8 @@ Payload order is defined explicitly by `machine_fields` and `payload` in
    latches, MMC5 ExRAM, bank registers, protection, and VRC counters. Every current
    mapper ID has a codec; mapper 26 shares the VRC6 codec with mapper 24. Expansion
    audio is not implemented in the current mappers, so no such state exists yet.
+7. Version 2 appends the CPU's `irq_pending` and `irq_poll_valid` booleans. The
+   preceding field order is unchanged from version 1.
 
 Adding or reordering a serialized field requires a format version change and
 explicit compatibility handling. The mapper `state_size` is used only to allocate

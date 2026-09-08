@@ -186,7 +186,7 @@ static bool valid_machine(const NES *n) {
     return true;
 }
 
-static void payload(NES *n, StateIO *io) {
+static void payload(NES *n, StateIO *io, unsigned version) {
     Cartridge *c = n->cart;
     machine_fields(n, io);
     c->mirroring = state_enum(io, c->mirroring);
@@ -203,6 +203,15 @@ static void payload(NES *n, StateIO *io) {
     // over the cartridge ROM; only CHR RAM is mutable.
     state_bytes(io, c->chr_rom, c->chr_rom_size);
     c->vtable->state(c, io);
+    if (version >= 2) {
+        n->cpu.irq_pending = state_bool(io, n->cpu.irq_pending);
+        n->cpu.irq_poll_valid = state_bool(io, n->cpu.irq_poll_valid);
+    } else if (io->reading) {
+        // Version 1 used live IRQ levels at instruction boundaries and did
+        // not preserve a poll result. Bootstrap once with that old behavior.
+        n->cpu.irq_pending = false;
+        n->cpu.irq_poll_valid = false;
+    }
     if (!valid_machine(n)) io->ok = false;
 }
 
@@ -221,13 +230,13 @@ NES_StateResult nes_state_encode(NES *n, uint8_t **data, size_t *size) {
     NES_StateResult result = available(n);
     if (result != NES_STATE_OK) return result;
     StateIO count = {NULL, NES_STATE_MAX_SIZE - NES_STATE_HEADER_SIZE, 0, false, true};
-    payload(n, &count);
+    payload(n, &count, NES_STATE_VERSION);
     if (!count.ok) return NES_STATE_CORRUPT;
     size_t total = NES_STATE_HEADER_SIZE + count.pos;
     uint8_t *bytes = malloc(total);
     if (!bytes) return NES_STATE_MEMORY;
     StateIO out = {bytes, total, NES_STATE_HEADER_SIZE, false, true};
-    payload(n, &out);
+    payload(n, &out, NES_STATE_VERSION);
     if (!out.ok || out.pos != total) { free(bytes); return NES_STATE_CORRUPT; }
     StateIO header = {bytes, NES_STATE_HEADER_SIZE, 0, false, true};
     memcpy(bytes, state_magic, 8);
@@ -248,7 +257,8 @@ NES_StateResult nes_state_decode(NES *n, const uint8_t *data, size_t size) {
     if (size >= 4 && (!memcmp(data, "TATS", 4) || !memcmp(data, "STAT", 4))) return NES_STATE_LEGACY;
     if (size < NES_STATE_HEADER_SIZE || size > NES_STATE_MAX_SIZE || memcmp(data, state_magic, 8)) return NES_STATE_CORRUPT;
     StateIO in = {(uint8_t *)data, size, 8, true, true};
-    if (state_u32(&in, 0) != NES_STATE_VERSION) return NES_STATE_VERSION_ERROR;
+    unsigned version = state_u32(&in, 0);
+    if (version != 1 && version != NES_STATE_VERSION) return NES_STATE_VERSION_ERROR;
     uint32_t length = state_u32(&in, 0);
     uint32_t checksum = state_u32(&in, 0);
     if (length != size - NES_STATE_HEADER_SIZE || checksum != state_crc32(data + NES_STATE_HEADER_SIZE, length))
@@ -271,7 +281,7 @@ NES_StateResult nes_state_decode(NES *n, const uint8_t *data, size_t size) {
         c.chr_rom = chr;
         c.nes = staged;
         staged->cart = &c;
-        payload(staged, &in);
+        payload(staged, &in, version);
         if (!in.ok || in.pos != size ||
             (!c.chr_is_ram && memcmp(chr, n->cart->chr_rom, c.chr_rom_size))) result = NES_STATE_CORRUPT;
         else {

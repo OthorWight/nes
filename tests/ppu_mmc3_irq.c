@@ -43,8 +43,7 @@ static void check_split(void (*mapper_init)(Cartridge *), bool background_high,
     }
     // A duplicate count at the start of each line would fire around line 21.
     assert(irq_scanline == 23);
-    assert(irq_dot >= (background_high ? 320 : 256));
-    assert(irq_dot < (background_high ? 332 : 268));
+    assert(irq_dot == (background_high ? 325 : 261));
 
     cart.vtable->cpu_write(&cart, 0xE000, 0);
     assert(!nes.lines.irq_line);
@@ -56,7 +55,34 @@ static void check_split(void (*mapper_init)(Cartridge *), bool background_high,
     cart.vtable->destroy(&cart);
 }
 
+static void check_first_clock(void (*mapper_init)(Cartridge *), bool background_high) {
+    nes_init(&nes); memset(&cart, 0, sizeof(cart));
+    cart.nes = &nes; cart.chr_rom = chr; cart.chr_rom_size = sizeof(chr); nes.cart = &cart;
+    mapper_init(&cart);
+    memset(nes.ppu.oam_ram, 0xFF, sizeof(nes.ppu.oam_ram));
+    nes.ppu.ppu_ctrl = background_high ? 0x10 : 0x08;
+    nes.ppu.ppu_mask = 0x18;
+    nes.ppu.scanline = 260; nes.ppu.cycle = 300;
+    cart.vtable->cpu_write(&cart, 0xC000, 0);
+    cart.vtable->cpu_write(&cart, 0xC001, 0);
+    cart.vtable->cpu_write(&cart, 0xE001, 0);
+    for (unsigned dots = 0; dots < 400; ++dots) {
+        int line = nes.ppu.scanline, dot = nes.ppu.cycle;
+        ppu_step(&nes);
+        if (nes.lines.irq_line) {
+            assert(line == 261 && dot == (background_high ? 5 : 261));
+            cart.vtable->destroy(&cart);
+            return;
+        }
+    }
+    assert(!"First pattern fetch did not clock MMC3");
+}
+
 int main(void) {
+    for (int high = 0; high < 2; ++high) {
+        check_first_clock(mapper_004_init, high);
+        check_first_clock(mapper_118_init, high);
+    }
     for (int odd = 0; odd < 2; odd++) {
         for (int background_high = 0; background_high < 2; background_high++) {
             check_split(mapper_004_init, background_high, odd);

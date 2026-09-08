@@ -23,6 +23,9 @@ static inline void update_zero_and_negative_flags(CPU6502 *cpu, uint8_t value) {
 }
 
 static inline void bus_cycle(CPU6502 *cpu, CPUBus *bus) {
+    // The final cycle uses the IRQ level/I flag from the preceding cycle.
+    // Sampling before the clock also precedes CLI/SEI/PLP's final flag write.
+    cpu->irq_pending = cpu->irq_lines && !get_flag(cpu, FLAG_INTERRUPT_DISABLE);
     cpu->cycle_count++;
     if (bus->cycle_tick) {
         bus->cycle_tick(bus->bus_context);
@@ -198,6 +201,7 @@ static inline uint16_t addr_indy_w(CPU6502 *cpu, CPUBus *bus) {
 
 static inline void do_branch(CPU6502 *cpu, CPUBus *bus, bool condition) {
     int8_t offset = (int8_t)read_byte(cpu, bus, cpu->program_counter++);
+    bool first_poll = cpu->irq_pending;
     if (condition) {
         uint16_t old_pc = cpu->program_counter;
         uint16_t new_pc = (uint16_t)(old_pc + offset);
@@ -205,6 +209,9 @@ static inline void do_branch(CPU6502 *cpu, CPUBus *bus, bool condition) {
         read_byte(cpu, bus, uncorrected);
         if (uncorrected != new_pc) {
             read_byte(cpu, bus, (uint16_t)((new_pc & 0xFF00) | (uncorrected & 0x00FF)));
+            cpu->irq_pending |= first_poll;
+        } else {
+            cpu->irq_pending = first_poll;
         }
         cpu->program_counter = new_pc;
     }
@@ -332,6 +339,8 @@ void cpu_init(CPU6502 *cpu, CPUModel model) {
     cpu->cycle_count      = 0;
     cpu->stall_cycles     = 0;
     cpu->irq_lines        = 0;
+    cpu->irq_pending      = false;
+    cpu->irq_poll_valid   = false;
     cpu->nmi_line         = false;
     cpu->nmi_edge         = false;
     cpu->reset_pending    = false;
@@ -353,6 +362,8 @@ void cpu_reset(CPU6502 *cpu, CPUBus *bus) {
     uint8_t low = read_byte(cpu, bus, VECTOR_RESET);
     uint8_t high = read_byte(cpu, bus, (uint16_t)(VECTOR_RESET + 1));
     cpu->program_counter = (uint16_t)(low | (high << 8));
+    cpu->irq_pending = false;
+    cpu->irq_poll_valid = true;
 }
 
 void cpu_set_irq_line(CPU6502 *cpu, uint8_t source_id, bool active) {
@@ -417,7 +428,9 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
 
     if (cpu->stall_cycles > 0) {
         cpu->stall_cycles--;
+        bool pending = cpu->irq_pending;
         bus_cycle(cpu, bus);
+        cpu->irq_pending = pending;
         return (int)(cpu->cycle_count - start_cycles);
     }
 
@@ -433,7 +446,10 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
         return (int)(cpu->cycle_count - start_cycles);
     }
 
-    if (cpu->irq_lines != 0 && !get_flag(cpu, FLAG_INTERRUPT_DISABLE)) {
+    bool irq = cpu->irq_poll_valid ? cpu->irq_pending :
+        (cpu->irq_lines != 0 && !get_flag(cpu, FLAG_INTERRUPT_DISABLE));
+    cpu->irq_poll_valid = true;
+    if (irq) {
         do_hardware_interrupt(cpu, bus, false);
         return (int)(cpu->cycle_count - start_cycles);
     }

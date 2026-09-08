@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Dot-based approximation of MMC3's M2-qualified A12 filter. A nine-dot
+// nametable interval across a scanline boundary must not add a second clock.
+#define MMC3_A12_LOW_DOTS 10
+
 typedef struct {
     uint8_t  bank_select;
     uint8_t  bank_regs[8];
@@ -64,10 +68,10 @@ static void mmc3_ppu_dot(Cartridge *c, uint16_t addr) {
     bool current_a12 = (addr & 0x1000) != 0;
 
     if (!current_a12) {
-        if (d->a12_low_count < 8) d->a12_low_count++;
+        if (d->a12_low_count < MMC3_A12_LOW_DOTS) d->a12_low_count++;
     } else {
         if (!d->last_a12 && current_a12) {
-            if (d->a12_low_count >= 8) {
+            if (d->a12_low_count >= MMC3_A12_LOW_DOTS) {
                 mmc3_clock_scanline(c);
             }
         }
@@ -218,7 +222,7 @@ static void mmc3_state(Cartridge *c, StateIO *io) {
     d->irq_reload = state_bool(io, d->irq_reload);
     d->last_a12 = state_bool(io, d->last_a12);
     d->a12_low_count = state_i32(io, d->a12_low_count);
-    if (d->a12_low_count < 0 || d->a12_low_count > 8) io->ok = false;
+    if (d->a12_low_count < 0 || d->a12_low_count > MMC3_A12_LOW_DOTS) io->ok = false;
 }
 
 static const MapperInterface mmc3_interface = {

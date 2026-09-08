@@ -33,6 +33,8 @@ typedef struct {
 
     // Hardware lines & latch states
     uint8_t  irq_lines;
+    bool     irq_pending;
+    bool     irq_poll_valid;
     bool     nmi_line;
     bool     nmi_prev_line;
     bool     nmi_edge;
