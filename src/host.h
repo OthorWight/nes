@@ -70,8 +70,11 @@ typedef struct HostEvent {
 } HostEvent;
 typedef struct HostRect { int x, y, w, h; } HostRect;
 typedef struct HostPoint { int x, y; } HostPoint;
+#define HOST_PANEL_WIDTH 512
+#define HOST_PANEL_HEIGHT 640
 typedef struct HostCanvas {
-    uint32_t pixels[256 * 240], frame[256 * 240];
+    uint32_t pixels[HOST_PANEL_WIDTH * HOST_PANEL_HEIGHT], frame[256 * 240];
+    int width, height; /* zero selects the 256x240 game canvas */
     uint32_t color;
     bool has_frame;
     HostRect crop;
@@ -94,6 +97,8 @@ void host_display(int scale, bool fullscreen);
 void host_mouse_position(int *x, int *y);
 void host_to_logical(HostCanvas *canvas, int x, int y, float *lx, float *ly);
 void host_viewport(int width, int height, HostRect *rect);
+void host_set_debug_panel(HostCanvas *panel);
+void host_layout(int width, int height, HostRect *game, HostRect *panel);
 uint32_t host_window_flags(void);
 void host_show_cursor(bool show);
 bool host_point_in_rect(const HostPoint *point, const HostRect *rect);

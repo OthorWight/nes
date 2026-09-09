@@ -50,6 +50,10 @@ static sg_image frame_image;
 static sg_view frame_view;
 static sg_image overlay_image;
 static sg_view overlay_view;
+static sg_image panel_image;
+static sg_view panel_view;
+static HostCanvas *debug_panel;
+static int windowed_scale;
 static sg_sampler frame_sampler;
 static sgl_pipeline overlay_pipeline;
 static bool audio_initialized;
@@ -125,6 +129,9 @@ void host_setup(void) {
     overlay_image = sg_make_image(&(sg_image_desc){.width = 256, .height = 240,
         .pixel_format = SG_PIXELFORMAT_RGBA8, .usage.dynamic_update = true});
     overlay_view = sg_make_view(&(sg_view_desc){.texture.image = overlay_image});
+    panel_image = sg_make_image(&(sg_image_desc){.width = HOST_PANEL_WIDTH, .height = HOST_PANEL_HEIGHT,
+        .pixel_format = SG_PIXELFORMAT_RGBA8, .usage.dynamic_update = true});
+    panel_view = sg_make_view(&(sg_view_desc){.texture.image = panel_image});
     overlay_pipeline = sgl_make_pipeline(&(sg_pipeline_desc){.colors[0].blend = {
         .enabled = true, .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
         .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
@@ -186,13 +193,14 @@ char *host_base_path(void) {
     return result;
 }
 void host_display(int scale, bool fullscreen) {
+    windowed_scale = scale;
     if (fullscreen != sapp_is_fullscreen()) sapp_toggle_fullscreen();
     if (fullscreen) return;
 #ifdef _WIN32
     HWND window = (HWND)sapp_win32_get_hwnd();
     if (scale == 5) { ShowWindow(window, SW_MAXIMIZE); return; }
     ShowWindow(window, SW_RESTORE);
-    RECT rect = {0, 0, 256 * scale, 240 * scale};
+    RECT rect = {0, 0, (debug_panel ? 448 : 256) * scale, 240 * scale};
     AdjustWindowRectEx(&rect, (DWORD)GetWindowLongPtr(window, GWL_STYLE), FALSE,
         (DWORD)GetWindowLongPtr(window, GWL_EXSTYLE));
     SetWindowPos(window, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
@@ -200,7 +208,7 @@ void host_display(int scale, bool fullscreen) {
 #elif defined(__APPLE__)
     NSWindow *window = (__bridge NSWindow *)sapp_macos_get_window();
     if (scale == 5) { if (![window isZoomed]) [window zoom:nil]; }
-    else { if ([window isZoomed]) [window zoom:nil]; [window setContentSize:NSMakeSize(256 * scale, 240 * scale)]; }
+    else { if ([window isZoomed]) [window zoom:nil]; [window setContentSize:NSMakeSize((debug_panel ? 448 : 256) * scale, 240 * scale)]; }
 #else
     Display *display = (Display *)sapp_x11_get_display();
     Window window = (Window)(uintptr_t)sapp_x11_get_window();
@@ -211,7 +219,7 @@ void host_display(int scale, bool fullscreen) {
     event.xclient.data.l[1] = (long)XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
     event.xclient.data.l[2] = (long)XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
     XSendEvent(display, DefaultRootWindow(display), False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
-    if (scale != 5) XResizeWindow(display, window, 256 * scale, 240 * scale);
+    if (scale != 5) XResizeWindow(display, window, (debug_panel ? 448 : 256) * scale, 240 * scale);
     XFlush(display);
 #endif
 }
@@ -222,9 +230,28 @@ void host_viewport(int width, int height, HostRect *rect) {
 }
 void host_to_logical(HostCanvas *canvas, int x, int y, float *lx, float *ly) {
     (void)canvas;
-    HostRect rect; host_viewport(sapp_width(), sapp_height(), &rect);
+    HostRect rect, panel; host_layout(sapp_width(), sapp_height(), &rect, &panel);
     *lx = rect.w ? (x - rect.x) * 256.0f / rect.w : -1;
     *ly = rect.h ? (y - rect.y) * 240.0f / rect.h : -1;
+}
+void host_set_debug_panel(HostCanvas *panel) {
+    bool changed = (debug_panel != NULL) != (panel != NULL);
+    debug_panel = panel;
+    if (changed && windowed_scale > 0 && windowed_scale < 5 && !sapp_is_fullscreen())
+        host_display(windowed_scale, false);
+}
+void host_layout(int width, int height, HostRect *game, HostRect *panel) {
+    int game_width = debug_panel ? width * 4 / 7 : width;
+    host_viewport(game_width, height, game);
+    *panel = (HostRect){0};
+    if (debug_panel) {
+        double scale = fmin((width - game_width) / (double)HOST_PANEL_WIDTH,
+                            height / (double)HOST_PANEL_HEIGHT);
+        panel->w = (int)(HOST_PANEL_WIDTH * scale);
+        panel->h = (int)(HOST_PANEL_HEIGHT * scale);
+        panel->x = game_width + (width - game_width - panel->w) / 2;
+        panel->y = (height - panel->h) / 2;
+    }
 }
 void host_mouse_position(int *x, int *y) { *x = mouse_x; *y = mouse_y; }
 uint32_t host_window_flags(void) { return window_flags; }
@@ -237,18 +264,21 @@ void host_color(HostCanvas *c, int r, int g, int b, int a) {
 }
 void host_clear(HostCanvas *c) {
     c->has_frame = false;
-    for (unsigned i = 0; i < 256 * 240; ++i) c->pixels[i] = c->color;
+    int count = (c->width ? c->width : 256) * (c->height ? c->height : 240);
+    for (int i = 0; i < count; ++i) c->pixels[i] = c->color;
 }
 void host_draw_points(HostCanvas *c, const HostPoint *points, int count) {
+    int width = c->width ? c->width : 256, height = c->height ? c->height : 240;
     for (int i = 0; i < count; ++i) {
         int x = points[i].x, y = points[i].y;
-        if (x >= 0 && x < 256 && y >= 0 && y < 240) c->pixels[y * 256 + x] = c->color;
+        if (x >= 0 && x < width && y >= 0 && y < height) c->pixels[y * width + x] = c->color;
     }
 }
 void host_fill_rect(HostCanvas *c, const HostRect *r) {
+    int width = c->width ? c->width : 256, height = c->height ? c->height : 240;
     for (int y = r->y; y < r->y + r->h; ++y)
         for (int x = r->x; x < r->x + r->w; ++x)
-            if (x >= 0 && x < 256 && y >= 0 && y < 240) c->pixels[y * 256 + x] = c->color;
+            if (x >= 0 && x < width && y >= 0 && y < height) c->pixels[y * width + x] = c->color;
 }
 void host_draw_rect(HostCanvas *c, const HostRect *r) {
     host_fill_rect(c, &(HostRect){r->x, r->y, r->w, 1});
@@ -259,7 +289,7 @@ void host_draw_rect(HostCanvas *c, const HostRect *r) {
 void host_draw_frame(HostCanvas *c, const uint32_t *argb, const HostRect *crop) {
     c->has_frame = true;
     c->crop = *crop;
-    memset(c->pixels, 0, sizeof(c->pixels));
+    memset(c->pixels, 0, 256 * 240 * sizeof(uint32_t));
     for (unsigned i = 0; i < 256 * 240; ++i) {
         uint32_t p = argb[i];
         c->frame[i] = 0xff000000u | ((p & 255) << 16) | (p & 0xff00) | ((p >> 16) & 255);
@@ -273,8 +303,8 @@ static void textured_quad(sg_view view, float u0, float v0, float u1, float v1) 
     sgl_end();
 }
 void host_present(HostCanvas *c) {
-    sg_update_image(overlay_image, &(sg_image_data){.mip_levels[0] = {c->pixels, sizeof(c->pixels)}});
-    HostRect rect; host_viewport(sapp_width(), sapp_height(), &rect);
+    sg_update_image(overlay_image, &(sg_image_data){.mip_levels[0] = {c->pixels, 256 * 240 * sizeof(uint32_t)}});
+    HostRect rect, panel; host_layout(sapp_width(), sapp_height(), &rect, &panel);
     sgl_defaults(); sgl_viewport(rect.x, rect.y, rect.w, rect.h, true);
     sgl_enable_texture();
     if (c->has_frame) {
@@ -284,6 +314,13 @@ void host_present(HostCanvas *c) {
         sgl_load_pipeline(overlay_pipeline);
     }
     textured_quad(overlay_view, 0, 0, 1, 1);
+    if (debug_panel) {
+        sg_update_image(panel_image, &(sg_image_data){.mip_levels[0] = {debug_panel->pixels, sizeof(debug_panel->pixels)}});
+        sgl_defaults();
+        sgl_viewport(panel.x, panel.y, panel.w, panel.h, true);
+        sgl_enable_texture();
+        textured_quad(panel_view, 0, 0, 1, 1);
+    }
     sg_begin_pass(&(sg_pass){.swapchain = sglue_swapchain(),
         .action.colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0, 0, 0, 1}}});
     sgl_draw(); sg_end_pass(); sg_commit();
@@ -388,6 +425,8 @@ void host_event(const sapp_event *event) {
         case SAPP_EVENTTYPE_MOUSE_MOVE: case SAPP_EVENTTYPE_MOUSE_DOWN: case SAPP_EVENTTYPE_MOUSE_UP:
         case SAPP_EVENTTYPE_MOUSE_SCROLL: {
             mouse_x = (int)event->mouse_x; mouse_y = (int)event->mouse_y;
+            if (debug_panel && mouse_x >= sapp_width() * 4 / 7 &&
+                (event->type == SAPP_EVENTTYPE_MOUSE_DOWN || event->type == SAPP_EVENTTYPE_MOUSE_SCROLL)) return;
             float x, y; host_to_logical(NULL, mouse_x, mouse_y, &x, &y);
             /* floor keeps slightly negative letterbox coordinates offscreen. */
             e.motion.x = e.button.x = (int)floorf(x); e.motion.y = e.button.y = (int)floorf(y);

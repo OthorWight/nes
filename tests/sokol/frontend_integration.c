@@ -8,6 +8,7 @@ static bool scripted_poll(HostEvent *event);
 #include "../../src/gui_main.c"
 #undef sokol_main
 #undef host_poll_event
+#include "capture.h"
 
 static unsigned iteration;
 static unsigned capture_iteration = 140;
@@ -113,6 +114,10 @@ static bool scripted_poll(HostEvent *e) {
         case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); break;
         case 12: {
             assert(debugger_active && nes_sys.controller_state[0] == 0);
+            assert(renderer->has_frame); /* Stepping retains the game beside the debugger. */
+            HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
+            assert(panel.w > 0 && game.x + game.w <= panel.x);
+            capture_window("debug-panel.bmp");
             if (audio_device) assert(host_audio_queued_bytes() == 0);
             uint64_t cycle = nes_sys.cpu.cycle_count;
             int dot = nes_sys.ppu.scanline * 341 + nes_sys.ppu.cycle;
@@ -158,6 +163,14 @@ static bool scripted_poll(HostEvent *e) {
             e->button.x = 100; e->button.y = 62; break;
         case 21:
             assert(current_state == GUI_STATE_GAMEPLAY && !nes_sys.zapper_trigger);
+            key(e, HOST_KEYDOWN, HOST_KEY_F3);
+            break;
+        case 22:
+            assert(debug_panel_enabled && !debugger_active && renderer->has_frame);
+            key(e, HOST_KEYDOWN, HOST_KEY_F3);
+            break;
+        case 23:
+            assert(!debug_panel_enabled && performance_visible && renderer->has_frame);
             break;
         default: assert(iteration < capture_iteration); break;
     }

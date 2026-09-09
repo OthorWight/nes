@@ -33,7 +33,7 @@ If a game repeatedly polls the light gun on a black screen for about three secon
 
 ### Performance and captures
 
-Press `F2` for FPS, emulation speed, frame spikes, audio queue and input diagnostics.
+Press `F2` for a metrics panel beside the game: FPS, emulation speed, frame spikes, audio queue and input diagnostics. Press `F3` for the full debug panel with CPU/PPU/APU, mapper and controller details; these replace the terminal dashboard.
 `Ctrl+F4` toggles recent event tracing; `F4` saves the bounded history to
 `saves/<ROM name>/diagnostics.log`. Audio on, muted, and unavailable share the
 same NTSC frame scheduler. Focus loss pauses the game and clears held inputs.
@@ -97,10 +97,10 @@ and focused regression coverage.
 
 ## Real-Time Step Debugger
 
-Press `F10` during gameplay to freeze the emulator and launch the interactive **Step Debugger**.
+Press `F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in Settings and preserve existing saved preferences.
 
 ```
-NES IN-GAME STEP DEBUGGER
+NES DEBUGGER - PAUSED
 =========================
 PC:8012  A:00  X:00  Y:00  SP:FD
 P:34  [..-..IZ.]  CYC:347101

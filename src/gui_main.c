@@ -9,6 +9,7 @@
 #endif
 #include <inttypes.h>
 #include <math.h>
+#include <stdarg.h>
 #include "host.h"
 #include "nes_system.h"
 #include "debugger.h"
@@ -32,7 +33,7 @@ static bool audio_muted = false;
 #define MKDIR(path) mkdir(path, 0777)
 #endif
 
-static bool console_debug_enabled = false;
+static bool debug_panel_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
 static int master_volume = 100;
@@ -396,7 +397,7 @@ static void save_emulator_settings(void) {
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
     state_i32(&io, global_preferences.fullscreen ? 1 : 0);
-    state_i32(&io, console_debug_enabled ? 1 : 0);
+    state_i32(&io, debug_panel_enabled ? 1 : 0);
     for (unsigned i = 0; i < CONTROL_COUNT; ++i) state_i32(&io, control_mappings[i]);
     for (unsigned i = 0; i < CONTROL_COUNT; ++i) state_i32(&io, controller_button_mappings[i]);
     state_i32(&io, global_preferences.zapper ? 1 : 0);
@@ -427,7 +428,7 @@ static void load_emulator_settings(void) {
     fullscreen = (temp_fs != 0);
     int temp_debug = 0;
     fread(&temp_debug, sizeof(temp_debug), 1, f);
-    console_debug_enabled = (temp_debug != 0);
+    debug_panel_enabled = (temp_debug != 0);
     if (version == 1) {
         fread(control_mappings, sizeof(HostKey), 8, f);
     } else if (version == 2) {
@@ -772,23 +773,6 @@ static void draw_notification(HostCanvas *renderer) {
     }
 }
 
-static void draw_performance(HostCanvas *renderer) {
-    DiagnosticSummary s = diagnostics_summary(&diagnostics);
-    HostRect box = {2, 2, 252, 48};
-    host_color(renderer, 0, 0, 0, 255);
-    host_fill_rect(renderer, &box);
-    char line[64];
-    snprintf(line, sizeof(line), "FPS %.1f SPEED %.1f%%", s.fps, s.speed);
-    draw_string(renderer, line, 6, 5, 0xFFFFFF);
-    snprintf(line, sizeof(line), "MAX %.1fMS SPIKES %u", s.max_ms, s.spikes);
-    draw_string(renderer, line, 6, 16, 0xFFFFFF);
-    snprintf(line, sizeof(line), "AUDIO %.0fMS EMPTY %u %s", s.queue_ms, audio_monitor.underruns,
-             !audio_device ? "N/A" : (audio_muted ? "MUTED" : ""));
-    draw_string(renderer, line, 6, 27, 0xFFFFFF);
-    snprintf(line, sizeof(line), "READS %u CHANGES %u TRACE %s", s.polls, s.changed, diagnostics.tracing ? "ON" : "OFF");
-    draw_string(renderer, line, 6, 38, 0xFFFF00);
-}
-
 static void capture_diagnostics(void) {
     if (!nes_sys.cart) return;
     char path[1200];
@@ -871,154 +855,6 @@ static void scan_rom_directory(void) {
     }
 }
 
-static void update_console_debug(CPU6502 *cpu) {
-    static bool last_enabled = false;
-    if (!console_debug_enabled) {
-        last_enabled = false;
-        return;
-    }
-
-    if (!last_enabled) {
-        printf("\033[2J\033[H");
-        fflush(stdout);
-        last_enabled = true;
-    }
-
-    static double last_fps_calc_time = 0;
-    static float fps = 0.0f;
-    static uint32_t frame_calc_counter = 0;
-    static float cpu_usage = 0.0f;
-    static float cpu_speed_mhz = 0.0f;
-    static uint64_t last_cycles = 0;
-
-    frame_calc_counter++;
-    double current_time = (double)host_ticks() / 1000.0;
-    if (current_time - last_fps_calc_time >= 1.0) {
-        double delta_time = current_time - last_fps_calc_time;
-        fps = (float)frame_calc_counter / delta_time;
-        frame_calc_counter = 0;
-
-        uint64_t current_cycles = cpu->cycle_count;
-        cpu_speed_mhz = (float)(current_cycles - last_cycles) / delta_time / 1000000.0f;
-        last_cycles = current_cycles;
-
-        if (debug_total_ticks > 0) {
-            cpu_usage = ((float)debug_emu_ticks / (float)debug_total_ticks) * 100.0f;
-        } else {
-            cpu_usage = 0.0f;
-        }
-        debug_emu_ticks = 0;
-        debug_total_ticks = 0;
-
-        last_fps_calc_time = current_time;
-    }
-
-    static uint32_t last_update_tick = 0;
-    uint32_t current_tick = host_ticks();
-    if (current_tick - last_update_tick < 100) {
-        return;
-    }
-    last_update_tick = current_tick;
-
-    const char *mirror_mode_str = "Unknown";
-    if (nes_sys.cart) {
-        switch (nes_sys.cart->mirroring) {
-            case MIRROR_HORIZONTAL: mirror_mode_str = "Horizontal"; break;
-            case MIRROR_VERTICAL: mirror_mode_str = "Vertical"; break;
-            case MIRROR_FOUR_SCREEN: mirror_mode_str = "4-Screen"; break;
-            case MIRROR_ONE_SCREEN_LOW: mirror_mode_str = "1-Screen Low"; break;
-            case MIRROR_ONE_SCREEN_HIGH: mirror_mode_str = "1-Screen High"; break;
-        }
-    }
-
-    uint8_t sp = cpu->stack_pointer;
-    uint8_t s1 = nes_sys.wram[0x0100 | ((sp + 1) & 0xFF)];
-    uint8_t s2 = nes_sys.wram[0x0100 | ((sp + 2) & 0xFF)];
-    uint8_t s3 = nes_sys.wram[0x0100 | ((sp + 3) & 0xFF)];
-    uint8_t s4 = nes_sys.wram[0x0100 | ((sp + 4) & 0xFF)];
-
-    char disasm[128];
-    disassemble_instruction(cpu->program_counter, disasm, sizeof(disasm), cpu);
-
-    printf("\033[H");
-    printf("\033[1;36m==================================================\033[0m\033[K\n");
-    printf("\033[1;32m                 NES EMULATOR DEBUGGER            \033[0m\033[K\n");
-    printf("\033[1;36m==================================================\033[0m\033[K\n");
-    printf("\033[1mPerformance:\033[0m  %.2f FPS (Target: 60.10 FPS)\033[K\n", fps);
-    printf("\033[1mCPU Speed:\033[0m    %.4f MHz (NES standard: 1.7898 MHz)\033[K\n", cpu_speed_mhz);
-    printf("\033[1mHost Load:\033[0m    %.2f%%\033[K\n", cpu_usage);
-    printf("\033[1mLoaded ROM:\033[0m   %-30.30s\033[K\n", nes_sys.cart ? loaded_rom_name : "[None]");
-    printf("\033[1mAudio Queue:\033[0m  %u bytes\033[K\n", host_audio_queued_bytes());
-    printf("\033[K\n");
-
-    printf("\033[1;33m--- CPU Registers ---\033[0m\033[K\n");
-    printf("PC: 0x%04X   A:  0x%02X   X:  0x%02X   Y:  0x%02X\033[K\n", cpu->program_counter, cpu->accumulator, cpu->index_x, cpu->index_y);
-    printf("SP: 0x%02X     P:  0x%02X  [", cpu->stack_pointer, cpu->status_flags);
-    printf("%c", (cpu->status_flags & FLAG_NEGATIVE) ? 'N' : '.');
-    printf("%c", (cpu->status_flags & FLAG_OVERFLOW_V) ? 'V' : '.');
-    printf("-");
-    printf("%c", (cpu->status_flags & FLAG_BREAK_COMMAND) ? 'B' : '.');
-    printf("%c", (cpu->status_flags & FLAG_DECIMAL_MODE) ? 'D' : '.');
-    printf("%c", (cpu->status_flags & FLAG_INTERRUPT_DISABLE) ? 'I' : '.');
-    printf("%c", (cpu->status_flags & FLAG_ZERO) ? 'Z' : '.');
-    printf("%c", (cpu->status_flags & FLAG_CARRY) ? 'C' : '.');
-    printf("]   Cycles: %" PRIu64 "\033[K\n", cpu->cycle_count);
-    printf("\033[K\n");
-
-    printf("\033[1;33m--- Execution Context ---\033[0m\033[K\n");
-    printf("Instruction: $%04X: %-45.45s\033[K\n", cpu->program_counter, disasm);
-    printf("Stack Peek:  SP=0x%02X -> [ %02X %02X %02X %02X ]\033[K\n", sp, s1, s2, s3, s4);
-    printf("Pending IRQ: Lines: 0x%02X [ %s%s%s]  NMI Line/Edge: %d/%d\033[K\n",
-           cpu->irq_lines,
-           (cpu->irq_lines & 1) ? "MAPPER " : "",
-           (cpu->irq_lines & 2) ? "FRAME " : "",
-           (cpu->irq_lines & 4) ? "DMC " : "",
-           cpu->nmi_line, cpu->nmi_edge);
-    printf("\033[K\n");
-
-    printf("\033[1;33m--- PPU State ---\033[0m\033[K\n");
-    printf("Scanline: %-4d  Cycle: %-4d   Status: 0x%02X\033[K\n", nes_sys.ppu.scanline, nes_sys.ppu.cycle, nes_sys.ppu.ppu_status);
-    printf("Ctrl:     0x%02X  Mask:  0x%02X   Scroll V: 0x%04X, T: 0x%04X\033[K\n", nes_sys.ppu.ppu_ctrl, nes_sys.ppu.ppu_mask, nes_sys.ppu.v, nes_sys.ppu.t);
-    printf("Fine X:   %-4d  Latch W: %-3d  Frame Parity: %s\033[K\n", nes_sys.ppu.x, nes_sys.ppu.w, nes_sys.ppu.odd_frame ? "Odd" : "Even");
-    printf("OAM Addr: 0x%02X  Active Scanline Sprites: %d / 8\033[K\n", nes_sys.ppu.oam_addr, nes_sys.ppu.scanline_sprite_count);
-    printf("\033[K\n");
-
-    printf("\033[1;33m--- APU Status ---\033[0m\033[K\n");
-    printf("Channels Enabled: Pulse1: %s  Pulse2: %s  Triangle: %s  Noise: %s  DMC: %s\033[K\n",
-           nes_sys.apu.pulse_enabled[0] ? "On" : "Off",
-           nes_sys.apu.pulse_enabled[1] ? "On" : "Off",
-           nes_sys.apu.triangle_enabled ? "On" : "Off",
-           nes_sys.apu.noise_enabled ? "On" : "Off",
-           nes_sys.apu.dmc_enabled ? "On" : "Off");
-    printf("Lengths Remaining: P1:%-3d  P2:%-3d  Tri:%-3d  Noise:%-3d\033[K\n",
-           nes_sys.apu.pulse_length_counter[0], nes_sys.apu.pulse_length_counter[1],
-           nes_sys.apu.triangle_length_counter, nes_sys.apu.noise_length_counter);
-    printf("Frame Sequencer:  Mode: %s  APU IRQ Active: %s\033[K\n",
-           nes_sys.apu.frame_mode ? "5-Step" : "4-Step",
-           nes_sys.apu.frame_irq_active ? "Yes" : "No");
-    printf("DMC State:        Sample: 0x%04X  Current: 0x%04X  Left: %-5d  Empty: %s\033[K\n",
-           nes_sys.apu.dmc_sample_addr, nes_sys.apu.dmc_current_addr, nes_sys.apu.dmc_bytes_remaining,
-           nes_sys.apu.dmc_buffer_empty ? "Yes" : "No");
-    printf("\033[K\n");
-
-    if (nes_sys.cart) {
-        printf("\033[1;33m--- Mapper State (%d) ---\033[0m\033[K\n", nes_sys.cart->mapper_id);
-        printf("Mirroring Mode: %s\033[K\n", mirror_mode_str);
-    }
-    printf("\033[K\n");
-
-    printf("\033[1;33m--- Controller ---\033[0m\033[K\n");
-    printf("P1 State: 0x%02X [", nes_sys.controller_state[0]);
-    const char* names[8] = {"A", "B", "SL", "ST", "U", "D", "L", "R"};
-    for (int i = 0; i < 8; i++) {
-        printf("%s ", (nes_sys.controller_state[0] & (1 << i)) ? names[i] : ".");
-    }
-    printf("]\033[K\n");
-    printf("\033[1;36m==================================================\033[0m\033[K\n");
-    printf("\033[J");
-    fflush(stdout);
-}
-
 static void save_emulator_state(const char *dir, const char *filename) {
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
@@ -1050,6 +886,90 @@ static void load_emulator_state(const char *dir, const char *filename) {
 
 static HostCanvas canvas;
 static HostCanvas *renderer = &canvas;
+static HostCanvas debug_canvas;
+
+static void panel_line(int *y, uint32_t color, const char *format, ...) {
+    char text[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    draw_string(&debug_canvas, text, 8, *y, color);
+    *y += 12;
+}
+
+static void draw_debug_panel(void) {
+    bool visible = debug_panel_enabled || performance_visible || debugger_active;
+    host_set_debug_panel(visible ? &debug_canvas : NULL);
+    if (!visible) return;
+    debug_canvas.width = HOST_PANEL_WIDTH;
+    debug_canvas.height = HOST_PANEL_HEIGHT;
+    bool playing = nes_sys.cart && current_state == GUI_STATE_GAMEPLAY && !debugger_active && focused;
+    bool full = debug_panel_enabled || debugger_active;
+    host_color(&debug_canvas, 15, 20, 35, 255);
+    host_clear(&debug_canvas);
+    int y = 12;
+    if (full) {
+        if (!debugger_active) {
+            debugger_view_pc = nes_sys.cpu.program_counter;
+            debugger_selected_line = 0;
+        }
+        debugger_render(&debug_canvas, &nes_sys.cpu);
+        y = 258;
+    }
+    DiagnosticSummary s = diagnostics_summary(&diagnostics);
+    panel_line(&y, 0x78C8FF, "PERFORMANCE / AUDIO / INPUT");
+    panel_line(&y, 0xFFFFFF, "ROM: %.56s", nes_sys.cart ? loaded_rom_name : "[None]");
+    panel_line(&y, 0xFFFFFF, "%s  FPS %.2f/60.10  SPEED %.2f%%", playing ? "RUNNING" : "PAUSED",
+        playing ? s.fps : 0, playing ? s.speed : 0);
+    panel_line(&y, 0xFFFFFF, "CPU %.4f MHz  HOST LOAD %.1f%%", playing ? 1.789773 * s.speed / 100 : 0,
+        playing && debug_total_ticks ? 100.0 * debug_emu_ticks / debug_total_ticks : 0);
+    panel_line(&y, 0xFFFFFF, "FRAME MAX %.2f ms  SPIKES %u", s.max_ms, s.spikes);
+    panel_line(&y, 0xFFFFFF, "AUDIO %s  QUEUE %u B  DEVICE %.1f ms",
+        !audio_device ? "UNAVAILABLE" : audio_muted ? "MUTED" : "ON", host_audio_queued_bytes(), audio_device_ms);
+    panel_line(&y, 0xFFFFFF, "EMPTY %u  TRIMS %u  ERRORS %u", audio_monitor.underruns, audio_monitor.trims, audio_monitor.errors);
+    panel_line(&y, 0xFFFFFF, "INPUT READS %u  CHANGES %u  TRACE %s", s.polls, s.changed, diagnostics.tracing ? "ON" : "OFF");
+    if (full) {
+        y += 8;
+        panel_line(&y, 0x78C8FF, "INTERRUPTS / PPU");
+        panel_line(&y, 0xFFFFFF, "IRQ %02X [MAPPER:%d FRAME:%d DMC:%d] NMI %d/%d",
+            nes_sys.cpu.irq_lines, !!(nes_sys.cpu.irq_lines & 1), !!(nes_sys.cpu.irq_lines & 2),
+            !!(nes_sys.cpu.irq_lines & 4), nes_sys.cpu.nmi_line, nes_sys.cpu.nmi_edge);
+        panel_line(&y, 0xFFFFFF, "SCANLINE %d  DOT %d  STATUS %02X  %s FRAME",
+            nes_sys.ppu.scanline, nes_sys.ppu.cycle, nes_sys.ppu.ppu_status, nes_sys.ppu.odd_frame ? "ODD" : "EVEN");
+        panel_line(&y, 0xFFFFFF, "CTRL %02X MASK %02X  SCROLL V:%04X T:%04X",
+            nes_sys.ppu.ppu_ctrl, nes_sys.ppu.ppu_mask, nes_sys.ppu.v, nes_sys.ppu.t);
+        panel_line(&y, 0xFFFFFF, "FINE X %d  LATCH W %d  OAM %02X  SPRITES %d/8",
+            nes_sys.ppu.x, nes_sys.ppu.w, nes_sys.ppu.oam_addr, nes_sys.ppu.scanline_sprite_count);
+        y += 8;
+        panel_line(&y, 0x78C8FF, "APU");
+        panel_line(&y, 0xFFFFFF, "ENABLED P1:%d P2:%d TRI:%d NOISE:%d DMC:%d",
+            nes_sys.apu.pulse_enabled[0], nes_sys.apu.pulse_enabled[1], nes_sys.apu.triangle_enabled,
+            nes_sys.apu.noise_enabled, nes_sys.apu.dmc_enabled);
+        panel_line(&y, 0xFFFFFF, "LENGTHS P1:%d P2:%d TRI:%d NOISE:%d",
+            nes_sys.apu.pulse_length_counter[0], nes_sys.apu.pulse_length_counter[1],
+            nes_sys.apu.triangle_length_counter, nes_sys.apu.noise_length_counter);
+        panel_line(&y, 0xFFFFFF, "SEQUENCER %d-STEP  FRAME IRQ %d", nes_sys.apu.frame_mode ? 5 : 4, nes_sys.apu.frame_irq_active);
+        panel_line(&y, 0xFFFFFF, "DMC SAMPLE %04X CURRENT %04X LEFT %d EMPTY %d",
+            nes_sys.apu.dmc_sample_addr, nes_sys.apu.dmc_current_addr,
+            nes_sys.apu.dmc_bytes_remaining, nes_sys.apu.dmc_buffer_empty);
+        y += 8;
+        const char *mirror = "Unknown";
+        if (nes_sys.cart) switch (nes_sys.cart->mirroring) {
+            case MIRROR_HORIZONTAL: mirror = "Horizontal"; break;
+            case MIRROR_VERTICAL: mirror = "Vertical"; break;
+            case MIRROR_FOUR_SCREEN: mirror = "4-Screen"; break;
+            case MIRROR_ONE_SCREEN_LOW: mirror = "1-Screen Low"; break;
+            case MIRROR_ONE_SCREEN_HIGH: mirror = "1-Screen High"; break;
+        }
+        panel_line(&y, 0x78C8FF, "MAPPER %d  MIRROR %s", nes_sys.cart ? nes_sys.cart->mapper_id : -1, mirror);
+        panel_line(&y, 0xFFFFFF, "P1 %02X [A B SELECT START UP DOWN LEFT RIGHT]", nes_sys.controller_state[0]);
+        panel_line(&y, 0xFFFFFF, "PORT 2 %s  AIM %d,%d  TRIGGER %d LIGHT %d", nes_sys.zapper_enabled ? "ZAPPER" : "PAD",
+            nes_sys.zapper_x, nes_sys.zapper_y, nes_sys.zapper_trigger, nes_sys.zapper_light);
+    }
+    draw_string(&debug_canvas, "F3:Debug panel  F2:Metrics  F4:Capture", 8, 612, 0x78C8FF);
+    draw_string(&debug_canvas, "F10:Step  F9:Run  Ctrl+F4:Event trace", 8, 626, 0x78C8FF);
+}
 static bool running = true, cursor_visible = true, was_playing;
 static uint32_t last_mouse_activity;
 static const uint32_t cursor_idle_ms = 2000;
@@ -1083,11 +1003,14 @@ static void app_frame(void) {
     was_playing = playing;
     if (current_state == GUI_STATE_GAMEPLAY && nes_sys.cart != NULL) {
         if (debugger_active) {
-            debugger_render(renderer, &nes_sys.cpu);
+            host_color(renderer, 0, 0, 0, 255);
+            host_clear(renderer);
+            GameCrop crop = game_crop(nes_sys.cart->mapper_id);
+            host_draw_frame(renderer, nes_sys.ppu.screen_buffer, &(HostRect){crop.x, crop.y, crop.w, crop.h});
             draw_notification(renderer);
+            draw_debug_panel();
             host_present(renderer);
             host_delay(16);
-            update_console_debug(&nes_sys.cpu);
         } else {
             uint64_t frame_start_tick = host_counter();
             uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
@@ -1134,8 +1057,9 @@ static void app_frame(void) {
                 draw_string(renderer, "then resume the game.", 16, 200, 0xFFFFFF);
             }
 
-            if (performance_visible) draw_performance(renderer);
+
             draw_notification(renderer);
+            draw_debug_panel();
             host_present(renderer);
 
             if (nes_sys.frame_ready) {
@@ -1154,8 +1078,6 @@ static void app_frame(void) {
 
             uint64_t frame_end_tick = host_counter();
             debug_total_ticks += (frame_end_tick - frame_start_tick);
-
-            update_console_debug(&nes_sys.cpu);
         }
     } else {
         host_color(renderer, 20, 20, 30, 255);
@@ -1358,11 +1280,11 @@ static void app_frame(void) {
             snprintf(rows[1], sizeof(rows[1]), "Muted: %s", audio_muted ? "ON" : "OFF");
             snprintf(rows[2], sizeof(rows[2]), "Volume: %d%%", master_volume);
             snprintf(rows[3], sizeof(rows[3]), "Fullscreen: %s", fullscreen ? "ON" : "OFF");
-            snprintf(rows[4], sizeof(rows[4]), "Console debug: %s", console_debug_enabled ? "ON" : "OFF");
+            snprintf(rows[4], sizeof(rows[4]), "Debug panel (F3): %s", debug_panel_enabled ? "ON" : "OFF");
             snprintf(rows[5], sizeof(rows[5]), "Port 2: %s", zapper_enabled ? "Zapper" : "Controller");
             snprintf(rows[6], sizeof(rows[6]), "Use global display/Port 2");
             snprintf(rows[7], sizeof(rows[7]), "Make display/Port 2 global");
-            snprintf(rows[8], sizeof(rows[8]), "Performance (F2): %s", performance_visible ? "ON" : "OFF");
+            snprintf(rows[8], sizeof(rows[8]), "Metrics panel (F2): %s", performance_visible ? "ON" : "OFF");
             snprintf(rows[9], sizeof(rows[9]), "Event trace: %s", diagnostics.tracing ? "ON" : "OFF");
             draw_string(renderer, nes_sys.cart ? (rom_override ? "THIS ROM: CUSTOM" : "THIS ROM: GLOBAL DEFAULTS") :
                         "GLOBAL DEFAULTS", 24, 44, 0x00FFFF);
@@ -1384,9 +1306,9 @@ static void app_frame(void) {
         else
             draw_string(renderer, "Click: Select  RMB: Resume", 24, 229, 0x888888);
         draw_notification(renderer);
+        draw_debug_panel();
         host_present(renderer);
         host_delay(16);
-        update_console_debug(&nes_sys.cpu);
     }
 
     while (running && host_poll_event(&event)) {
@@ -1491,6 +1413,11 @@ static void app_frame(void) {
             if (!focused || event.key.repeat) continue;
             if (!rebinding && event.key.keysym.sym == HOST_KEY_F2) {
                 performance_visible = !performance_visible;
+                save_emulator_settings();
+                continue;
+            }
+            if (!rebinding && event.key.keysym.sym == HOST_KEY_F3) {
+                debug_panel_enabled = !debug_panel_enabled;
                 save_emulator_settings();
                 continue;
             }
@@ -1699,7 +1626,7 @@ static void app_frame(void) {
                                         apply_rom_preferences();
                                         continue;
                                     }
-                                    debugger_active = console_debug_enabled;
+                                    debugger_active = false;
                                     debugger_logging_active = false;
                                     if (debugger_active) {
                                         debugger_view_pc = nes_sys.cpu.program_counter;
@@ -1745,11 +1672,7 @@ static void app_frame(void) {
                                 fullscreen = !fullscreen;
                                 apply_display();
                             } else if (menu_selection == 4) {
-                                console_debug_enabled = !console_debug_enabled;
-                                if (!console_debug_enabled) {
-                                    printf("\033[H\033[2J");
-                                    fflush(stdout);
-                                }
+                                debug_panel_enabled = !debug_panel_enabled;
                             } else if (menu_selection == 5) {
                                 preferences_inherit = false;
                                 zapper_enabled = !zapper_enabled;
@@ -1791,15 +1714,6 @@ static void app_frame(void) {
                         preferences_inherit = false;
                         fullscreen = !fullscreen;
                         apply_display();
-                        save_emulator_settings();
-                        break;
-                    }
-                    case HOST_KEY_F3: {
-                        console_debug_enabled = !console_debug_enabled;
-                        if (!console_debug_enabled) {
-                            printf("\033[H\033[2J");
-                            fflush(stdout);
-                        }
                         save_emulator_settings();
                         break;
                     }
@@ -1933,8 +1847,13 @@ static void app_frame(void) {
 
     uint32_t cursor_now = host_ticks();
     uint32_t window_flags = host_window_flags();
+    int cursor_x, cursor_y;
+    float game_x, game_y;
+    host_mouse_position(&cursor_x, &cursor_y);
+    host_to_logical(renderer, cursor_x, cursor_y, &game_x, &game_y);
     bool can_hide_cursor = current_state == GUI_STATE_GAMEPLAY &&
         nes_sys.cart != NULL && !debugger_active && !nes_sys.zapper_enabled &&
+        game_x >= 0 && game_x < 256 && game_y >= 0 && game_y < 240 &&
         (window_flags & HOST_WINDOW_INPUT_FOCUS) &&
         (window_flags & HOST_WINDOW_MOUSE_FOCUS);
     if (!can_hide_cursor) {
@@ -1953,7 +1872,7 @@ static void app_cleanup(void) {
     save_emulator_settings();
     debugger_shutdown();
     host_shutdown();
-    if (console_debug_enabled) { printf("\033[H\033[2J"); fflush(stdout); }
+
     if (nes_sys.cart) { cartridge_free(nes_sys.cart); nes_sys.cart = NULL; }
 }
 

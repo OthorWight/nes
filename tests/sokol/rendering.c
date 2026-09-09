@@ -6,8 +6,11 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 static HostCanvas canvas;
+static HostCanvas sidebar = {.width = HOST_PANEL_WIDTH, .height = HOST_PANEL_HEIGHT};
+static unsigned stage;
 static uint32_t pixels[256 * 240];
 static void input_checks(void) {
     assert(host_key(SAPP_KEYCODE_Z) == 'z');
@@ -40,7 +43,9 @@ static void check_pixel(const D3D11_MAPPED_SUBRESOURCE *map, int x, int y, uint3
     assert((row[x] & 0xffffff) == expected);
 }
 static void frame(void) {
-    input_checks();
+    if (stage == 0) input_checks();
+    host_color(&sidebar, 17, 34, 51, 255); host_clear(&sidebar);
+    host_set_debug_panel(stage == 1 ? &sidebar : NULL);
     host_color(&canvas, 0, 0, 0, 255); host_clear(&canvas);
     host_draw_frame(&canvas, pixels, &(HostRect){8, 8, 240, 224});
     host_color(&canvas, 255, 0, 255, 255);
@@ -61,7 +66,19 @@ static void frame(void) {
     ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)staging, resource);
     D3D11_MAPPED_SUBRESOURCE map;
     assert(SUCCEEDED(ID3D11DeviceContext_Map(context, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &map)));
-    HostRect r; host_viewport(sapp_width(), sapp_height(), &r);
+    HostRect r, panel; host_layout(sapp_width(), sapp_height(), &r, &panel);
+    if (stage == 1) {
+        assert(r.x + r.w <= panel.x);
+        check_pixel(&map, panel.x + panel.w / 2, panel.y + panel.h / 2, 0x112233);
+        float x, y;
+        host_to_logical(NULL, r.x + r.w / 2, r.y + r.h / 2, &x, &y);
+        assert(fabsf(x - 128) < 1 && fabsf(y - 120) < 1);
+        host_to_logical(NULL, panel.x + panel.w / 2, panel.y + panel.h / 2, &x, &y);
+        assert(x >= 256);
+        host_event(&(sapp_event){.type = SAPP_EVENTTYPE_MOUSE_DOWN,
+            .mouse_button = SAPP_MOUSEBUTTON_RIGHT, .mouse_x = (float)(panel.x + panel.w / 2), .mouse_y = (float)(panel.y + panel.h / 2)});
+        HostEvent ignored; assert(!host_poll_event(&ignored));
+    }
     assert(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
     check_pixel(&map, 0, 0, 0);
     check_pixel(&map, r.x + r.w / 4, r.y + r.h / 4, 0xff0000);
@@ -69,7 +86,7 @@ static void frame(void) {
     check_pixel(&map, r.x + r.w / 4, r.y + 3 * r.h / 4, 0x0000ff);
     check_pixel(&map, r.x + 3 * r.w / 4, r.y + 3 * r.h / 4, 0xffffff);
     check_pixel(&map, r.x + r.w / 2, r.y + r.h / 2, 0xff00ff);
-    FILE *file = fopen("rendering.bmp", "wb"); assert(file);
+    FILE *file = fopen(stage == 1 ? "sidebar.bmp" : "rendering.bmp", "wb"); assert(file);
     uint32_t size = 54 + desc.Width * desc.Height * 4;
     unsigned char header[54] = {'B','M'};
     memcpy(header + 2, &size, 4); header[10] = 54; header[14] = 40;
@@ -81,8 +98,10 @@ static void frame(void) {
     assert(!fclose(file));
     ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)staging, 0);
     ID3D11Texture2D_Release(staging); ID3D11Resource_Release(resource);
-    puts("Sokol GPU colors, orientation, overlay and letterbox checks passed");
-    sapp_quit();
+    if (++stage == 3) {
+        puts("Sokol GPU colors, sidebar layout/toggling, mouse aim and letterbox checks passed");
+        sapp_quit();
+    }
 }
 sapp_desc sokol_main(int argc, char **argv) {
     (void)argc; (void)argv;

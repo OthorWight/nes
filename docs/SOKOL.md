@@ -6,8 +6,13 @@ Windows builds use D3D11/WASAPI, Linux uses OpenGL/X11/ALSA, and macOS uses
 Metal/CoreAudio. No SDL library or DLL is needed.
 
 `src/host_sokol.c` owns the window, normalized input events, GPU presentation,
-clock and audio stream. Menus and the debugger draw into a transparent CPU
-overlay. The GPU scales the original NES framebuffer and its mapper-specific
+clock and audio stream. Game notifications use a transparent CPU overlay.
+The debugger and former terminal dashboard use a separate right-hand panel.
+F3 toggles the full panel, F2 toggles metrics, and stepping automatically opens
+the debugger beside the retained game image. Windowed scale modes expand the
+window horizontally for the panel; fullscreen and maximized modes divide the
+available area. Mouse aim is confined to the game viewport.
+The GPU scales the original NES framebuffer and its mapper-specific
 crop directly with nearest filtering. Mouse aim uses the same letterbox and crop.
 The existing NTSC scheduler remains responsible for frame timing; vsync is
 disabled where Sokol supports it. Metal presentation remains display-throttled.

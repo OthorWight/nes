@@ -304,7 +304,7 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
     host_clear(renderer);
 
     char buf[128];
-    draw_string(renderer, "NES IN-GAME STEP DEBUGGER", 32, 10, 0x00FF00);
+    draw_string(renderer, debugger_active ? "NES DEBUGGER - PAUSED" : "NES DEBUGGER - LIVE", 8, 10, 0x00FF00);
     draw_string(renderer, "=========================", 32, 20, 0x00FF00);
 
     snprintf(buf, sizeof(buf), "PC:%04X  A:%02X  X:%02X  Y:%02X  SP:%02X", 

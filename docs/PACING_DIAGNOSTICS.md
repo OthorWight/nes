@@ -10,13 +10,13 @@ and state loads rebase time.
 
 | Control | Action |
 | --- | --- |
-| F2 | Toggle the compact performance display; saved globally |
+| F2 | Toggle the metrics side panel; saved globally |
 | Ctrl+F4 | Toggle bounded event tracing |
 | F4 | Write the recent capture, including from menus/debugger |
-| F3 | Existing console debug display |
+| F3 | Toggle the full debug side panel; saved globally |
 | F6 in debugger | Existing instruction log, independent of event tracing |
 
-Settings also contains Performance and Event trace toggles. The overlay summarizes
+Settings also contains Performance and Event trace toggles. The side panel summarizes
 up to 180 completed gameplay frames: FPS, emulated CPU time as a percentage of
 host time, maximum frame interval, intervals above 25 ms, audio queue depth,
 observed empty queues, controller reads and image changes. Image checksums use
@@ -65,7 +65,7 @@ indicator, not proof of audible loss.
 Window scale/maximization, fullscreen and Port 2 are saved per ROM identity.
 Settings labels the scope and provides **Use global display/Port 2** and **Make
 display/Port 2 global**. ROMs without overrides use the global defaults. Audio,
-control bindings, console debug and the performance display remain global.
+control bindings, debug panel and the metrics panel remain global.
 
 Overrides are versioned, checksummed `.prefs` files under the executable's
 `saves/` directory, named with all three ROM identity checksums and replaced
@@ -94,7 +94,7 @@ frame records and 4,096 events. Frame records include CPU cycles, host interval,
 core execution time, queue depth, per-port read counts, controller latches, held
 buttons, framebuffer checksum, aim and trigger.
 
-Frame history is collected even when the overlay and event tracing are off.
+Frame history is collected even when the panel and event tracing are off.
 The checksum uses a byte lookup table with the same IEEE CRC-32 result as save
 files. Trace-only IRQ/NMI observation calls are skipped at the CPU/bus/PPU call
 sites when tracing is disabled; frame history and input counters remain active.
