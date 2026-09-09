@@ -3,7 +3,7 @@
 Quick saves, manual saves, and loads use the same core API in `src/save_state.h`.
 The frontend reports success only after the operation succeeds. Errors appear
 for three seconds in gameplay, menus, and the debugger, with the path and reason
-also written to stderr. Successful loads clear the SDL audio queue and refresh
+also written to stderr. Successful loads clear the host audio queue and refresh
 the debugger's view of the program counter. The frontend also clears held host
 inputs, rebases pacing and reapplies the selected Port 2 preference. Core state
 decoding itself preserves serialized device/input state for replay. Diagnostic
@@ -140,7 +140,7 @@ replacement. `battery_saves.c` covers canonical/legacy precedence, resets, reloa
 ROM switching, every MMC5 RAM bank, invalid file preservation, and non-battery
 cartridges. These are application reliability tests, not hardware accuracy tests.
 
-Linux core suites and the SDL build were checked locally. Windows-specific file
+The original Linux core suites and SDL build were checked locally. Windows-specific file
 replacement is implemented but has not been exercised on a native Windows host.
 No commercial ROM or GUI is required by these tests; manual gameplay save/load
 checks remain useful alongside the synthetic regression coverage.

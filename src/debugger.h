@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#include <SDL2/SDL.h>
+#include "host.h"
 #include "cpu6502.h"
 
 extern bool debugger_active;
@@ -21,7 +21,7 @@ void    debugger_init(void);
 void    debugger_shutdown(void);
 void    debugger_step_instruction(CPU6502 *cpu, CPUBus *bus);
 void    debugger_log_instruction(CPU6502 *cpu);
-void    debugger_render(SDL_Renderer *renderer, CPU6502 *cpu);
+void    debugger_render(HostCanvas *renderer, CPU6502 *cpu);
 void    disassemble_instruction(uint16_t pc, char *out_buf, size_t max_len, CPU6502 *cpu);
 
 #endif

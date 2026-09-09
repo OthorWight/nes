@@ -51,12 +51,12 @@ a sufficiently long host stall can still exhaust the reserve.
 
 Intentional pauses clear and pause playback. Resume starts with fresh samples.
 An empty queue during active playback increments a counter and re-primes audio.
-Queue trims and SDL queue errors are counted separately. Intentional pauses do
+Queue trims and host queue errors are counted separately. Intentional pauses do
 not count as underruns. Volume previews may play in Settings and are discarded
 when gameplay resumes.
 
-Queue depth measures samples waiting in SDL. Captures also report device buffer
-duration. Neither measures speaker latency: SDL cannot report exactly how much
+Queue depth measures samples waiting in the host ring buffer. Captures also report device buffer
+duration. Neither measures speaker latency: Sokol cannot report exactly how much
 audio the device has already played. An observed empty queue is an underrun
 indicator, not proof of audible loss.
 
@@ -81,10 +81,10 @@ too; repeated keydown events are ignored. The frontend reapplies the selected
 Port 2 preference after state loads; the core save API still restores serialized
 device state for deterministic replay.
 
-Aim uses SDL's window-to-logical conversion and the same source crop as rendering.
+Aim uses the host framebuffer-to-logical conversion and the same source crop as rendering.
 Position is refreshed each loop, including after a resize with a stationary mouse.
 Letterbox/outside-window aim is offscreen, rather than clamped to a bright edge.
-SDL 2.0.18 or newer is required for this coordinate conversion.
+Sokol mouse coordinates and the viewport both use framebuffer pixels.
 
 ## Captures and debugger reads
 
@@ -130,34 +130,20 @@ disabling correction reproduces underruns or queue trims despite the larger
 reserve; correction must eliminate both. Ramp, silence and constant-signal tests
 check interpolation, fractional phase, block boundaries and sample counts.
 
-`bash tests/sdl/run.sh` builds the real frontend with scripted events, virtual
-gamepad and SDL dummy video/audio drivers. It uses an isolated `build/tests/`
-directory and preserves captures. It checks focus, disconnect, menu/debugger
-releases, ROM overrides, disassembly, resized/fullscreen coordinates and measured
-pacing in all audio modes. Dummy drivers do not validate a physical window
-manager, high-DPI monitor or speaker latency. Native Windows and gameplay remain
-manual checks.
+`powershell -File tests/sokol/run.ps1` (Windows/GCC) and
+`bash tests/sokol/run.sh` build the real Sokol frontend with scripted input.
+They use isolated `build/tests/` directories and preserve captures. Coverage
+includes focus/disconnect/menu/debugger releases, ROM overrides, disassembly,
+save/load and measured pacing in all audio modes. Windows also reads back the
+D3D11 render target to verify colors, orientation, overlays and letterboxing.
+Physical controllers, speakers and DPI/window-manager behavior need manual checks.
 
-To extend the actual frontend's audio-enabled run to about three minutes, use
-`NES_SDL_AUDIO_FRAMES=10800 bash tests/sdl/run.sh`. Muted and unavailable runs
-remain short. The audio-enabled test requires zero empty queues, trims and SDL
-queue errors after the scripted startup/transitions. Dummy audio exercises SDL's
-queue/thread timing; it does not verify physical speakers.
-
-Local validation after the audio changes: the three-minute dummy-audio repeat
-ran at 60.10 FPS / 100.00% speed with zero empty queues or trims and a final
-52.06 ms queue. An initial run alongside core-test compilation reported an
-interruption; its timing was not captured, so its exact cause is unconfirmed.
-The repeat ran without concurrent compilation. The real-time SDL test remains
-sensitive to host load; deterministic drift/jitter coverage is in the core suite.
-
-The optional suite also runs a white-raster Zapper probe using a short 6502
-polling program. The current sensor reports light for the entire white frame;
-it does not reproduce the roughly 19–26 scanline decay measured by Zap Ruder on
-hardware. Beam-aware sensing needs a separate compatibility change and sensor
-state serialization. The probe reports this discrepancy explicitly; it does not
-pass the current behavior as hardware-accurate.
-
+To extend the audio-enabled run to about three minutes, use
+`powershell -File tests/sokol/run.ps1 -AudioFrames 10800` or
+`NES_SOKOL_AUDIO_FRAMES=10800 bash tests/sokol/run.sh`. The audio test requires
+zero empty queues, trims and queue errors after startup/transitions. Muted and
+unavailable tests remain short. Real-time tests should run without concurrent
+heavy work. See [Sokol implementation and platform limits](SOKOL.md).
 ## Performance regression checks
 
 `bash tests/performance/run.sh` measures unpaced core and diagnostic CPU time
@@ -172,7 +158,7 @@ The benchmark warms up for 120 frames, then repeats the same workload with
 diagnostics detached, normal frame history, and event tracing. It reports core,
 diagnostic and total milliseconds per frame, CPU cycles and the final image CRC.
 It does not write game saves. Compare the same ROM/frame count and power profile;
-there are no machine-dependent timing assertions. SDL rendering, frame waits and
+there are no machine-dependent timing assertions. Host rendering, frame waits and
 physical audio playback are excluded.
 
 The September 6 diagnostics change (`215e637`) introduced a bit-at-a-time CRC
@@ -184,12 +170,16 @@ Bros. and 12.76 to 8.48 ms/frame for Super Mario Bros. 3. Cycle counts and final
 image CRCs matched. These are short startup/attract sequences; clock scaling
 and host load affect exact numbers.
 
-Text rendering also batches each glyph's pixels into one SDL draw call. A local
+The original SDL frontend batched glyph pixels into one draw call. Its local
 1280x1200 software-renderer comparison measured the overlay at 1.68 versus 1.31
 ms/frame and an outlined notification at 3.13 versus 1.62 ms/frame, with identical
 output image CRCs. Accelerated drivers may have different costs.
 
-References: [SDL logical rendering](https://wiki.libsdl.org/SDL2/SDL_RenderSetLogicalSize),
+Sokol now composites glyphs in the CPU overlay before uploading it once per
+frame. Those historical SDL measurements do not describe the Sokol backend.
+
+References: [Sokol headers](https://github.com/floooh/sokol),
+[historical SDL logical rendering](https://wiki.libsdl.org/SDL2/SDL_RenderSetLogicalSize),
 [window-to-logical coordinates](https://wiki.libsdl.org/SDL2/SDL_RenderWindowToLogical),
 [SDL audio queue measurement](https://wiki.libsdl.org/SDL2/SDL_GetQueuedAudioSize),
 [Zapper measurements](https://www.nesdev.org/wiki/Zapper).

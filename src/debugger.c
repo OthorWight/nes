@@ -85,7 +85,7 @@ void debugger_shutdown(void) {
     process_log_buffer(true);
 }
 
-extern void draw_string(SDL_Renderer *renderer, const char *str, int x, int y, uint32_t color);
+extern void draw_string(HostCanvas *renderer, const char *str, int x, int y, uint32_t color);
 
 static const char* op_names[256] = {
     "BRK", "ORA", "JAM", "SLO", "NOP", "ORA", "ASL", "SLO", "PHP", "ORA", "ASL", "ANC", "NOP", "ORA", "ASL", "SLO",
@@ -299,9 +299,9 @@ void debugger_log_instruction(CPU6502 *cpu) {
     log_buffer_count++;
 }
 
-void debugger_render(SDL_Renderer *renderer, CPU6502 *cpu) {
-    SDL_SetRenderDrawColor(renderer, 15, 20, 35, 255);
-    SDL_RenderClear(renderer);
+void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
+    host_color(renderer, 15, 20, 35, 255);
+    host_clear(renderer);
 
     char buf[128];
     draw_string(renderer, "NES IN-GAME STEP DEBUGGER", 32, 10, 0x00FF00);

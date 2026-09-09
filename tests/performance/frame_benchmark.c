@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-// Unpaced CPU time, excluding SDL and sleeps. No timing assertions: host clocks
+// Unpaced CPU time, excluding host rendering and sleeps. No timing assertions: host clocks
 // and power profiles vary. An optional ROM exercises its actual mapper/core.
 static TestSystem system_under_test;
 static NESDiagnostics history;

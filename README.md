@@ -14,7 +14,7 @@
 *   **Mouse wheel** scrolls ROM/save lists or moves through other menus. The list arrows are clickable too.
 *   In Settings, click the volume **< / >** arrows or use the wheel over the volume row to adjust it.
 
-### Gamepad Layout (Standard Xbox/PlayStation)
+### Gamepad Layout (Windows: XInput-compatible controllers)
 *   **D-Pad / Left Stick**: NES Directional Pad
 *   **A Button**: NES Button A
 *   **B Button**: NES Button B
@@ -44,7 +44,7 @@ per-ROM preferences, tests and sensor limitations.
 
 # High-Fidelity 8-Bit NES Emulator
 
-A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) emulator written in C. It features a modular architecture, custom low-level APU/PPU pipelines, real-time in-game step debugging, rolling quick-saves, and seamless plug-and-play controller support via SDL2.
+A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) emulator written in C. It features a modular architecture, custom low-level APU/PPU pipelines, real-time in-game step debugging, rolling quick-saves, and a Sokol frontend with native gamepad support. See [Sokol branch details and limits](docs/SOKOL.md).
 
 ---
 
@@ -60,10 +60,10 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 ## Features & Supported Mappers
 
 ### System Features
-*   **Audio/Video Output**: Pure SDL2-driven audio queue (44.1 kHz downsampled) and scaling logic (1x-5x, Fullscreen support).
+*   **Audio/Video Output**: Sokol audio streaming (44.1 kHz downsampled) and scaling logic (1x-5x, Fullscreen support).
 *   **Save States**: 10 rolling slots (`quick_0` through `quick_9`) plus timestamped manual saves. Versioned, ROM-checked states preserve CPU/PPU/APU and mapper execution state; invalid loads leave the running game intact.
 *   **On-Screen Display (OSD)**: Outlined, double-pass drop-shadow OSD notifications (e.g., "STATE SAVED") rendered on top of active gameplay.
-*   **Input**: Real-time hot-plugging support for USB/Bluetooth gamepads with analog deadzones and a fully-mappable keyboard interface.
+*   **Input**: Native gamepad hot-plugging (Windows XInput, Linux joystick, macOS GameController) with analog deadzones and a fully-mappable keyboard interface.
 *   **Zapper Light Gun Support**: Fully emulated light gun logic using host mouse clicks, validating screen pixel luminance values at the cursor target.
 
 ### Mapper implementations (iNES and supported NES 2.0 boards)
@@ -136,27 +136,23 @@ F7:BRK | UP/DN:Nav | ESC:Menu
 
 ## Build Instructions
 
-### Prerequisites
-Ensure you have **SDL2 2.0.18 or newer** development libraries installed.
-
 ### Windows (MSVC or GCC / MinGW-w64)
-A unified `build.bat` script is provided which detects your environment, automatically fetches the correct SDL2 development packages if missing, and compiles the emulator.
-
-1. Double-click or run `build.bat` in a command prompt:
-   ```cmd
-   build.bat
-   ```
-2. The executable `nes_emulator.exe` will be built inside the `build/` folder and automatically launched.
+Run `build.bat` to build and launch, or `build.bat --build-only` to compile only.
+The executable is `build/nes_emulator.exe`. Sokol headers are checked in; no SDL
+SDK or DLL is needed. MSVC requires a Visual Studio developer command prompt.
 
 ### macOS & Linux
-The `build.sh` script checks for packages on Debian/RHEL/Homebrew, installs any missing compilers or dependencies, and builds the application.
+Run `./build.sh` to build and launch, or `./build.sh --build-only` to compile only.
+The executable is `build/nes_emulator`.
 
-1. Run the script:
-   ```bash
-   chmod +x build.sh
-   ./build.sh
-   ```
-2. The executable `nes_emulator` will compile inside `build/` and run automatically.
+- macOS: install Xcode command line tools. The build links Metal, Cocoa,
+  CoreAudio and GameController (macOS 11 or newer).
+- Debian/Ubuntu: `sudo apt install build-essential pkg-config libx11-dev libxi-dev libxcursor-dev libgl-dev libasound2-dev`.
+- Other Linux distributions: install a C compiler, pkg-config and the X11, Xi,
+  Xcursor, OpenGL and ALSA development packages. An OpenGL 4.3-capable driver is required.
+
+Unix builds report missing prerequisites without installing packages.
+See [Sokol migration notes](docs/SOKOL.md) for backend details and controller limits.
 
 ### Build-only and test commands
 
@@ -172,10 +168,9 @@ also be invoked by their full path from another working directory.
 
 Build-only and test modes do not install dependencies, open the GUI, or pause
 for input. Install prerequisites beforehand when using them in automation.
-Build-only needs the compiler and SDL2 development libraries (plus `pkg-config`
-on Linux/macOS). Test mode only needs the C compiler; SDL2 and game ROMs are not
-required. Windows selects MSVC when available, otherwise GCC; use a Visual Studio
-developer command prompt for MSVC.
+Build-only needs a compiler and the platform libraries listed above. Test mode
+only needs the C compiler; graphics libraries and game ROMs are not required.
+Windows selects MSVC when available, otherwise GCC.
 
 Test mode discovers `tests/*.c`, builds each as a separate executable against the
 emulation core, and runs it immediately. It prints each test's result and a final

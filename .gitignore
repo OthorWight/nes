@@ -10,7 +10,7 @@ build/include/
 build/SDL2.dll
 #build/ i want to keep executables in github to share with a friend
 
-# Third-party dependencies
+# Legacy SDL downloads (unused on the Sokol branch)
 SDL2/
 
 # Emulator Save States and Battery Saves

@@ -3,7 +3,7 @@
 Run `./build.sh --test` on Linux/macOS or `build.bat --test` on Windows.
 Each top-level `.c` file is an executable test suite, automatically discovered by
 the runner. A failed assertion or compilation stops the command with a nonzero
-exit code. No SDL installation, display, audio device, or game ROM is required.
+exit code. No graphics library installation, display, audio device, or game ROM is required.
 
 The hardware tests exercise behavior that games depend on, without embedding
 game code, filenames, ROM hashes, or game-specific timing workarounds. Save suites
@@ -31,13 +31,13 @@ subdirectories under `build/tests/`, removed on success.
 | `frontend_behavior.c` | Fractional pacing deadlines, host stalls/resume, audio queue lifecycle, independent input sources, cropped/letterboxed aim and per-ROM preference validation |
 | `diagnostic_capture.c` | Non-consuming memory inspection, bank-aware peeks, input counters, timestamped events, bounded histories, performance summaries and save-state isolation |
 
-The optional `bash tests/sdl/run.sh` requires SDL 2.0.18+ and runs the real frontend
-with dummy drivers and scripted input. It measures audio/muted/unavailable pacing,
-tests focus/disconnect/debugger transitions, per-ROM defaults and SDL coordinate
-conversion, and preserves diagnostic captures under `build/tests/`. It also runs
-a Zapper scanline characterization probe, which reports the existing sensor's
-hardware discrepancy without treating it as an accuracy pass.
-
+The optional `powershell -File tests/sokol/run.ps1` (Windows/GCC) or
+`bash tests/sokol/run.sh` runs the Sokol frontend with scripted input and real
+platform graphics/audio. It checks menus, focus/disconnect/debugger transitions,
+per-ROM defaults, save/load and audio/muted/unavailable pacing. Windows also
+checks the D3D11 render target. Captures remain under `build/tests/`.
+See [Sokol checks and limits](../docs/SOKOL.md). The Zapper characterization probe
+reports the existing sensor discrepancy without treating it as an accuracy pass.
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus
 accesses, PPU dots, and M2 clocks. The CPU, PPU, APU, and system bus are the normal
 production implementations. Tests seed internal state where necessary to isolate
@@ -76,15 +76,15 @@ expectation. The current checks draw on these references:
 `audio_playback.c` checks continuous resampling and ten-minute simulated playback
 with independent device clocks, block reads and host jitter. Its control cases
 demonstrate that increasing the buffer without correcting clock drift still
-causes underruns/trims. Run `NES_SDL_AUDIO_FRAMES=10800 bash tests/sdl/run.sh`
-for a three-minute SDL dummy-audio integration check as well.
+causes underruns/trims. Run `NES_SOKOL_AUDIO_FRAMES=10800 bash tests/sokol/run.sh`
+for a three-minute Sokol audio integration check as well.
 
 `state_crc.c` checks IEEE CRC-32 known vectors and compatibility with the original
 save-file algorithm, including unaligned data, short tails and framebuffer-sized
 inputs. It protects save, ROM-identity and preference compatibility when checksum
 performance changes.
 
-For repeatable performance measurements without SDL, run
+For repeatable performance measurements without graphics, run
 `bash tests/performance/run.sh [ROM-path [frame-count]]`. With no arguments it
 uses a synthetic rendering fixture. See the
 [benchmark details and measured regression](../docs/PACING_DIAGNOSTICS.md#performance-regression-checks).
@@ -92,7 +92,7 @@ uses a synthetic rendering fixture. See the
 ## Limits and next additions
 
 The optional `bash tests/roms/run.sh ROM.nes [ROM.nes ...]` runner executes local
-Blargg test ROMs without SDL or battery-save import/writes. It uses the documented
+Blargg test ROMs without graphics or battery-save import/writes. It uses the documented
 `$6000` result protocol with bounded execution. The local `mmc3_test_2` singles
 `1-clocking`, `2-details`, `3-A12_clocking`, `4-scanline_timing`, and `5-MMC3`
 pass. The alternate-revision test targets different IRQ-on-zero behavior and is

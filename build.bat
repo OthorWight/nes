@@ -71,63 +71,17 @@ exit /b 1
 
 if /i "%BUILD_MODE%"=="--test" goto :test_step
 
-set "SDL_DIR=SDL2"
-if exist "%SDL_DIR%" goto :build_step
-if /i not "%BUILD_MODE%"=="--run" (
-    echo SDL2 development libraries are missing from the SDL2 directory.
-    echo Install them first, or use build.bat --run for dependency setup.
-    exit /b 1
-)
-
-if "%COMPILER_TYPE%"=="msvc" (
-    echo SDL2 development libraries not found. Downloading for MSVC...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-VC.zip' -OutFile 'sdl2.zip'"
-    if errorlevel 1 exit /b 1
-) else (
-    echo SDL2 development libraries not found. Downloading for MinGW...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-mingw.zip' -OutFile 'sdl2.zip'"
-    if errorlevel 1 exit /b 1
-)
-
-echo Extracting SDL2...
-powershell -Command "Expand-Archive -Path 'sdl2.zip' -DestinationPath 'temp_sdl'"
-if errorlevel 1 exit /b 1
-for /d %%i in (temp_sdl\SDL2-*) do (
-    xcopy /E /I "%%i" "%SDL_DIR%" >nul
-)
-del /q sdl2.zip
-rmdir /s /q temp_sdl
-echo SDL2 library has been set up.
-
 :build_step
 if not exist "build" mkdir "build"
-
 if "%COMPILER_TYPE%"=="msvc" (
-    echo Compiling with MSVC...
-    set "SDL_INCLUDE_DIR=%SDL_DIR%\include"
-    set "SDL_LIB_DIR=%SDL_DIR%\lib\x64"
-
-    REM The VC package has flat headers; the source includes SDL2/SDL.h.
-    if not exist "build\include\SDL2" mkdir "build\include\SDL2"
-    xcopy /E /I /Y "!SDL_INCLUDE_DIR!" "build\include\SDL2" >nul
+    echo Compiling Sokol frontend with MSVC...
+    cl /W4 /O2 /std:c11 /Isrc src\*.c /D_CRT_SECURE_NO_WARNINGS /Fo"build\\" /Febuild\nes_emulator.exe /link user32.lib gdi32.lib winmm.lib ole32.lib shell32.lib d3d11.lib dxgi.lib
     if not "!ERRORLEVEL!"=="0" goto :build_failed
-    cl /W4 /O2 /std:c11 /Isrc /Ibuild\include src\*.c /D_CRT_SECURE_NO_WARNINGS /Fo"build\\" /Febuild\nes_emulator.exe /link /LIBPATH:"!SDL_LIB_DIR!" SDL2.lib SDL2main.lib user32.lib gdi32.lib winmm.lib imm32.lib ole32.lib oleaut32.lib shell32.lib setupapi.lib version.lib uuid.lib
-    if not "!ERRORLEVEL!"=="0" goto :build_failed
-    copy /Y "!SDL_LIB_DIR!\SDL2.dll" "build\SDL2.dll" >nul
+) else (
+    echo Compiling Sokol frontend with GCC...
+    gcc -Wall -Wextra -std=c11 -O2 -Isrc src/*.c -o build/nes_emulator.exe -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
     if not "!ERRORLEVEL!"=="0" goto :build_failed
 )
-
-if "%COMPILER_TYPE%"=="gcc" (
-    echo Compiling with GCC...
-    set "SDL_ARCH_DIR=%SDL_DIR%\x86_64-w64-mingw32"
-    if not exist "!SDL_ARCH_DIR!" (
-        set "SDL_ARCH_DIR=%SDL_DIR%\i686-w64-mingw32"
-    )
-
-    gcc -Wall -Wextra -std=c11 -O2 -Isrc -I"!SDL_ARCH_DIR!\include" src/*.c -o build/nes_emulator.exe -L"!SDL_ARCH_DIR!\lib" -static -lmingw32 -lSDL2main -lSDL2 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 -lshell32 -lsetupapi -lversion -luuid
-    if not "!ERRORLEVEL!"=="0" goto :build_failed
-)
-
 echo Compilation successful!
 if /i "%BUILD_MODE%"=="--build-only" exit /b 0
 echo Launching NES Emulator...
@@ -143,7 +97,7 @@ exit /b 1
 if not exist "build\tests" mkdir "build\tests"
 set "CORE_SOURCES="
 for %%F in (src\*.c) do (
-    if /i not "%%~nxF"=="gui_main.c" if /i not "%%~nxF"=="debugger.c" (
+    if /i not "%%~nxF"=="gui_main.c" if /i not "%%~nxF"=="debugger.c" if /i not "%%~nxF"=="host_sokol.c" (
         set "CORE_SOURCES=!CORE_SOURCES! "%%F""
     )
 )
@@ -194,5 +148,5 @@ exit /b 2
 echo Usage: build.bat [--run ^| --build-only ^| --test ^| --help]
 echo   --run         Build and launch ^(default^); install missing dependencies.
 echo   --build-only  Build without launching or installing dependencies.
-echo   --test        Build and run core tests; no SDL, ROMs, or GUI required.
+echo   --test        Build and run core tests; no graphics, ROMs, or GUI required.
 exit /b 0
