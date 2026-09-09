@@ -20,11 +20,12 @@ subdirectories under `build/tests/`, removed on success.
 | `cpu_irq_polling.c` | IRQ edges on the penultimate/final CPU cycle, retained sampled IRQ after deassertion, CLI/SEI/PLP/RTI flag timing, branch poll points and stalled boundaries |
 | `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
 | `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle |
+| `ppu_pixels.c` | Transparency and background priority, first-opaque-sprite ordering, horizontal flips and bounds, sprite-zero hit clipping/right edge/persistence, forced-blank palette selection and mask changes |
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM first pre-render clock and exact split dots with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
 | `cartridge_loading.c` | iNES/NES 2.0 metadata, extended IDs and sizes, invalid/unsupported/truncated images, ROM padding, absent/small RAM, trainers, CHR NVRAM, mapper 78 header/submapper wiring and reset |
-| `cartridge_bus.c` | External CPU open bus and partial reads, all-mapper ROM protection/RAM writes, RAM enable/protection, MMC3/TxSROM mirroring and bank modes, MMC5 read/write agreement |
+| `cartridge_bus.c` | External CPU open bus and partial reads, all-mapper ROM protection/RAM writes, RAM enable/protection, MMC3/TxSROM mirroring and bank modes, MMC5 read/write agreement; GxROM bank wrapping, CHR RAM, reset and state restoration |
 | `save_states.c` | All 23 mapper IDs: full in-memory restore, fixed-input replay, frame/audio agreement, partial serial writes and IRQ state; wrong-ROM/version/corrupt/legacy rejection, atomic file replacement and failure checks |
 | `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
@@ -59,6 +60,9 @@ expectation. The current checks draw on these references:
 - [PPU frame timing](https://www.nesdev.org/wiki/PPU_frame_timing): NTSC clock ratio,
   frame lengths, and odd-frame shortening.
 - [PPU rendering](https://www.nesdev.org/wiki/PPU_rendering): scanline/dot schedule.
+- [Sprite priority](https://www.nesdev.org/wiki/PPU_sprite_priority) and
+  [sprite-zero hits](https://www.nesdev.org/wiki/PPU_programmer_reference#Sprite_0_hit_flag):
+  pixel selection, clipping and hit conditions.
 - [PPU registers](https://www.nesdev.org/wiki/PPU_registers): register mirrors,
   read buffering, address increments, and status side effects.
 - [CPU interrupts](https://www.nesdev.org/wiki/CPU_interrupts): entry bus cycles,
@@ -116,8 +120,8 @@ In particular, the following are not yet exhaustively covered:
   controller/PPUDATA read corruption caused by DMA.
 - Every CPU/PPU phase alignment around vblank, NMI suppression, M2-qualified A12
   filtering and NMI polling delays.
-- Sprite-zero hits, sprite-overflow edge cases, mixed-table 8x16 sprite fetches,
-  and every rendering-enable transition.
+- Sprite-zero hits across fetch/scroll boundaries, sprite-overflow edge cases,
+  mixed-table 8x16 sprite fetches, and every rendering-enable transition.
 - PAL timing, expansion audio, open-bus decay, and electrical power-on behavior.
 
 For new tests, specify the hardware condition, expected observation, and source.

@@ -445,103 +445,57 @@ static void ppu_load_bg_shifters(PPU2C02 *ppu) {
     ppu->bg_shifter_attrib_high  = (ppu->bg_shifter_attrib_high  & 0xFF00) | ((ppu->bg_next_tile_attrib & 0x02) ? 0xFF : 0x00);
 }
 
+// Called only for visible dots. Resolve the first opaque sprite directly into
+// the background pixel, keeping sprite priority and sprite-zero timing per dot.
 static void ppu_render_pixel(PPU2C02 *ppu, int pixel_x) {
-    bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
-    uint8_t bg_color_idx = 0;
-    uint16_t bg_palette_idx = 0;
+    const uint8_t mask = ppu->ppu_mask;
+    uint8_t palette_idx = 0;
 
-    if (rendering_enabled && (ppu->ppu_mask & 0x08)) {
+    if (!(mask & 0x18)) {
+        uint16_t vram_addr = ppu->v & 0x3FFF;
+        if (vram_addr >= 0x3F00) {
+            palette_idx = vram_addr & 0x1F;
+            if ((palette_idx & 0x13) == 0x10) palette_idx &= 0x0F;
+        }
+        ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] =
+            NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+        return;
+    }
+
+    uint8_t bg_color = 0;
+    if (mask & 0x08) {
         uint16_t bit_mux = 0x8000 >> ppu->x;
-
-        uint8_t p0 = (ppu->bg_shifter_pattern_low  & bit_mux) ? 1 : 0;
-        uint8_t p1 = (ppu->bg_shifter_pattern_high & bit_mux) ? 1 : 0;
-        bg_color_idx = p0 | (p1 << 1);
-
-        uint8_t a0 = (ppu->bg_shifter_attrib_low   & bit_mux) ? 1 : 0;
-        uint8_t a1 = (ppu->bg_shifter_attrib_high  & bit_mux) ? 1 : 0;
-        ppu->bg_palette_index = a0 | (a1 << 1);
-
-        uint16_t final_palette_addr = (bg_color_idx == 0) ? 0x0000 : ((ppu->bg_palette_index << 2) | bg_color_idx);
-        bg_palette_idx = final_palette_addr & 0x001F;
-        if ((bg_palette_idx & 0x0013) == 0x0010) {
-            bg_palette_idx &= 0x000F;
-        }
+        bg_color = ((ppu->bg_shifter_pattern_low & bit_mux) ? 1 : 0) |
+                   ((ppu->bg_shifter_pattern_high & bit_mux) ? 2 : 0);
+        ppu->bg_palette_index = ((ppu->bg_shifter_attrib_low & bit_mux) ? 1 : 0) |
+                                ((ppu->bg_shifter_attrib_high & bit_mux) ? 2 : 0);
+        if (bg_color) palette_idx = (ppu->bg_palette_index << 2) | bg_color;
+        if (pixel_x < 8 && !(mask & 0x02)) bg_color = 0;
     }
 
-    uint8_t sprite_color_idx = 0;
-    uint8_t sprite_palette_idx = 0;
-    uint8_t sprite_priority = 0;
-    bool sprite_0_active = false;
-
-    if (rendering_enabled && (ppu->ppu_mask & 0x10)) {
-        for (int s = 0; s < ppu->scanline_sprite_count; s++) {
-            ScanlineSprite *spr = &ppu->scanline_sprites[s];
-            if (pixel_x >= spr->x && pixel_x < spr->x + 8) {
-                int col = pixel_x - spr->x;
-                if (spr->attributes & 0x40) {
-                    col = 7 - col;
-                }
-
-                uint8_t shift = 7 - col;
-                uint8_t pixel_color = ((spr->low_byte  >> shift) & 0x01) |
-                                     (((spr->high_byte >> shift) & 0x01) << 1);
-
-                if (pixel_color != 0) {
-                    sprite_color_idx = pixel_color;
-                    sprite_palette_idx = spr->attributes & 0x03;
-                    sprite_priority = (spr->attributes >> 5) & 0x01;
-                    sprite_0_active = (spr->sprite_index == 0);
-                    break;
-                }
+    // Clipped sprites cannot contribute a pixel or a sprite-zero hit.
+    if ((mask & 0x10) && (pixel_x >= 8 || (mask & 0x04))) {
+        for (int s = 0; s < ppu->scanline_sprite_count; ++s) {
+            const ScanlineSprite *spr = &ppu->scanline_sprites[s];
+            unsigned col = (unsigned)(pixel_x - spr->x);
+            if (col >= 8) continue;
+            unsigned shift = (spr->attributes & 0x40) ? col : 7 - col;
+            uint8_t color = ((spr->low_byte >> shift) & 1) |
+                            (((spr->high_byte >> shift) & 1) << 1);
+            if (!color) continue;
+            if (bg_color) {
+                if (spr->sprite_index == 0 && pixel_x < 255) ppu->ppu_status |= 0x40;
+                // The first opaque sprite wins sprite selection even when it
+                // sits behind the background; later sprites cannot replace it.
+                if (spr->attributes & 0x20) break;
             }
+            palette_idx = 0x10 | ((spr->attributes & 0x03) << 2) | color;
+            break;
         }
     }
 
-    if (pixel_x < 8) {
-        if (!(ppu->ppu_mask & 0x02)) bg_color_idx = 0;
-        if (!(ppu->ppu_mask & 0x04)) sprite_color_idx = 0;
-    }
-
-    uint16_t final_palette_idx = bg_palette_idx;
-    bool show_sprite = false;
-
-    if (bg_color_idx == 0 && sprite_color_idx != 0) {
-        show_sprite = true;
-    } else if (bg_color_idx != 0 && sprite_color_idx != 0) {
-        bool left_clipped = (pixel_x < 8) && (!(ppu->ppu_mask & 0x02) || !(ppu->ppu_mask & 0x04));
-        if (sprite_0_active && (ppu->ppu_mask & 0x08) && (ppu->ppu_mask & 0x10) && pixel_x < 255 && !left_clipped) {
-            if (!(ppu->ppu_status & 0x40)) {
-                ppu->ppu_status |= 0x40;
-            }
-        }
-        if (sprite_priority == 0) {
-            show_sprite = true;
-        }
-    }
-
-    if (show_sprite) {
-        uint16_t final_sprite_palette_addr = 0x0010 | (sprite_palette_idx << 2) | sprite_color_idx;
-        final_palette_idx = final_sprite_palette_addr & 0x001F;
-        if ((final_palette_idx & 0x0013) == 0x0010) {
-            final_palette_idx &= 0x000F;
-        }
-    }
-
-    if (ppu->scanline < SCANLINE_VISIBLE_MAX) {
-        if (rendering_enabled) {
-            ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] = NES_PALETTE[ppu->palette_ram[final_palette_idx] & 0x3F];
-        } else {
-            uint16_t vram_addr = ppu->v & 0x3FFF;
-            uint16_t palette_idx = 0;
-            if (vram_addr >= 0x3F00) {
-                palette_idx = vram_addr & 0x001F;
-                if ((palette_idx & 0x0013) == 0x0010) {
-                    palette_idx &= 0x000F;
-                }
-            }
-            ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] = NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
-        }
-    }
+    ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] =
+        NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
 }
 
 void ppu_step(NES *nes) {

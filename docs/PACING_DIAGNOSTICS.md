@@ -95,9 +95,10 @@ core execution time, queue depth, per-port read counts, controller latches, held
 buttons, framebuffer checksum, aim and trigger.
 
 Frame history is collected even when the panel and event tracing are off.
-The checksum uses a byte lookup table with the same IEEE CRC-32 result as save
-files. Trace-only IRQ/NMI observation calls are skipped at the CPU/bus/PPU call
-sites when tracing is disabled; frame history and input counters remain active.
+The checksum processes eight bytes per iteration using read-only lookup tables,
+with the same IEEE CRC-32 result as save files. Trace-only IRQ/NMI observation
+calls are skipped at the CPU/bus/PPU call sites when tracing is disabled; frame
+history and input counters remain active.
 
 Enable tracing before reproducing a problem. Events cover CPU cartridge-space
 writes, PPU writes, IRQ-source/NMI-line transitions, controller reads/latches and
@@ -161,6 +162,13 @@ It does not write game saves. Compare the same ROM/frame count and power profile
 there are no machine-dependent timing assertions. Host rendering, frame waits and
 physical audio playback are excluded.
 
+The CRC tables are checked in; normal builds need no generator or CPU-specific
+instructions. To regenerate them, run
+`python3 scripts/generate-crc32-table.py > src/crc32_table.h`.
+Mapper 66 resolves PRG/CHR bank offsets on writes, reset and state loads, removing
+division from its CPU/PPU reads. Its serialized state still contains only the
+two bank registers.
+
 The September 6 diagnostics change (`215e637`) introduced a bit-at-a-time CRC
 over all 245,760 framebuffer bytes on every frame. On a local i7-1355U with the
 powersave governor, that cost about 6–8 ms/frame even with tracing off. The byte
@@ -169,6 +177,66 @@ normal core plus diagnostics changed from 14.39 to 7.84 ms/frame for Super Mario
 Bros. and 12.76 to 8.48 ms/frame for Super Mario Bros. 3. Cycle counts and final
 image CRCs matched. These are short startup/attract sequences; clock scaling
 and host load affect exact numbers.
+
+The September 9 profile still attributed 15–19% of cycles to CRC-32 and 7–8%
+to Mapper 66 CPU/PPU reads. Processing eight CRC bytes per iteration and caching
+Mapper 66 bank offsets gave the following normal-history results on the same
+i7-1355U, using GCC 16.2 `-O2`, the powersave governor and CPU 2 affinity. Values
+are medians of three 240-frame runs per build, alternating build order between
+rounds after each run's 120-frame warmup:
+
+| ROM | Before (ms/frame) | After (ms/frame) | CPU time reduction |
+| --- | ---: | ---: | ---: |
+| Super Mario Bros. + Duck Hunt (Mapper 66) | 7.547 | 5.245 | 30.5% |
+| Super Mario Bros. (NROM) | 6.916 | 6.010 | 13.1% |
+| Super Mario Bros. 3 (MMC3) | 6.678 | 5.801 | 13.1% |
+
+Median checksum/diagnostic time fell from 1.54–1.71 to 0.27–0.29 ms/frame.
+Cycle counts and final image CRCs matched across both builds and all three
+diagnostic modes. These measurements cover startup/attract sequences and exclude
+the frontend; host load and clock scaling still caused variation between runs.
+
+A follow-up PPU pass simplifies `ppu_render_pixel`, which is inlined into
+`ppu_step`: forced blanking returns early, clipped sprites skip selection, each
+sprite uses one horizontal range check, and the first opaque sprite is composed
+directly against the background. No additional PPU state or serialized fields
+are needed. Fetches, OAM evaluation, mapper callbacks and dot advancement keep
+their existing schedule.
+
+An isolated comparison linked the previous and optimized PPU implementations
+into one process and alternated their order every 20 blocks of 89,342 dots, with
+400 measured blocks per implementation and rendering mode. The synthetic fixture
+used patterned CHR/nametables and groups of eight 8x16 sprites:
+
+| Rendering mode | Before (ms/89,342 dots) | After (ms/89,342 dots) | Reduction |
+| --- | ---: | ---: | ---: |
+| Forced blank | 1.501 | 1.338 | 10.9% |
+| Background | 3.518 | 2.813 | 20.0% |
+| Sprites | 3.597 | 3.236 | 10.0% |
+| Background and sprites | 3.994 | 3.346 | 16.2% |
+
+The existing ROM benchmark also showed 8.1–9.4% lower detached core time across
+the same three ROMs (medians of three 600-frame runs, CPU 2, GCC 16.2 `-O2`).
+Separate-process results varied more with tracing and host load, so these
+measurements should not be treated as a guaranteed reduction for every mode.
+Paired runs within one process alternated the old/new PPU every 20 frames,
+reversing order between blocks, for 600 measured frames per implementation and
+diagnostic mode. A common dispatch wrapper selected the PPU implementation for
+each dot; its overhead is included for both builds. These runs reduced CPU time
+by 5.0–9.8% across all three ROMs and modes, including 7.1% for SMB3 with tracing
+(the separate-process tracing median had been 5.5% slower). Every measured frame
+and audio-buffer CRC and CPU cycle count matched. Normal-history results were:
+
+| ROM | Before (ms/frame) | After (ms/frame) | Reduction |
+| --- | ---: | ---: | ---: |
+| Super Mario Bros. + Duck Hunt | 5.345 | 4.861 | 9.1% |
+| Super Mario Bros. | 5.922 | 5.344 | 9.8% |
+| Super Mario Bros. 3 | 6.095 | 5.629 | 7.6% |
+
+A comparison against the previous PPU passed two million sequential dots with
+rendering/register changes plus one million seeded visible dots, checking pixels,
+internal state, NMI state and mapper bus-address traces. `ppu_pixels.c` adds
+permanent coverage for sprite composition, clipping, hit flags and forced blanking.
 
 The original SDL frontend batched glyph pixels into one draw call. Its local
 1280x1200 software-renderer comparison measured the overlay at 1.68 versus 1.31

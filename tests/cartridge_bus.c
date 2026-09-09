@@ -168,10 +168,68 @@ static void mmc5_reads_and_writes_agree(void) {
     drive(n, 0xB5); assert(nes_cpu_bus_read(n, 0x8007) == 0xB5);
     fixture_free(n); assert(remove(path) == 0);
 }
+static void gxrom_banks_and_restore(void) {
+    puts("  GxROM bank wrapping, CHR RAM, reset and state-load bank restoration");
+    char path[512]; fixture_path(path, "gxrom.nes");
+    for (unsigned banks = 1; banks <= 4; ++banks) {
+        for (unsigned chr_banks = 0; chr_banks <= 4; ++chr_banks) {
+            uint8_t header[16] = {'N','E','S',0x1A,0,0,0x20,0x40};
+            header[4] = (uint8_t)(banks * 2);
+            header[5] = (uint8_t)chr_banks;
+            FILE *f = fopen(path, "wb"); assert(f);
+            assert(fwrite(header, 1, sizeof(header), f) == sizeof(header));
+            uint8_t data[32768];
+            for (unsigned b = 0; b < banks; ++b) {
+                memset(data, (int)(0x40 + b), sizeof(data));
+                assert(fwrite(data, 1, sizeof(data), f) == sizeof(data));
+            }
+            for (unsigned b = 0; b < chr_banks; ++b) {
+                memset(data, (int)(0x80 + b), 8192);
+                assert(fwrite(data, 1, 8192, f) == 8192);
+            }
+            assert(fclose(f) == 0);
+            NES *n = fixture_load(path);
+            for (unsigned value = 0; value < 256; ++value) {
+                nes_cpu_bus_write(n, (uint16_t)(0x8000 + value), (uint8_t)value);
+                // Three populated banks are padded by mirroring the last bank.
+                unsigned prg = ((value >> 4) & 3) % (banks == 3 ? 4 : banks);
+                if (prg == banks) --prg;
+                assert(nes_cpu_bus_read(n, 0x8000) == 0x40 + prg);
+                assert(nes_cpu_bus_read(n, 0xBFFF) == 0x40 + prg);
+                assert(nes_cpu_bus_read(n, 0xFFFF) == 0x40 + prg);
+                if (chr_banks) {
+                    unsigned chr = (value & 3) % (chr_banks == 3 ? 4 : chr_banks);
+                    if (chr == chr_banks) --chr;
+                    assert(nes_ppu_bus_read(n, 0) == 0x80 + chr);
+                    assert(nes_ppu_bus_read(n, 0x1FFF) == 0x80 + chr);
+                } else {
+                    nes_ppu_bus_write(n, 0x1FFF, (uint8_t)value);
+                    assert(nes_ppu_bus_read(n, 0x1FFF) == value);
+                }
+            }
+            uint8_t registers[2] = {0};
+            StateIO io = {registers, sizeof(registers), 0, false, true};
+            n->cart->vtable->state(n->cart, &io);
+            assert(io.ok && io.pos == 2 && registers[0] == 3 && registers[1] == 3);
+            uint8_t prg = nes_cpu_bus_read(n, 0xFFFF), chr = nes_ppu_bus_read(n, 0x1FFF);
+            uint8_t *save; size_t size;
+            assert(nes_state_encode(n, &save, &size) == NES_STATE_OK);
+            n->cart->vtable->reset(n->cart);
+            assert(nes_cpu_bus_read(n, 0xFFFF) == 0x40);
+            if (chr_banks) assert(nes_ppu_bus_read(n, 0x1FFF) == 0x80);
+            assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+            assert(nes_cpu_bus_read(n, 0xFFFF) == prg);
+            assert(nes_ppu_bus_read(n, 0x1FFF) == chr);
+            free(save);
+            fixture_free(n);
+        }
+    }
+    assert(remove(path) == 0);
+}
 int main(void) {
     fixture_start("cartridge-bus");
     open_bus_and_partial_reads(); all_mapper_rom_ram_boundaries(); mmc1_and_mmc3_protection();
-    wiring_and_optional_ram(); mmc5_reads_and_writes_agree();
+    wiring_and_optional_ram(); mmc5_reads_and_writes_agree(); gxrom_banks_and_restore();
     assert(SAVE_RMDIR(fixture_dir) == 0);
     puts("Cartridge bus and mapper checks passed.");
     return 0;

@@ -16,6 +16,7 @@ SDL2/
 # Emulator Save States and Battery Saves
 *.state
 *.sav
+*.txt
 
 # Build & OS artifacts
 *.o
