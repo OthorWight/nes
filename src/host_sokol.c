@@ -487,7 +487,8 @@ void host_poll_gamepads(void) {
     ssize_t result;
     while ((result = read(fd, &e, sizeof(e))) == sizeof(e)) {
         int type = e.type & ~JS_EVENT_INIT;
-        if (type == JS_EVENT_BUTTON && e.number < sizeof(button_map) / sizeof(button_map[0])) {
+        /* The 512-entry button map covers every uint8_t event number. */
+        if (type == JS_EVENT_BUTTON) {
             for (int i = 0; i < 15; ++i) if (button_map[e.number] == codes[i]) {
                 if (e.value) buttons |= 1u << i; else buttons &= ~(1u << i);
             }
