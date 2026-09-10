@@ -6,13 +6,15 @@
 *   **Button B**: `X`
 *   **Select**: `Space`
 *   **Start**: `Enter`
-*   **Menu/Pause**: `F1` or `Escape`
+*   **Pause / Resume**: `F1` or `Escape`
 
-### Mouse Menus
-*   **Hover** to select an item; **left-click** to activate it.
-*   **Right-click** to open/pause or resume from the main menu, go back from a submenu, or cancel control rebinding. Submenus also have a clickable **Back** button.
-*   **Mouse wheel** scrolls ROM/save lists or moves through other menus. The list arrows are clickable too.
-*   In Settings, click the volume **< / >** arrows or use the wheel over the volume row to adjust it.
+### Desktop Menus and File Browser
+* **Alt / F10** activates the desktop menus. Use arrows, Enter, and Escape, or click/hover with the mouse.
+* **Ctrl+O** opens the ROM file browser. Double-click a folder or ROM, or select it and press Enter / Open.
+* **Up / Backspace** goes to the parent folder; **Home** goes to your home folder. At a Windows drive root, Up lists drives.
+* **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
+* **Emulation > Audio** provides mute and volume controls. **Controller Bindings** edits keyboard/gamepad mappings.
+* **File > Save State As / Load State From** provides named-state file browsers; quicksave shortcuts remain available.
 
 ### Gamepad Layout (Windows: XInput-compatible controllers)
 *   **D-Pad / Left Stick**: NES Directional Pad
@@ -23,7 +25,7 @@
 
 ### Zapper
 
-In **Settings**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. Port 2 and display preferences are saved per ROM; other games use their own override or the global defaults. Settings includes actions to use or update those defaults. Controller is the initial default. Letterbox clicks count as offscreen aim.
+In **Emulation**, set **Port 2** to **Zapper** for light-gun games. Aim with the mouse and fire with the left mouse button. Port 2 and display preferences are saved per ROM; other games use their own override or the global defaults. The Emulation menu includes actions to use or update those defaults. Controller is the initial default. Letterbox clicks count as offscreen aim.
 
 If a game repeatedly polls the light gun on a black screen for about three seconds, an OSD warning suggests switching Port 2 back to Controller. This detects suspected polling hangs such as Armadillo's boot loop; it does not automatically change the selected device.
 
@@ -97,7 +99,33 @@ and focused regression coverage.
 
 ## Real-Time Step Debugger
 
-Press `F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in Settings and preserve existing saved preferences.
+The custom desktop menu bar uses the existing Sokol renderer and 8x8 bitmap
+font. Click a menu, or press **Alt / F10**, then use arrows, Enter, and Escape.
+Hover opens submenus; clicking outside dismisses them. Menus temporarily pause
+emulation and consume navigation input. The bottom status bar reports measured
+FPS/speed, mapper, audio state, and the selected Port 2 device. Both bars reserve
+space outside the game and debugger viewports. Their heights are 20 and 16
+logical pixels, scaled only for monitor DPI; game zoom and window resizing do
+not enlarge them. The UI renders directly through Sokol with a small atlas made
+from the existing font.
+
+File > Open ROM opens a custom in-window file browser with folder traversal,
+location entry, ROM filtering, scrolling, and cancellation. Recent ROMs remembers
+four successful loads for the current session. Save State / Load State use the
+existing rolling quicksave slot; Save State As / Load State From browse named
+state files. The former game-sized menu system has been removed.
+Help > Controls / Shortcuts displays navigation and debugger shortcuts; Enter
+opens the desktop controller binding dialog. Emulation > Pause is an explicit
+pause toggle; Reset requests the existing system reset, while Power Cycle saves
+battery RAM and reloads the ROM through the existing initialization path.
+
+`src/menu_bar.h` / `src/menu_bar.c` provide allocation-free menu state and
+render callbacks. Static menu tables and command dispatch live in `gui_main.c`.
+`host_chrome_layout()` supplies the scale shared by drawing and mouse hit tests;
+`host_layout()` fits the game and debugger within the remaining content area.
+No additional GUI library, native menu, or window is used.
+
+Press `Shift+F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
 
 ```
 NES DEBUGGER - PAUSED
@@ -111,18 +139,18 @@ P:34  [..-..IZ.]  CYC:347101
 ...
 --------------------------------
 Stack: [ 00 00 00 00 ]
-F10:Step|F9:Run|F6:Log:OFF
-F7:BRK | UP/DN:Nav | ESC:Menu
+Shift+F10:Step|F9:Run|F6:Log:OFF
+F7:BRK | UP/DN:Nav | F10:Menu
 ```
 
 ### Debugger Commands
-*   **F10**: Step one single CPU instruction.
+*   **Shift+F10**: Step one single CPU instruction.
 *   **F9**: Exit step-mode and run emulator at full speed.
 *   **F7**: Toggle Breakpoint on the currently highlighted address.
 *   **F6**: Toggle writing continuous execution logs to `step_trace.log` (logs include full register maps, cycles, scanlines, mapped PRG-banks, and active IRQ lines).
 *   **Up / Down**: Navigate instruction view.
-*   **F12**: Trigger a cold system reset.
-*   **Escape**: Exit debugger and return to the System Menu.
+*   **F12**: Reset the system while debugging. Use Emulation > Power Cycle to reload the ROM and initialize the system.
+*   **Escape**: Pause/resume gameplay; close an active desktop menu or dialog. Use F9 to leave the step debugger.
 
 ---
 

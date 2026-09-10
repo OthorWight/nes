@@ -79,12 +79,12 @@ static bool scripted_poll(HostEvent *e) {
             audio_muted = muted_test;
             if (unavailable_test) assert(!audio_device);
             else assert(audio_device);
-            current_state = GUI_STATE_MENU_LOAD_ROM;
-            menu_selection = 0;
-            e->type = HOST_MOUSEBUTTONDOWN; e->button.button = HOST_BUTTON_LEFT;
-            e->button.x = 40; e->button.y = 70; break;
+            desktop_command(MENU_OPEN);
+            for (int i = 0; i < file_browser.count; ++i)
+                if (!strcmp(file_browser.entries[i].name, "fixture.nes")) file_browser.selected = i;
+            key(e, HOST_KEYDOWN, HOST_KEY_RETURN); break;
         case 1:
-            assert(nes_sys.cart && current_state == GUI_STATE_GAMEPLAY);
+            assert(nes_sys.cart && !paused);
             game_controller = pad_id;
             key(e, HOST_KEYDOWN, HOST_KEY_z); break;
         case 2:
@@ -105,13 +105,13 @@ static bool scripted_poll(HostEvent *e) {
             e->type = HOST_WINDOWEVENT; e->window.event = HOST_WINDOWEVENT_FOCUS_LOST; break;
         case 7:
             assert(!focused && !nes_sys.controller_state[0] && !nes_sys.zapper_trigger);
-            assert(current_state == GUI_STATE_MENU_MAIN);
+            assert(paused);
             if (audio_device) assert(host_audio_queued_bytes() == 0);
             key(e, HOST_KEYUP, HOST_KEY_z); break;
         case 8: e->type = HOST_WINDOWEVENT; e->window.event = HOST_WINDOWEVENT_FOCUS_GAINED; break;
-        case 9: key(e, HOST_KEYDOWN, HOST_KEY_RETURN); break;
+        case 9: key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 10: assert(nes_sys.controller_state[0] == 0); key(e, HOST_KEYDOWN, HOST_KEY_x); break;
-        case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); break;
+        case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); e->key.keysym.mod = HOST_MOD_SHIFT; break;
         case 12: {
             assert(debugger_active && nes_sys.controller_state[0] == 0);
             assert(renderer->has_frame); /* Stepping retains the game beside the debugger. */
@@ -147,22 +147,34 @@ static bool scripted_poll(HostEvent *e) {
             nes_sys.zapper_trigger = true;
             load_emulator_state(save_state_dir, "frontend.state");
             assert(!nes_sys.zapper_enabled && !nes_sys.controller_state[0] && !nes_sys.zapper_trigger);
+            desktop_command(MENU_PAUSE); assert(paused);
+            desktop_command(MENU_PAUSE); assert(!paused);
+            desktop_command(MENU_STEP); assert(debugger_active);
+            desktop_command(MENU_RUN); assert(!debugger_active);
+            desktop_command(MENU_SAVE);
+            uint8_t saved_byte = nes_sys.wram[20];
+            nes_sys.wram[20] ^= 0xFF;
+            desktop_command(MENU_LOAD); assert(nes_sys.wram[20] == saved_byte);
+            desktop_command(MENU_RESET); assert(nes_sys.cart && !nes_sys.zapper_trigger);
+            nes_sys.wram[20] = 0xA5;
+            desktop_command(MENU_POWER); assert(nes_sys.cart && nes_sys.wram[20] == 0);
+            assert(recent_count == 1 && !strcmp(loaded_rom_name, "fixture.nes"));
+            desktop_command(MENU_RECENT_1); assert(nes_sys.cart && recent_count == 1);
             break;
         case 17: key(e, HOST_KEYDOWN, HOST_KEY_LEFT); break;
         case 18:
             assert(nes_sys.controller_state[0] & 0x40);
-            e->type = HOST_MOUSEBUTTONDOWN; e->button.button = HOST_BUTTON_RIGHT; break;
+            key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 19:
-            assert(current_state == GUI_STATE_MENU_MAIN && !nes_sys.controller_state[0]);
+            assert(paused && !nes_sys.controller_state[0]);
             key(e, HOST_KEYUP, HOST_KEY_LEFT); break;
         case 20:
             memset(&diagnostics, 0, sizeof(diagnostics)); diagnostics.tracing = true;
             memset(&audio_monitor, 0, sizeof(audio_monitor));
             runtime_reset_pending = true;
-            e->type = HOST_MOUSEBUTTONDOWN; e->button.button = HOST_BUTTON_LEFT;
-            e->button.x = 100; e->button.y = 62; break;
+            key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 21:
-            assert(current_state == GUI_STATE_GAMEPLAY && !nes_sys.zapper_trigger);
+            assert(!paused && !nes_sys.zapper_trigger);
             key(e, HOST_KEYDOWN, HOST_KEY_F3);
             break;
         case 22:

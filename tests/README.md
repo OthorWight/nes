@@ -12,6 +12,14 @@ subdirectories under `build/tests/`, removed on success.
 
 ## Coverage
 
+`menu_bar.c` checks desktop menu navigation, disabled items, separators,
+submenus, command dispatch, pointer event ownership, resize placement, and
+drawing callbacks without a window. `file_browser.c` checks folder traversal,
+file filters, paths with spaces, failed navigation, and cancellation. Sokol integration also exercises the
+window-coordinate menu path, captures `desktop-menu.bmp` on Windows, checks
+the reserved viewport bands and constant DPI scale across 1x through 4K sizes, and verifies pause/reset/power/recent-ROM and
+save/load commands. F10 activates menus; Shift+F10 steps the debugger.
+
 | Suite | Behaviors checked |
 | --- | --- |
 | `system_clock.c` | Three PPU dots and one mapper M2 tick per CPU cycle; APU advancement; dummy/read-modify-write cycles; indexed-read and branch penalties; seven-cycle reset without stack writes |

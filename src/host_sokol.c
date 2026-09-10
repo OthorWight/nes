@@ -15,6 +15,7 @@
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
 #include "host.h"
+#include "menu_bar.h"
 #include "../third_party/sokol/sokol_gfx.h"
 #include "../third_party/sokol/sokol_glue.h"
 #include "../third_party/sokol/sokol_gl.h"
@@ -53,6 +54,9 @@ static sg_view overlay_view;
 static sg_image panel_image;
 static sg_view panel_view;
 static HostCanvas *debug_panel;
+static void (*chrome)(void);
+static sg_image chrome_image;
+static sg_view chrome_view;
 static int windowed_scale;
 static sg_sampler frame_sampler;
 static sgl_pipeline overlay_pipeline;
@@ -196,11 +200,18 @@ void host_display(int scale, bool fullscreen) {
     windowed_scale = scale;
     if (fullscreen != sapp_is_fullscreen()) sapp_toggle_fullscreen();
     if (fullscreen) return;
+    int content_width = (debug_panel ? 448 : 256) * scale;
+    int content_height = 240 * scale;
+    if (chrome) {
+        int w, h;
+        float ui_scale = host_chrome_layout(content_width, content_height, &w, &h);
+        content_height += (int)ceilf((MENU_BAR_HEIGHT + STATUS_BAR_HEIGHT) * ui_scale);
+    }
 #ifdef _WIN32
     HWND window = (HWND)sapp_win32_get_hwnd();
     if (scale == 5) { ShowWindow(window, SW_MAXIMIZE); return; }
     ShowWindow(window, SW_RESTORE);
-    RECT rect = {0, 0, (debug_panel ? 448 : 256) * scale, 240 * scale};
+    RECT rect = {0, 0, content_width, content_height};
     AdjustWindowRectEx(&rect, (DWORD)GetWindowLongPtr(window, GWL_STYLE), FALSE,
         (DWORD)GetWindowLongPtr(window, GWL_EXSTYLE));
     SetWindowPos(window, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
@@ -208,7 +219,7 @@ void host_display(int scale, bool fullscreen) {
 #elif defined(__APPLE__)
     NSWindow *window = (__bridge NSWindow *)sapp_macos_get_window();
     if (scale == 5) { if (![window isZoomed]) [window zoom:nil]; }
-    else { if ([window isZoomed]) [window zoom:nil]; [window setContentSize:NSMakeSize((debug_panel ? 448 : 256) * scale, 240 * scale)]; }
+    else { if ([window isZoomed]) [window zoom:nil]; [window setContentSize:NSMakeSize(content_width, content_height)]; }
 #else
     Display *display = (Display *)sapp_x11_get_display();
     Window window = (Window)(uintptr_t)sapp_x11_get_window();
@@ -219,7 +230,7 @@ void host_display(int scale, bool fullscreen) {
     event.xclient.data.l[1] = (long)XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
     event.xclient.data.l[2] = (long)XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
     XSendEvent(display, DefaultRootWindow(display), False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
-    if (scale != 5) XResizeWindow(display, window, (debug_panel ? 448 : 256) * scale, 240 * scale);
+    if (scale != 5) XResizeWindow(display, window, content_width, content_height);
     XFlush(display);
 #endif
 }
@@ -241,8 +252,17 @@ void host_set_debug_panel(HostCanvas *panel) {
         host_display(windowed_scale, false);
 }
 void host_layout(int width, int height, HostRect *game, HostRect *panel) {
+    int top = 0;
+    if (chrome) {
+        int w, h;
+        float scale = host_chrome_layout(width, height, &w, &h);
+        top = (int)ceilf(MENU_BAR_HEIGHT * scale);
+        height -= top + (int)ceilf(STATUS_BAR_HEIGHT * scale);
+        if (height < 0) height = 0;
+    }
     int game_width = debug_panel ? width * 4 / 7 : width;
     host_viewport(game_width, height, game);
+    game->y += top;
     *panel = (HostRect){0};
     if (debug_panel) {
         double scale = fmin((width - game_width) / (double)HOST_PANEL_WIDTH,
@@ -250,8 +270,50 @@ void host_layout(int width, int height, HostRect *game, HostRect *panel) {
         panel->w = (int)(HOST_PANEL_WIDTH * scale);
         panel->h = (int)(HOST_PANEL_HEIGHT * scale);
         panel->x = game_width + (width - game_width - panel->w) / 2;
-        panel->y = (height - panel->h) / 2;
+        panel->y = top + (height - panel->h) / 2;
     }
+}
+void host_set_chrome(void (*draw)(void), const uint8_t font[95][8]) {
+    chrome = draw;
+    if (!draw || chrome_image.id) return;
+    uint32_t pixels[128 * 48] = {0};
+    for (int c = 0; c < 95; ++c)
+        for (int y = 0; y < 8; ++y)
+            for (int x = 0; x < 8; ++x)
+                if (font[c][y] & (0x80 >> x)) pixels[((c / 16) * 8 + y) * 128 + (c % 16) * 8 + x] = 0xFFFFFFFF;
+    chrome_image = sg_make_image(&(sg_image_desc){.width = 128, .height = 48,
+        .pixel_format = SG_PIXELFORMAT_RGBA8, .data.mip_levels[0] = {pixels, sizeof(pixels)}});
+    chrome_view = sg_make_view(&(sg_view_desc){.texture.image = chrome_image});
+}
+float host_chrome_layout(int width, int height, int *logical_width, int *logical_height) {
+    /* Desktop controls follow monitor DPI only, never NES zoom or window size. */
+    float scale = fmaxf(1.0f, sapp_dpi_scale());
+    *logical_width = (int)ceilf(width / scale);
+    *logical_height = (int)ceilf(height / scale);
+    return scale;
+}
+void host_ui_rect(HostRect r, uint32_t color) {
+    sgl_disable_texture(); sgl_c4b((color >> 16) & 255, (color >> 8) & 255, color & 255, 255);
+    sgl_begin_quads();
+    sgl_v2f((float)r.x, (float)r.y); sgl_v2f((float)(r.x + r.w), (float)r.y);
+    sgl_v2f((float)(r.x + r.w), (float)(r.y + r.h)); sgl_v2f((float)r.x, (float)(r.y + r.h));
+    sgl_end();
+}
+void host_ui_text(const char *text, int x, int y, uint32_t color) {
+    sgl_enable_texture(); sgl_texture(chrome_view, frame_sampler);
+    sgl_c4b((color >> 16) & 255, (color >> 8) & 255, color & 255, 255);
+    sgl_begin_quads();
+    for (; *text; ++text, x += 8) {
+        unsigned c = (unsigned char)*text;
+        if (c < 32 || c > 126) c = '?';
+        c -= 32;
+        float u = (c % 16) / 16.0f, v = (c / 16) / 6.0f;
+        sgl_v2f_t2f((float)x, (float)y, u, v);
+        sgl_v2f_t2f((float)(x + 8), (float)y, u + 1/16.0f, v);
+        sgl_v2f_t2f((float)(x + 8), (float)(y + 8), u + 1/16.0f, v + 1/6.0f);
+        sgl_v2f_t2f((float)x, (float)(y + 8), u, v + 1/6.0f);
+    }
+    sgl_end();
 }
 void host_mouse_position(int *x, int *y) { *x = mouse_x; *y = mouse_y; }
 uint32_t host_window_flags(void) { return window_flags; }
@@ -320,6 +382,14 @@ void host_present(HostCanvas *c) {
         sgl_viewport(panel.x, panel.y, panel.w, panel.h, true);
         sgl_enable_texture();
         textured_quad(panel_view, 0, 0, 1, 1);
+    }
+    if (chrome) {
+        int w, h;
+        float scale = host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
+        sgl_defaults(); sgl_viewport(0, 0, sapp_width(), sapp_height(), true);
+        sgl_matrix_mode_projection(); sgl_ortho(0, sapp_width() / scale, sapp_height() / scale, 0, -1, 1);
+        sgl_matrix_mode_modelview(); sgl_load_pipeline(overlay_pipeline);
+        chrome();
     }
     sg_begin_pass(&(sg_pass){.swapchain = sglue_swapchain(),
         .action.colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0, 0, 0, 1}}});
@@ -415,17 +485,22 @@ const char *host_key_name(HostKey key) {
 void host_event(const sapp_event *event) {
     HostEvent e = {0};
     switch (event->type) {
+        case SAPP_EVENTTYPE_CHAR:
+            e.type = HOST_TEXTINPUT; e.character = event->char_code; break;
         case SAPP_EVENTTYPE_QUIT_REQUESTED: sapp_cancel_quit(); e.type = HOST_QUIT; break;
         case SAPP_EVENTTYPE_KEY_DOWN: case SAPP_EVENTTYPE_KEY_UP:
             e.type = event->type == SAPP_EVENTTYPE_KEY_DOWN ? HOST_KEYDOWN : HOST_KEYUP;
             e.key.keysym.sym = host_key(event->key_code);
             if (!e.key.keysym.sym) return;
             e.key.repeat = event->key_repeat;
-            e.key.keysym.mod = event->modifiers & SAPP_MODIFIER_CTRL ? HOST_MOD_CTRL : 0; break;
+            e.key.keysym.mod = (event->modifiers & SAPP_MODIFIER_CTRL ? HOST_MOD_CTRL : 0) |
+                (event->modifiers & SAPP_MODIFIER_SHIFT ? HOST_MOD_SHIFT : 0) |
+                (event->modifiers & SAPP_MODIFIER_ALT ? HOST_MOD_ALT : 0); break;
         case SAPP_EVENTTYPE_MOUSE_MOVE: case SAPP_EVENTTYPE_MOUSE_DOWN: case SAPP_EVENTTYPE_MOUSE_UP:
         case SAPP_EVENTTYPE_MOUSE_SCROLL: {
             mouse_x = (int)event->mouse_x; mouse_y = (int)event->mouse_y;
-            if (debug_panel && mouse_x >= sapp_width() * 4 / 7 &&
+            e.window_mouse.x = mouse_x; e.window_mouse.y = mouse_y; e.window_mouse.valid = true;
+            if (!chrome && debug_panel && mouse_x >= sapp_width() * 4 / 7 &&
                 (event->type == SAPP_EVENTTYPE_MOUSE_DOWN || event->type == SAPP_EVENTTYPE_MOUSE_SCROLL)) return;
             float x, y; host_to_logical(NULL, mouse_x, mouse_y, &x, &y);
             /* floor keeps slightly negative letterbox coordinates offscreen. */

@@ -11,6 +11,8 @@
 #include <math.h>
 #include <stdarg.h>
 #include "host.h"
+#include "menu_bar.h"
+#include "file_browser.h"
 #include "nes_system.h"
 #include "debugger.h"
 #include "save_state.h"
@@ -39,6 +41,16 @@ static bool fullscreen = false;
 static int master_volume = 100;
 static bool performance_visible = false;
 static bool focused = true;
+static MenuBar desktop_menu;
+static bool paused;
+static int help_page;
+static char recent_roms[4][BROWSER_PATH];
+static char loaded_rom_path[BROWSER_PATH];
+static FileBrowser file_browser;
+static int browser_mode; /* 0 ROM, 1 load state, 2 save state */
+static int control_selection;
+static char recent_labels[4][29] = {"(Empty)", "(Empty)", "(Empty)", "(Empty)"};
+static int recent_count;
 static FrameScheduler frame_scheduler;
 static AudioQueueMonitor audio_monitor;
 static AudioResampler audio_resampler;
@@ -198,9 +210,6 @@ static void show_notification(const char *text) {
     notification_timer = 60;
 }
 
-static char state_files[512][256];
-static int state_file_count = 0;
-
 static void get_rolling_quicksave_filename(char *out_filename, size_t max_len, bool save) {
     int selected_slot = -1;
     time_t extreme_time = 0;
@@ -238,66 +247,6 @@ static void get_rolling_quicksave_filename(char *out_filename, size_t max_len, b
         selected_slot = 0;
     }
     snprintf(out_filename, max_len, "quick_%d.state", selected_slot);
-}
-
-static int compare_state_files(const void *a, const void *b) {
-    char path_a[1024];
-    char path_b[1024];
-    snprintf(path_a, sizeof(path_a), "%s/%s", save_state_dir, (const char *)a);
-    snprintf(path_b, sizeof(path_b), "%s/%s", save_state_dir, (const char *)b);
-    struct stat stat_a, stat_b;
-    time_t time_a = 0;
-    time_t time_b = 0;
-    if (stat(path_a, &stat_a) == 0) time_a = stat_a.st_mtime;
-    if (stat(path_b, &stat_b) == 0) time_b = stat_b.st_mtime;
-    if (time_a < time_b) return 1;
-    if (time_a > time_b) return -1;
-    return 0;
-}
-
-static void scan_save_state_directory(void) {
-    state_file_count = 0;
-    DIR *d = opendir(save_state_dir);
-    struct dirent *dir;
-    if (d) {
-        while ((dir = readdir(d)) != NULL) {
-            size_t len = strlen(dir->d_name);
-            if (len > 6 && strcmp(dir->d_name + len - 6, ".state") == 0) {
-                strncpy(state_files[state_file_count], dir->d_name, 255);
-                state_files[state_file_count][255] = '\0';
-                state_file_count++;
-                if (state_file_count >= 512) break;
-            }
-        }
-        closedir(d);
-    }
-    if (state_file_count > 0) {
-        qsort(state_files, state_file_count, sizeof(state_files[0]), compare_state_files);
-    }
-}
-
-static void get_state_file_info(const char *filename, char *out_buf, size_t max_len) {
-    char filepath[1024];
-    snprintf(filepath, sizeof(filepath), "%s/%s", save_state_dir, filename);
-    FILE *f = fopen(filepath, "rb");
-    if (!f) {
-        snprintf(out_buf, max_len, "%.40s: [Error Opening]", filename);
-        return;
-    }
-    unsigned char magic[8] = {0};
-    size_t count = fread(magic, 1, sizeof(magic), f);
-    fclose(f);
-    if (count != 8 || memcmp(magic, "NESSTATE", 8) != 0) {
-        snprintf(out_buf, max_len, "%.40s: [Old or invalid state]", filename);
-        return;
-    }
-    struct stat st;
-    char time_meta[32] = "";
-    if (stat(filepath, &st) == 0) {
-        struct tm *tm_info = localtime(&st.st_mtime);
-        if (tm_info) strftime(time_meta, sizeof(time_meta), "%m/%d %H:%M", tm_info);
-    }
-    snprintf(out_buf, max_len, "%.40s: %s", filename, time_meta);
 }
 
 static void get_clean_rom_name(char *out_buf, size_t max_len) {
@@ -502,124 +451,6 @@ static const char *button_names[CONTROL_COUNT] = {
     "Quick Save", "Quick Load"
 };
 
-typedef enum {
-    GUI_STATE_MENU_MAIN,
-    GUI_STATE_MENU_LOAD_ROM,
-    GUI_STATE_MENU_SAVE_STATE,
-    GUI_STATE_MENU_LOAD_STATE,
-    GUI_STATE_MENU_SETTINGS,
-    GUI_STATE_MENU_CONTROLS,
-    GUI_STATE_GAMEPLAY
-} GUIState;
-
-static GUIState current_state = GUI_STATE_MENU_MAIN;
-static int menu_selection = 1;
-static int rom_scroll_offset = 0;
-
-static char rom_files[512][256];
-static int rom_file_count = 0;
-
-static int menu_item_count(void) {
-    switch (current_state) {
-        case GUI_STATE_MENU_MAIN: return 7;
-        case GUI_STATE_MENU_LOAD_ROM: return rom_file_count;
-        case GUI_STATE_MENU_SAVE_STATE: return state_file_count + 1;
-        case GUI_STATE_MENU_LOAD_STATE: return state_file_count;
-        case GUI_STATE_MENU_SETTINGS: return 10;
-        case GUI_STATE_MENU_CONTROLS: return CONTROL_COUNT + 2;
-        default: return 0;
-    }
-}
-
-static bool menu_is_file_list(void) {
-    return current_state == GUI_STATE_MENU_LOAD_ROM ||
-        current_state == GUI_STATE_MENU_SAVE_STATE || current_state == GUI_STATE_MENU_LOAD_STATE;
-}
-
-// These logical rectangles are shared by drawing and mouse hit testing.
-static HostRect menu_item_rect(int item) {
-    switch (current_state) {
-        case GUI_STATE_MENU_MAIN: return (HostRect){32, 58 + item * 15, 180, 11};
-        case GUI_STATE_MENU_SETTINGS: return (HostRect){18, 58 + item * 13, 226, 11};
-        case GUI_STATE_MENU_CONTROLS:
-            if (item == 0) return (HostRect){12, 43, 232, 11};
-            return (HostRect){16, 60 + (item - 1) * 13, 224, 11};
-        default: return (HostRect){24, 68 + (item - rom_scroll_offset) * 12, 208, 11};
-    }
-}
-
-static int menu_hit_test(int x, int y) {
-    HostPoint point = {x, y};
-    int start = menu_is_file_list() ? rom_scroll_offset : 0;
-    int end = menu_item_count();
-    if (menu_is_file_list() && end > start + 12) end = start + 12;
-    for (int i = start; i < end; ++i) {
-        if (current_state == GUI_STATE_MENU_MAIN && !nes_sys.cart &&
-            (i == 0 || i == 2 || i == 3)) continue;
-        HostRect rect = menu_item_rect(i);
-        if (host_point_in_rect(&point, &rect)) return i;
-    }
-    return -1;
-}
-
-static void menu_scroll(int direction) {
-    int count = menu_item_count();
-    if (!count) return;
-    int max_offset = count > 12 ? count - 12 : 0;
-    rom_scroll_offset += direction * 3;
-    if (rom_scroll_offset < 0) rom_scroll_offset = 0;
-    if (rom_scroll_offset > max_offset) rom_scroll_offset = max_offset;
-    if (menu_selection < rom_scroll_offset) menu_selection = rom_scroll_offset;
-    if (menu_selection >= rom_scroll_offset + 12) menu_selection = rom_scroll_offset + 11;
-}
-
-// Return a command for immediate dispatch through the keyboard action handler.
-// Host events use the same letterboxed logical coordinates as rendering.
-static HostKey menu_mouse_command(const HostEvent *event, HostCanvas *renderer) {
-    if (!focused) return HOST_KEY_UNKNOWN;
-    if (event->type == HOST_MOUSEBUTTONDOWN && event->button.button == HOST_BUTTON_RIGHT)
-        return HOST_KEY_ESCAPE;
-    if (current_state == GUI_STATE_GAMEPLAY) return HOST_KEY_UNKNOWN;
-
-    if (event->type == HOST_MOUSEWHEEL) {
-        if (rebinding || !event->wheel.y) return HOST_KEY_UNKNOWN;
-        int direction = event->wheel.y > 0 ? -1 : 1;
-        if (event->wheel.direction == HOST_MOUSEWHEEL_FLIPPED) direction = -direction;
-        int mx, my;
-        float x, y;
-        host_mouse_position(&mx, &my);
-        host_to_logical(renderer, mx, my, &x, &y);
-        if (x < 0 || x >= 256 || y < 0 || y >= 240) return HOST_KEY_UNKNOWN;
-        if (current_state == GUI_STATE_MENU_SETTINGS && menu_hit_test((int)x, (int)y) == 2) {
-            menu_selection = 2;
-            return direction < 0 ? HOST_KEY_RIGHT : HOST_KEY_LEFT;
-        }
-        if (menu_is_file_list()) menu_scroll(direction);
-        else return direction < 0 ? HOST_KEY_UP : HOST_KEY_DOWN;
-        return HOST_KEY_UNKNOWN;
-    }
-
-    bool click = event->type == HOST_MOUSEBUTTONDOWN && event->button.button == HOST_BUTTON_LEFT;
-    if (!click && event->type != HOST_MOUSEMOTION) return HOST_KEY_UNKNOWN;
-    int x = click ? event->button.x : event->motion.x;
-    int y = click ? event->button.y : event->motion.y;
-    if (click && current_state != GUI_STATE_MENU_MAIN && x >= 8 && x < 72 && y >= 226 && y < 239)
-        return HOST_KEY_ESCAPE;
-    if (rebinding) return HOST_KEY_UNKNOWN;
-    if (click && menu_is_file_list() && x >= 232 && x < 248) {
-        if (y >= 68 && y < 79) menu_scroll(-1);
-        if (y >= 200 && y < 211) menu_scroll(1);
-        return HOST_KEY_UNKNOWN;
-    }
-    int item = menu_hit_test(x, y);
-    if (item < 0) return HOST_KEY_UNKNOWN;
-    menu_selection = item;
-    if (!click) return HOST_KEY_UNKNOWN;
-    if (current_state == GUI_STATE_MENU_SETTINGS && item == 2 && x >= 204)
-        return x < 224 ? HOST_KEY_LEFT : HOST_KEY_RIGHT;
-    return HOST_KEY_RETURN;
-}
-
 static const uint8_t font8x8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00},
@@ -783,78 +614,6 @@ static void capture_diagnostics(void) {
     if (ok) fprintf(stdout, "Diagnostics: %s\n", path);
 }
 
-static void push_synthetic_key(HostKey sym, uint32_t type) {
-    HostEvent new_event;
-    host_zero(new_event);
-    new_event.type = type;
-    new_event.key.state = (type == HOST_KEYDOWN) ? HOST_PRESSED : HOST_RELEASED;
-    new_event.key.keysym.sym = sym;
-    host_push_event(&new_event);
-}
-
-static int compare_rom_files(const void *a, const void *b) {
-    return strcmp((const char *)a, (const char *)b);
-}
-
-static void scan_rom_directory(void) {
-    rom_file_count = 0;
-
-    DIR *d = opendir(".");
-    struct dirent *dir;
-    if (d) {
-        while ((dir = readdir(d)) != NULL) {
-            size_t len = strlen(dir->d_name);
-            if (len > 4 && (strcmp(dir->d_name + len - 4, ".nes") == 0 || strcmp(dir->d_name + len - 4, ".NES") == 0)) {
-                bool duplicate = false;
-                for (int i = 0; i < rom_file_count; i++) {
-                    if (strcmp(rom_files[i], dir->d_name) == 0) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (!duplicate) {
-                    strncpy(rom_files[rom_file_count], dir->d_name, 255);
-                    rom_files[rom_file_count][255] = '\0';
-                    rom_file_count++;
-                    if (rom_file_count >= 512) break;
-                }
-            }
-        }
-        closedir(d);
-    }
-
-    char *base_path = host_base_path();
-    if (base_path && rom_file_count < 512) {
-        DIR *db = opendir(base_path);
-        if (db) {
-            while ((dir = readdir(db)) != NULL) {
-                size_t len = strlen(dir->d_name);
-                if (len > 4 && (strcmp(dir->d_name + len - 4, ".nes") == 0 || strcmp(dir->d_name + len - 4, ".NES") == 0)) {
-                    bool duplicate = false;
-                    for (int i = 0; i < rom_file_count; i++) {
-                        if (strcmp(rom_files[i], dir->d_name) == 0) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    if (!duplicate) {
-                        strncpy(rom_files[rom_file_count], dir->d_name, 255);
-                        rom_files[rom_file_count][255] = '\0';
-                        rom_file_count++;
-                        if (rom_file_count >= 512) break;
-                    }
-                }
-            }
-            closedir(db);
-        }
-        free(base_path);
-    }
-
-    if (rom_file_count > 0) {
-        qsort(rom_files, rom_file_count, sizeof(rom_files[0]), compare_rom_files);
-    }
-}
-
 static void save_emulator_state(const char *dir, const char *filename) {
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
@@ -904,7 +663,7 @@ static void draw_debug_panel(void) {
     if (!visible) return;
     debug_canvas.width = HOST_PANEL_WIDTH;
     debug_canvas.height = HOST_PANEL_HEIGHT;
-    bool playing = nes_sys.cart && current_state == GUI_STATE_GAMEPLAY && !debugger_active && focused;
+    bool playing = nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && focused;
     bool full = debug_panel_enabled || debugger_active;
     host_color(&debug_canvas, 15, 20, 35, 255);
     host_clear(&debug_canvas);
@@ -968,14 +727,473 @@ static void draw_debug_panel(void) {
             nes_sys.zapper_x, nes_sys.zapper_y, nes_sys.zapper_trigger, nes_sys.zapper_light);
     }
     draw_string(&debug_canvas, "F3:Debug panel  F2:Metrics  F4:Capture", 8, 612, 0x78C8FF);
-    draw_string(&debug_canvas, "F10:Step  F9:Run  Ctrl+F4:Event trace", 8, 626, 0x78C8FF);
+    draw_string(&debug_canvas, "Shift+F10:Step  F9:Run  Ctrl+F4:Trace", 8, 626, 0x78C8FF);
 }
 static bool running = true, cursor_visible = true, was_playing;
 static uint32_t last_mouse_activity;
 static const uint32_t cursor_idle_ms = 2000;
 
+static void remember_rom(const char *name) {
+    int index = 0;
+    while (index < recent_count && strcmp(recent_roms[index], name)) ++index;
+    if (index == recent_count && recent_count < 4) ++recent_count;
+    if (index > 3) index = 3;
+    for (int i = index; i > 0; --i) memcpy(recent_roms[i], recent_roms[i - 1], sizeof(recent_roms[i]));
+    snprintf(recent_roms[0], sizeof(recent_roms[0]), "%s", name);
+    for (int i = 0; i < recent_count; ++i) {
+        const char *name = recent_roms[i];
+        for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') name = p + 1;
+        snprintf(recent_labels[i], sizeof(recent_labels[i]), "%.28s", name);
+    }
+}
+static bool frontend_load_rom(const char *name) {
+    if (nes_sys.cart) {
+        if (!save_battery_ram()) return false;
+        cartridge_free(nes_sys.cart);
+        nes_sys.cart = NULL;
+    }
+
+    debugger_active = false;
+    nes_init(&nes_sys);
+    bool trace_enabled = diagnostics.tracing;
+    memset(&diagnostics, 0, sizeof(diagnostics));
+    diagnostics.tracing = trace_enabled;
+    memset(&audio_monitor, 0, sizeof(audio_monitor));
+    nes_sys.diagnostics = &diagnostics;
+    apply_rom_preferences();
+
+    char rom_error[128];
+    Cartridge *cart = cartridge_load_ex(&nes_sys, name, rom_error, sizeof(rom_error));
+    if (!cart && strcmp(rom_error, "Cannot open ROM") == 0) {
+        char *base_path = host_base_path();
+        if (base_path) {
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s%s", base_path, name);
+            cart = cartridge_load_ex(&nes_sys, full_path, rom_error, sizeof(rom_error));
+            free(base_path);
+        }
+    }
+
+    if (!cart) {
+        show_notification(rom_error);
+        notification_timer = 180;
+        fprintf(stderr, "%s: %s\n", name, rom_error);
+    }
+
+    if (cart) {
+        snprintf(loaded_rom_path, sizeof(loaded_rom_path), "%s", name);
+        const char *basename = name;
+        for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') basename = p + 1;
+        nes_sys.cart = cart;
+        apply_rom_preferences();
+        strncpy(loaded_rom_name, basename, sizeof(loaded_rom_name) - 1);
+        loaded_rom_name[sizeof(loaded_rom_name) - 1] = '\0';
+
+        char rom_name_clean[256];
+        strncpy(rom_name_clean, basename, sizeof(rom_name_clean) - 1);
+        rom_name_clean[sizeof(rom_name_clean) - 1] = '\0';
+        char *ext = strrchr(rom_name_clean, '.');
+        if (ext) *ext = '\0';
+
+        char *base_path = host_base_path();
+        if (base_path) {
+            snprintf(save_state_dir, sizeof(save_state_dir), "%s%s/%s", base_path, "saves", rom_name_clean);
+            free(base_path);
+        } else {
+            snprintf(save_state_dir, sizeof(save_state_dir), "%s/%s", "saves", rom_name_clean);
+        }
+
+        char saves_root_dir[512];
+        strncpy(saves_root_dir, save_state_dir, sizeof(saves_root_dir) - 1);
+        saves_root_dir[sizeof(saves_root_dir) - 1] = '\0';
+        char *last_slash = strrchr(saves_root_dir, '/');
+        if (last_slash) *last_slash = '\0';
+        MKDIR(saves_root_dir);
+        MKDIR(save_state_dir);
+
+        nes_reset(&nes_sys);
+        nes_clock_tick(&nes_sys);
+        debugger_init();
+        if (!load_battery_ram()) {
+            cartridge_free(nes_sys.cart);
+            nes_sys.cart = NULL;
+            apply_rom_preferences();
+            return false;
+        }
+        debugger_active = false;
+        debugger_logging_active = false;
+        if (debugger_active) {
+            debugger_view_pc = nes_sys.cpu.program_counter;
+            debugger_selected_line = 0;
+            clear_view_history(debugger_view_pc);
+        }
+        paused = false;
+        runtime_reset_pending = true;
+        remember_rom(name);
+    }
+    return nes_sys.cart != NULL;
+}
+
+
+#define ITEM(label, shortcut, command) {label, shortcut, command, 0, NULL}
+#define SUB(label, menu) {label, NULL, MENU_NONE, 0, &menu}
+#define SEPARATOR {NULL, NULL, MENU_NONE, MENU_SEPARATOR, NULL}
+#define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
+static const MenuItem recent_items[] = {
+    ITEM(recent_labels[0], NULL, MENU_RECENT_1), ITEM(recent_labels[1], NULL, MENU_RECENT_2),
+    ITEM(recent_labels[2], NULL, MENU_RECENT_3), ITEM(recent_labels[3], NULL, MENU_RECENT_4)
+};
+static const Menu recent_menu = {"Recent ROMs", recent_items, COUNT(recent_items)};
+static const MenuItem port_items[] = {
+    ITEM("Controller", NULL, MENU_CONTROLLER), ITEM("Zapper", NULL, MENU_ZAPPER)
+};
+static const Menu port_menu = {"Port 2", port_items, COUNT(port_items)};
+static const MenuItem size_items[] = {
+    ITEM("1x", NULL, MENU_SIZE_1), ITEM("2x", NULL, MENU_SIZE_2),
+    ITEM("3x", NULL, MENU_SIZE_3), ITEM("4x", NULL, MENU_SIZE_4), ITEM("Maximized", NULL, MENU_MAXIMIZED)
+};
+static const Menu size_menu = {"Window Size", size_items, COUNT(size_items)};
+static char save_shortcut[32], load_shortcut[32];
+static const MenuItem file_items[] = {
+    ITEM("Open ROM...", "Ctrl+O", MENU_OPEN), SUB("Recent ROMs", recent_menu),
+    ITEM("Save State", save_shortcut, MENU_SAVE), ITEM("Load State", load_shortcut, MENU_LOAD),
+    ITEM("Save State As...", NULL, MENU_SAVE_AS), ITEM("Load State From...", NULL, MENU_LOAD_FROM),
+    SEPARATOR, ITEM("Exit", NULL, MENU_EXIT)
+};
+static const MenuItem audio_items[] = {
+    ITEM("Mute", NULL, MENU_MUTE), ITEM("Volume Down", NULL, MENU_VOLUME_DOWN), ITEM("Volume Up", NULL, MENU_VOLUME_UP)
+};
+static const Menu audio_menu = {"Audio", audio_items, COUNT(audio_items)};
+static const MenuItem emulation_items[] = {
+    ITEM("Pause", NULL, MENU_PAUSE), ITEM("Reset", NULL, MENU_RESET),
+    ITEM("Power Cycle", NULL, MENU_POWER), SEPARATOR, SUB("Port 2", port_menu), SUB("Audio", audio_menu),
+    ITEM("Controller Bindings...", NULL, MENU_BINDINGS), SEPARATOR,
+    ITEM("Use Global ROM Settings", NULL, MENU_INHERIT), ITEM("Set as Global Defaults", NULL, MENU_GLOBAL_DEFAULTS)
+};
+static const MenuItem view_items[] = {
+    SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
+    ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
+};
+static const MenuItem debug_items[] = {
+    ITEM("Step Instruction", "Shift+F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
+    ITEM("Breakpoint", "F7", MENU_BREAKPOINT), ITEM("Event Trace", "Ctrl+F4", MENU_TRACE)
+};
+static const MenuItem help_items[] = {
+    ITEM("Controls / Shortcuts", NULL, MENU_CONTROLS), ITEM("About", NULL, MENU_ABOUT)
+};
+static const Menu desktop_menus[] = {
+    {"File", file_items, COUNT(file_items)}, {"Emulation", emulation_items, COUNT(emulation_items)},
+    {"View", view_items, COUNT(view_items)}, {"Debug", debug_items, COUNT(debug_items)},
+    {"Help", help_items, COUNT(help_items)}
+};
+#undef ITEM
+#undef SUB
+#undef SEPARATOR
+
+static unsigned desktop_state(void *context, MenuCommand command) {
+    (void)context;
+    if (command >= MENU_RECENT_1 && command <= MENU_RECENT_4)
+        return (int)(command - MENU_RECENT_1) >= recent_count ? MENU_DISABLED : 0;
+    if ((command == MENU_SAVE_AS || command == MENU_LOAD_FROM || command == MENU_SAVE || command == MENU_LOAD || command == MENU_PAUSE ||
+         command == MENU_RESET || command == MENU_POWER || command == MENU_STEP ||
+         command == MENU_RUN || command == MENU_BREAKPOINT) && !nes_sys.cart) return MENU_DISABLED;
+    switch (command) {
+        case MENU_MUTE: return audio_muted ? MENU_CHECKED : 0;
+        case MENU_INHERIT: return !nes_sys.cart ? MENU_DISABLED : preferences_inherit ? MENU_CHECKED : 0;
+        case MENU_PAUSE: return paused ? MENU_CHECKED : 0;
+        case MENU_RUN: return debugger_active ? MENU_CHECKED : 0;
+        case MENU_BREAKPOINT: return !debugger_active ? MENU_DISABLED :
+            breakpoints[debugger_line_pcs[debugger_selected_line]] ? MENU_CHECKED : 0;
+        case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
+        case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
+        case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
+        case MENU_DEBUG_PANEL: return debug_panel_enabled ? MENU_CHECKED : 0;
+        case MENU_METRICS: return performance_visible ? MENU_CHECKED : 0;
+        case MENU_TRACE: return diagnostics.tracing ? MENU_CHECKED : 0;
+        default: return command >= MENU_SIZE_1 && command <= MENU_MAXIMIZED &&
+            window_scale == (int)(command - MENU_SIZE_1) + 1 && !fullscreen ? MENU_CHECKED : 0;
+    }
+}
+static void desktop_command(MenuCommand command) {
+    if (desktop_state(NULL, command) & MENU_DISABLED) return;
+    clear_host_input(); runtime_reset_pending = true;
+    if (command >= MENU_RECENT_1 && command <= MENU_RECENT_4) {
+        char name[BROWSER_PATH]; snprintf(name, sizeof(name), "%s", recent_roms[command - MENU_RECENT_1]);
+        frontend_load_rom(name); return;
+    }
+    if (command >= MENU_SIZE_1 && command <= MENU_MAXIMIZED) {
+        window_scale = command - MENU_SIZE_1 + 1; fullscreen = false;
+        preferences_inherit = false; apply_display(); save_emulator_settings(); return;
+    }
+    switch (command) {
+        case MENU_OPEN:
+            browser_mode = 0;
+            file_browser_open(&file_browser, *file_browser.path ? file_browser.path : NULL, "Open ROM", ".nes", false); break;
+        case MENU_SAVE_AS: case MENU_LOAD_FROM:
+            browser_mode = command == MENU_SAVE_AS ? 2 : 1;
+            file_browser_open(&file_browser, save_state_dir, browser_mode == 2 ? "Save State As" : "Load State", ".state", browser_mode == 2); break;
+        case MENU_SAVE: case MENU_LOAD: {
+            char filename[128];
+            get_rolling_quicksave_filename(filename, sizeof(filename), command == MENU_SAVE);
+            if (command == MENU_SAVE) save_emulator_state(save_state_dir, filename);
+            else load_emulator_state(save_state_dir, filename);
+            break;
+        }
+        case MENU_EXIT: if (save_battery_ram()) running = false; break;
+        case MENU_PAUSE: paused = !paused; break;
+        case MENU_RESET:
+            nes_reset(&nes_sys); nes_clock_tick(&nes_sys);
+            debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0;
+            clear_view_history(debugger_view_pc); break;
+        case MENU_POWER: {
+            char name[BROWSER_PATH]; snprintf(name, sizeof(name), "%s", loaded_rom_path);
+            frontend_load_rom(name); break;
+        }
+        case MENU_CONTROLLER: case MENU_ZAPPER:
+            preferences_inherit = false; zapper_enabled = command == MENU_ZAPPER;
+            nes_sys.zapper_enabled = zapper_enabled; nes_reset_zapper_watchdog(&nes_sys);
+            save_emulator_settings(); break;
+        case MENU_FULLSCREEN:
+            preferences_inherit = false; fullscreen = !fullscreen; apply_display(); save_emulator_settings(); break;
+        case MENU_DEBUG_PANEL: debug_panel_enabled = !debug_panel_enabled; save_emulator_settings(); break;
+        case MENU_METRICS: performance_visible = !performance_visible; save_emulator_settings(); break;
+        case MENU_STEP: case MENU_RUN:
+            paused = false;
+            if (debugger_active) {
+                debugger_step_instruction(&nes_sys.cpu, &cpu_bus_bridge);
+                if (command == MENU_RUN) debugger_active = false;
+            } else {
+                debugger_active = true; debugger_view_pc = nes_sys.cpu.program_counter;
+                debugger_selected_line = 0;
+            }
+            clear_view_history(debugger_view_pc); break;
+        case MENU_BREAKPOINT: {
+            uint16_t pc = debugger_line_pcs[debugger_selected_line];
+            breakpoints[pc] = !breakpoints[pc]; break;
+        }
+        case MENU_TRACE:
+            diagnostics.tracing = !diagnostics.tracing;
+            if (diagnostics.tracing) {
+                diagnostics.event_count = diagnostics.event_head = diagnostics.overwritten = 0;
+                diagnostics_event(&nes_sys, DIAG_RESUME, 0, 0);
+            }
+            show_notification(diagnostics.tracing ? "EVENT TRACE ON" : "EVENT TRACE OFF"); break;
+        case MENU_MUTE: audio_muted = !audio_muted; save_emulator_settings(); break;
+        case MENU_VOLUME_DOWN: case MENU_VOLUME_UP: {
+            master_volume += command == MENU_VOLUME_UP ? 10 : -10;
+            if (master_volume < 0) master_volume = 0;
+            if (master_volume > 100) master_volume = 100;
+            char text[32]; snprintf(text, sizeof(text), "VOLUME %d%%", master_volume);
+            show_notification(text); play_volume_ding(); save_emulator_settings(); break;
+        }
+        case MENU_INHERIT: preferences_inherit = true; save_emulator_settings(); apply_rom_preferences(); break;
+        case MENU_GLOBAL_DEFAULTS:
+            global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
+            save_emulator_settings(); show_notification("GLOBAL DEFAULTS UPDATED"); break;
+        case MENU_BINDINGS: help_page = 3; control_selection = 0; rebinding = false; break;
+        case MENU_CONTROLS: help_page = 1; break;
+        case MENU_ABOUT: help_page = 2; break;
+        default: break;
+    }
+}
+static void chrome_fill(void *context, MenuRect r, uint32_t color) {
+    (void)context; host_ui_rect((HostRect){r.x, r.y, r.w, r.h}, color);
+}
+static void chrome_text(void *context, const char *text, int x, int y, uint32_t color) {
+    (void)context; host_ui_text(text, x, y, color);
+}
+static MenuRect controls_bounds(int w, int h) {
+    int width = w < 416 ? w - 16 : 400;
+    int height = h - MENU_BAR_HEIGHT - STATUS_BAR_HEIGHT - 16;
+    if (height > 260) height = 260;
+    return (MenuRect){(w-width)/2, MENU_BAR_HEIGHT+8, width, height};
+}
+static void controls_activate(void) {
+    if (!control_selection) control_mode_keyboard = !control_mode_keyboard;
+    else if (control_selection == CONTROL_COUNT+1) {
+        memcpy(control_mappings, default_control_mappings, sizeof(control_mappings));
+        memcpy(controller_button_mappings, default_controller_mappings, sizeof(controller_button_mappings));
+        save_emulator_settings();
+    } else rebinding = true;
+}
+static void desktop_draw(void) {
+    int w, h; host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
+    menu_bar_resize(&desktop_menu, w, h);
+    snprintf(save_shortcut, sizeof(save_shortcut), "%s", host_key_name(control_mappings[8]));
+    snprintf(load_shortcut, sizeof(load_shortcut), "%s", host_key_name(control_mappings[9]));
+    MenuPainter painter = {NULL, chrome_fill, chrome_text};
+    DiagnosticSummary summary = diagnostics_summary(&diagnostics);
+    bool playing = nes_sys.cart && !paused &&
+        !debugger_active && !desktop_menu.active && !help_page && !file_browser.active && focused;
+    char text[128], mapper[24];
+    if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "Mapper %u", nes_sys.cart->mapper_id);
+    else snprintf(mapper, sizeof(mapper), "No ROM");
+    const char *audio_status = !audio_device ? "N/A" : audio_muted || !master_volume ? "Muted" :
+        !playing ? "Paused" : audio_monitor.errors ? "Error" : "OK";
+    if (w < 360) {
+        if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "M%u", nes_sys.cart->mapper_id);
+        snprintf(text, sizeof(text), "%.0fFPS|%.0f%%|%s|%s|P2:%s",
+            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
+            audio_status, zapper_enabled ? "Gun" : "Pad");
+    } else if (w < 480) {
+        if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "M%u", nes_sys.cart->mapper_id);
+        snprintf(text, sizeof(text), "%.1fFPS|%.0f%%|%s|Audio %s|P2:%s",
+            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
+            audio_status, zapper_enabled ? "Zapper" : "Controller");
+    } else {
+        snprintf(text, sizeof(text), "%.2f FPS | %.0f%% | %s | Audio %s | Port 2: %s",
+            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
+            audio_status, zapper_enabled ? "Zapper" : "Controller");
+    }
+    if (!nes_sys.cart && notification_timer > 0) {
+        snprintf(text, sizeof(text), "%s", notification_text); --notification_timer;
+    }
+    status_bar_draw(&(StatusBar){text}, &painter, w, h);
+    if (!nes_sys.cart && !file_browser.active && !help_page) {
+        chrome_text(NULL, "File > Open ROM...", 16, MENU_BAR_HEIGHT + 24, 0xAAAAAA);
+        chrome_text(NULL, "Ctrl+O", 16, MENU_BAR_HEIGHT + 40, 0xAAAAAA);
+    }
+    if (file_browser.active) {
+        file_browser_resize(&file_browser, w, h); file_browser_draw(&file_browser, &painter);
+    }
+    if (help_page == 3) {
+        MenuRect r = controls_bounds(w, h);
+        chrome_fill(NULL, r, 0xD4D0C8);
+        chrome_fill(NULL, (MenuRect){r.x,r.y,r.w,20}, 0x0A246A);
+        chrome_text(NULL, "Controller Bindings", r.x+8,r.y+6,0xFFFFFF);
+        int row_height = (r.h-46)/(CONTROL_COUNT+2);
+        for (int i = 0; i < CONTROL_COUNT+2; ++i) {
+            char line[96];
+            if (!i) snprintf(line,sizeof(line),"Input: %s",control_mode_keyboard ? "Keyboard" : "Controller");
+            else if (i == CONTROL_COUNT+1) snprintf(line,sizeof(line),"Restore Defaults");
+            else if (rebinding && i == control_selection) snprintf(line,sizeof(line),"%s: Press a %s...",button_names[i-1],control_mode_keyboard ? "key" : "button");
+            else if (control_mode_keyboard) snprintf(line,sizeof(line),"%s: %s",button_names[i-1],host_key_name(control_mappings[i-1]));
+            else snprintf(line,sizeof(line),"%s: Button %d",button_names[i-1],controller_button_mappings[i-1]);
+            int y = r.y+26+i*row_height;
+            if (i == control_selection) chrome_fill(NULL,(MenuRect){r.x+4,y-2,r.w-8,row_height},0x0A246A);
+            int chars = (r.w-16)/8; if (chars >= 0 && chars < (int)sizeof(line)) line[chars] = 0;
+            chrome_text(NULL,line,r.x+8,y,i == control_selection ? 0xFFFFFF : 0x202020);
+        }
+        chrome_text(NULL,"Enter: Change  Esc: Close",r.x+8,r.y+r.h-16,0x202020);
+    } else if (help_page) {
+        int x = w > 352 ? (w - 336) / 2 : 8, y = MENU_BAR_HEIGHT + 12;
+        chrome_fill(NULL, (MenuRect){x, y, 336, 180}, 0x808080);
+        chrome_fill(NULL, (MenuRect){x + 1, y + 1, 334, 178}, 0xF0EEE8);
+        static const char *controls[] = {"Controls / Shortcuts", "Alt / F10: Menu bar", "Arrows / Enter: Select", "Escape: Close / Back", "Shift+F10: Step   F9: Run/Pause", "F2: Metrics   F3: Debug panel", "F4: Capture   Ctrl+F4: Trace", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Escape or click: Close"};
+        static const char *about[] = {"NES Emulator", "Custom Sokol desktop interface", "8x8 bitmap font", "Windows / Linux / macOS", "", "Escape, Enter or click: Close"};
+        const char **lines = help_page == 1 ? controls : about;
+        int count = help_page == 1 ? COUNT(controls) : COUNT(about);
+        for (int i = 0; i < count; ++i) chrome_text(NULL, lines[i], x + 8, y + 10 + i * 16, 0x202020);
+    }
+    menu_bar_draw(&desktop_menu, &painter);
+}
+static void desktop_present(HostCanvas *game) { host_present(game); }
+static bool desktop_event(const HostEvent *event) {
+    MenuEvent e = {0};
+    MenuCommand command;
+    int w, h;
+    float scale = host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
+    menu_bar_resize(&desktop_menu, w, h);
+    if (event->type == HOST_WINDOWEVENT && event->window.event == HOST_WINDOWEVENT_FOCUS_LOST) {
+        e.type = MENU_BLUR; menu_bar_event(&desktop_menu, &e, &command); help_page = 0; rebinding = false; return false;
+    }
+    if (!focused) return false;
+    if (file_browser.active) {
+        HostEvent input = *event;
+        if (event->window_mouse.valid) {
+            input.button.x = (int)floorf(event->window_mouse.x / scale);
+            input.button.y = (int)floorf(event->window_mouse.y / scale);
+        }
+        file_browser_resize(&file_browser, w, h);
+        char path[BROWSER_PATH];
+        if (file_browser_event(&file_browser, &input, host_time(), path)) {
+            if (!browser_mode) frontend_load_rom(path);
+            else {
+                NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
+                show_notification(result == NES_STATE_OK ? (browser_mode == 2 ? "STATE SAVED" : "STATE LOADED") : nes_state_message(result));
+                clear_host_input(); runtime_reset_pending = true;
+                nes_sys.zapper_enabled = zapper_enabled;
+                debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0; clear_view_history(debugger_view_pc);
+            }
+        }
+        if (!file_browser.active) { clear_host_input(); runtime_reset_pending = true; desktop_menu.swallow_release = true; }
+        return event->type == HOST_KEYDOWN || event->type == HOST_KEYUP || event->type == HOST_TEXTINPUT ||
+            (event->type >= HOST_MOUSEMOTION && event->type <= HOST_MOUSEWHEEL);
+    }
+    if (help_page == 3) {
+        if (rebinding) {
+            if (event->type == HOST_KEYDOWN && !event->key.repeat) {
+                if (event->key.keysym.sym == HOST_KEY_ESCAPE) rebinding = false;
+                else if (control_mode_keyboard) {
+                    control_mappings[control_selection-1] = event->key.keysym.sym; save_emulator_settings(); rebinding = false;
+                }
+            } else if (!control_mode_keyboard && event->type == HOST_CONTROLLERBUTTONDOWN && event->cbutton.which == game_controller) {
+                controller_button_mappings[control_selection-1] = event->cbutton.button; save_emulator_settings(); rebinding = false;
+            }
+        } else if (event->type == HOST_KEYDOWN) {
+            if (event->key.keysym.sym == HOST_KEY_ESCAPE) help_page = 0;
+            else if (event->key.keysym.sym == HOST_KEY_UP) control_selection = (control_selection+CONTROL_COUNT+1)%(CONTROL_COUNT+2);
+            else if (event->key.keysym.sym == HOST_KEY_DOWN) control_selection = (control_selection+1)%(CONTROL_COUNT+2);
+            else if (event->key.keysym.sym == HOST_KEY_RETURN && !event->key.repeat) controls_activate();
+        } else if (event->type == HOST_MOUSEBUTTONDOWN && event->button.button == HOST_BUTTON_LEFT && event->window_mouse.valid) {
+            MenuRect r = controls_bounds(w,h);
+            int x = (int)(event->window_mouse.x / scale), y = (int)(event->window_mouse.y / scale);
+            int row_height = (r.h-46)/(CONTROL_COUNT+2);
+            if (row_height > 0 && x >= r.x && x < r.x+r.w && y >= r.y+24 && y < r.y+24+(CONTROL_COUNT+2)*row_height) {
+                control_selection = (y-r.y-24)/row_height; controls_activate();
+            } else if (y >= r.y+r.h-22 && y < r.y+r.h) help_page = 0;
+            desktop_menu.swallow_release = true;
+        }
+        return event->type != HOST_QUIT && event->type != HOST_WINDOWEVENT &&
+            event->type != HOST_CONTROLLERDEVICEADDED && event->type != HOST_CONTROLLERDEVICEREMOVED;
+    }
+    if (event->type == HOST_KEYDOWN || event->type == HOST_KEYUP) {
+        e.type = event->type == HOST_KEYDOWN ? MENU_KEY_PRESS : MENU_KEY_RELEASE;
+        e.repeat = event->key.repeat;
+        switch (event->key.keysym.sym) {
+            case HOST_KEY_LALT: case HOST_KEY_RALT: e.key = MENU_KEY_ACTIVATE; break;
+            case HOST_KEY_F10: if (!event->key.keysym.mod) e.key = MENU_KEY_ACTIVATE; break;
+            case HOST_KEY_LEFT: e.key = MENU_KEY_LEFT; break;
+            case HOST_KEY_RIGHT: e.key = MENU_KEY_RIGHT; break;
+            case HOST_KEY_UP: e.key = MENU_KEY_UP; break;
+            case HOST_KEY_DOWN: e.key = MENU_KEY_DOWN; break;
+            case HOST_KEY_RETURN: e.key = MENU_KEY_ENTER; break;
+            case HOST_KEY_ESCAPE: e.key = MENU_KEY_ESCAPE; break;
+            default: break;
+        }
+    } else if (event->type >= HOST_MOUSEMOTION && event->type <= HOST_MOUSEWHEEL) {
+        if (!event->window_mouse.valid) return false; /* Legacy synthetic game-coordinate events. */
+        e.x = (int)floorf(event->window_mouse.x / scale); e.y = (int)floorf(event->window_mouse.y / scale);
+        e.type = event->type == HOST_MOUSEMOTION ? MENU_MOVE : event->type == HOST_MOUSEBUTTONDOWN ? MENU_PRESS :
+            event->type == HOST_MOUSEBUTTONUP ? MENU_RELEASE : MENU_WHEEL;
+        last_mouse_activity = host_ticks();
+    } else return false;
+    if (help_page && !desktop_menu.active) {
+        if ((e.type == MENU_KEY_PRESS && !e.repeat && (e.key == MENU_KEY_ESCAPE || e.key == MENU_KEY_ENTER)) || e.type == MENU_PRESS) {
+            if (help_page == 1 && e.key == MENU_KEY_ENTER) { help_page = 3; control_selection = 0; }
+            else help_page = 0;
+            desktop_menu.swallow_release = e.type == MENU_PRESS;
+        }
+        return true;
+    }
+    bool active = desktop_menu.active;
+    bool consumed = menu_bar_event(&desktop_menu, &e, &command);
+    if (desktop_menu.active != active) { clear_host_input(); runtime_reset_pending = true; rebinding = false; }
+    if (command) desktop_command(command);
+    /* Panel clicks must not reach the legacy right-click/resume or Zapper paths. */
+    if (!consumed && event->window_mouse.valid &&
+        (event->type == HOST_MOUSEBUTTONDOWN || event->type == HOST_MOUSEWHEEL)) {
+        HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
+        HostPoint point = {event->window_mouse.x, event->window_mouse.y};
+        if (host_point_in_rect(&point, &panel)) return true;
+    }
+    return consumed;
+}
+
 static void app_init(void) {
     host_setup();
+    host_set_chrome(desktop_draw, font8x8);
+    menu_bar_init(&desktop_menu, desktop_menus, COUNT(desktop_menus), desktop_state, NULL);
     audio_device = host_audio_valid();
     audio_device_ms = host_audio_latency_ms();
     apply_display();
@@ -989,27 +1207,26 @@ static void app_init(void) {
     cpu_bus_bridge.cycle_tick = NULL;
 
     last_mouse_activity = host_ticks();
-    scan_rom_directory();
 }
 
 static void app_frame(void) {
     HostEvent event;
     host_poll_gamepads();
-    bool playing = current_state == GUI_STATE_GAMEPLAY && nes_sys.cart && !debugger_active && focused;
+    bool playing = nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && focused;
     if (runtime_reset_pending || playing != was_playing) {
         clear_host_input();
         reset_runtime();
     }
     was_playing = playing;
-    if (current_state == GUI_STATE_GAMEPLAY && nes_sys.cart != NULL) {
-        if (debugger_active) {
+    if (nes_sys.cart != NULL) {
+        if (debugger_active || paused || desktop_menu.active || help_page || file_browser.active || !focused) {
             host_color(renderer, 0, 0, 0, 255);
             host_clear(renderer);
             GameCrop crop = game_crop(nes_sys.cart->mapper_id);
             host_draw_frame(renderer, nes_sys.ppu.screen_buffer, &(HostRect){crop.x, crop.y, crop.w, crop.h});
             draw_notification(renderer);
             draw_debug_panel();
-            host_present(renderer);
+            desktop_present(renderer);
             host_delay(16);
         } else {
             uint64_t frame_start_tick = host_counter();
@@ -1052,7 +1269,7 @@ static void app_frame(void) {
                 host_color(renderer, 0, 0, 0, 255);
                 host_fill_rect(renderer, &warning_box);
                 draw_string(renderer, "Possible light-gun hang", 16, 164, 0xFFFF00);
-                draw_string(renderer, "ESC > Settings > Port 2", 16, 176, 0xFFFFFF);
+                draw_string(renderer, "Emulation > Port 2", 16, 176, 0xFFFFFF);
                 draw_string(renderer, "Select Controller", 16, 188, 0xFFFFFF);
                 draw_string(renderer, "then resume the game.", 16, 200, 0xFFFFFF);
             }
@@ -1060,7 +1277,7 @@ static void app_frame(void) {
 
             draw_notification(renderer);
             draw_debug_panel();
-            host_present(renderer);
+            desktop_present(renderer);
 
             if (nes_sys.frame_ready) {
                 uint64_t cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
@@ -1080,259 +1297,20 @@ static void app_frame(void) {
             debug_total_ticks += (frame_end_tick - frame_start_tick);
         }
     } else {
-        host_color(renderer, 20, 20, 30, 255);
-        host_clear(renderer);
-
-        draw_string(renderer, "NES SYSTEM", 64, 20, 0x00FF00);
-        draw_string(renderer, "==========", 64, 30, 0x00FF00);
-
-        if (current_state == GUI_STATE_MENU_MAIN) {
-            const char *options[] = {
-                "1. Resume Game",
-                "2. Load ROM",
-                "3. Save State Submenu",
-                "4. Load State Submenu",
-                "5. Controls",
-                "6. Settings",
-                "7. Exit Emulator"
-            };
-            for (int i = 0; i < 7; i++) {
-                uint32_t col;
-                if ((i == 0 || i == 2 || i == 3) && nes_sys.cart == NULL) {
-                    col = 0x444444;
-                } else {
-                    col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                }
-                draw_string(renderer, options[i], 40, 60 + i * 15, col);
-                if (i == menu_selection) {
-                    host_color(renderer, 0, 255, 0, 255);
-                    HostRect box = menu_item_rect(i);
-                    host_draw_rect(renderer, &box);
-                }
-            }
-        } else if (current_state == GUI_STATE_MENU_CONTROLS) {
-            char header_buf[64];
-            if (control_mode_keyboard) {
-                snprintf(header_buf, sizeof(header_buf), "Mode: < KEYBOARD >");
-            } else {
-                snprintf(header_buf, sizeof(header_buf), "Mode: < CONTROLLER >");
-            }
-            uint32_t header_col = (menu_selection == 0) ? 0xFFFFFF : 0x00FFFF;
-            draw_string(renderer, header_buf, 16, 45, header_col);
-            if (menu_selection == 0) {
-                host_color(renderer, 0, 255, 0, 255);
-                HostRect box = menu_item_rect(0);
-                host_draw_rect(renderer, &box);
-            }
-
-            draw_string(renderer, "-----------------------------", 16, 52, 0x00FFFF);
-            for (int i = 0; i < CONTROL_COUNT; i++) {
-                char buf[64];
-                if (control_mode_keyboard) {
-                    const char *key_name = host_key_name(control_mappings[i]);
-                    if (rebinding && (i + 1) == menu_selection) {
-                        snprintf(buf, sizeof(buf), "%-11s -> [PRESS KEY...]", button_names[i]);
-                    } else {
-                        snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], key_name);
-                    }
-                } else {
-                    const char *btn_name = "Unknown";
-                    switch (controller_button_mappings[i]) {
-                        case HOST_CONTROLLER_BUTTON_A: btn_name = "Button A"; break;
-                        case HOST_CONTROLLER_BUTTON_B: btn_name = "Button B"; break;
-                        case HOST_CONTROLLER_BUTTON_X: btn_name = "Button X"; break;
-                        case HOST_CONTROLLER_BUTTON_Y: btn_name = "Button Y"; break;
-                        case HOST_CONTROLLER_BUTTON_BACK: btn_name = "Back"; break;
-                        case HOST_CONTROLLER_BUTTON_GUIDE: btn_name = "Guide"; break;
-                        case HOST_CONTROLLER_BUTTON_START: btn_name = "Start"; break;
-                        case HOST_CONTROLLER_BUTTON_LEFTSTICK: btn_name = "Left Stick"; break;
-                        case HOST_CONTROLLER_BUTTON_RIGHTSTICK: btn_name = "Right Stick"; break;
-                        case HOST_CONTROLLER_BUTTON_LEFTSHOULDER: btn_name = "Left Shoulder"; break;
-                        case HOST_CONTROLLER_BUTTON_RIGHTSHOULDER: btn_name = "Right Shoulder"; break;
-                        case HOST_CONTROLLER_BUTTON_DPAD_UP: btn_name = "D-Pad Up"; break;
-                        case HOST_CONTROLLER_BUTTON_DPAD_DOWN: btn_name = "D-Pad Down"; break;
-                        case HOST_CONTROLLER_BUTTON_DPAD_LEFT: btn_name = "D-Pad Left"; break;
-                        case HOST_CONTROLLER_BUTTON_DPAD_RIGHT: btn_name = "D-Pad Right"; break;
-                        default: btn_name = "None"; break;
-                    }
-                    if (rebinding && (i + 1) == menu_selection) {
-                        snprintf(buf, sizeof(buf), "%-11s -> [PRESS BUTTON...]", button_names[i]);
-                    } else {
-                        snprintf(buf, sizeof(buf), "%-11s -> %s", button_names[i], btn_name);
-                    }
-                }
-                uint32_t col = ((i + 1) == menu_selection) ? 0xFFFFFF : 0x888888;
-                draw_string(renderer, buf, 24, 62 + i * 13, col);
-                if ((i + 1) == menu_selection) {
-                    host_color(renderer, 0, 255, 0, 255);
-                    HostRect box = menu_item_rect(i + 1);
-                    host_draw_rect(renderer, &box);
-                }
-            }
-            uint32_t def_col = (menu_selection == (CONTROL_COUNT + 1)) ? 0xFFFFFF : 0x888888;
-            draw_string(renderer, "Restore Defaults", 24, 62 + CONTROL_COUNT * 13, def_col);
-            if (menu_selection == (CONTROL_COUNT + 1)) {
-                host_color(renderer, 0, 255, 0, 255);
-                HostRect box = menu_item_rect(CONTROL_COUNT + 1);
-                host_draw_rect(renderer, &box);
-            }
-            draw_string(renderer, "Click/ENTER: Adjust", 16, 210, 0x888888);
-        } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
-            draw_string(renderer, "SELECT ROM TO LAUNCH:", 40, 50, 0xFFFF00);
-            if (rom_file_count == 0) {
-                draw_string(renderer, "No ROMs found in directory", 40, 70, 0xFF0000);
-            } else {
-                if (menu_selection < rom_scroll_offset) {
-                    rom_scroll_offset = menu_selection;
-                } else if (menu_selection >= rom_scroll_offset + 12) {
-                    rom_scroll_offset = menu_selection - 12 + 1;
-                }
-                int end_idx = rom_scroll_offset + 12;
-                if (end_idx > rom_file_count) end_idx = rom_file_count;
-                for (int i = rom_scroll_offset; i < end_idx; i++) {
-                    int display_row = i - rom_scroll_offset;
-                    uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                    char display_name[32];
-                    strncpy(display_name, rom_files[i], 24);
-                    display_name[24] = '\0';
-                    if (strlen(rom_files[i]) > 24) {
-                        strcat(display_name, "...");
-                    }
-                    draw_string(renderer, display_name, 32, 70 + display_row * 12, col);
-                    if (i == menu_selection) {
-                        host_color(renderer, 0, 255, 0, 255);
-                        HostRect box = menu_item_rect(i);
-                        host_draw_rect(renderer, &box);
-                    }
-                }
-                if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
-                if (end_idx < rom_file_count) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
-            }
-        } else if (current_state == GUI_STATE_MENU_SAVE_STATE) {
-            draw_string(renderer, "SELECT SAVE TO OVERWRITE:", 24, 50, 0xFFFF00);
-            int total_options = state_file_count + 1;
-            if (menu_selection < rom_scroll_offset) {
-                rom_scroll_offset = menu_selection;
-            } else if (menu_selection >= rom_scroll_offset + 12) {
-                rom_scroll_offset = menu_selection - 12 + 1;
-            }
-            int end_idx = rom_scroll_offset + 12;
-            if (end_idx > total_options) end_idx = total_options;
-            for (int i = rom_scroll_offset; i < end_idx; i++) {
-                int display_row = i - rom_scroll_offset;
-                uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                char buf[128];
-                if (i == 0) {
-                    snprintf(buf, sizeof(buf), "<Create New Manual Save>");
-                } else {
-                    get_state_file_info(state_files[i - 1], buf, sizeof(buf));
-                }
-                char display_buf[32];
-                strncpy(display_buf, buf, 28);
-                display_buf[28] = '\0';
-                if (strlen(buf) > 28) strcat(display_buf, "...");
-                draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
-                if (i == menu_selection) {
-                    host_color(renderer, 0, 255, 0, 255);
-                    HostRect box = menu_item_rect(i);
-                    host_draw_rect(renderer, &box);
-                }
-            }
-            if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
-            if (end_idx < total_options) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
-            draw_string(renderer, "Click/ENTER: Save", 24, 214, 0x00FFFF);
-        } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
-            draw_string(renderer, "SELECT SLOT TO LOAD STATE:", 24, 50, 0xFFFF00);
-            if (state_file_count == 0) {
-                draw_string(renderer, "No save states found", 40, 70, 0xFF0000);
-            } else {
-                if (menu_selection < rom_scroll_offset) {
-                    rom_scroll_offset = menu_selection;
-                } else if (menu_selection >= rom_scroll_offset + 12) {
-                    rom_scroll_offset = menu_selection - 12 + 1;
-                }
-                int end_idx = rom_scroll_offset + 12;
-                if (end_idx > state_file_count) end_idx = state_file_count;
-                for (int i = rom_scroll_offset; i < end_idx; i++) {
-                    int display_row = i - rom_scroll_offset;
-                    uint32_t col = (i == menu_selection) ? 0xFFFFFF : 0x888888;
-                    char buf[128];
-                    get_state_file_info(state_files[i], buf, sizeof(buf));
-                    char display_buf[32];
-                    strncpy(display_buf, buf, 28);
-                    display_buf[28] = '\0';
-                    if (strlen(buf) > 28) strcat(display_buf, "...");
-                    draw_string(renderer, display_buf, 32, 70 + display_row * 12, col);
-                    if (i == menu_selection) {
-                        host_color(renderer, 0, 255, 0, 255);
-                        HostRect box = menu_item_rect(i);
-                        host_draw_rect(renderer, &box);
-                    }
-                }
-                if (rom_scroll_offset > 0) draw_string(renderer, "^", 236, 68, 0x00FF00);
-                if (end_idx < state_file_count) draw_string(renderer, "v", 236, 68 + 11 * 12, 0x00FF00);
-            }
-            draw_string(renderer, "Click/ENTER: Load", 24, 214, 0x00FFFF);
-        } else if (current_state == GUI_STATE_MENU_SETTINGS) {
-            char rows[10][64];
-            snprintf(rows[0], sizeof(rows[0]), "Window: %s", window_scale == 5 ? "Maximized" : "");
-            if (window_scale != 5) snprintf(rows[0], sizeof(rows[0]), "Window: %dx", window_scale);
-            snprintf(rows[1], sizeof(rows[1]), "Muted: %s", audio_muted ? "ON" : "OFF");
-            snprintf(rows[2], sizeof(rows[2]), "Volume: %d%%", master_volume);
-            snprintf(rows[3], sizeof(rows[3]), "Fullscreen: %s", fullscreen ? "ON" : "OFF");
-            snprintf(rows[4], sizeof(rows[4]), "Debug panel (F3): %s", debug_panel_enabled ? "ON" : "OFF");
-            snprintf(rows[5], sizeof(rows[5]), "Port 2: %s", zapper_enabled ? "Zapper" : "Controller");
-            snprintf(rows[6], sizeof(rows[6]), "Use global display/Port 2");
-            snprintf(rows[7], sizeof(rows[7]), "Make display/Port 2 global");
-            snprintf(rows[8], sizeof(rows[8]), "Metrics panel (F2): %s", performance_visible ? "ON" : "OFF");
-            snprintf(rows[9], sizeof(rows[9]), "Event trace: %s", diagnostics.tracing ? "ON" : "OFF");
-            draw_string(renderer, nes_sys.cart ? (rom_override ? "THIS ROM: CUSTOM" : "THIS ROM: GLOBAL DEFAULTS") :
-                        "GLOBAL DEFAULTS", 24, 44, 0x00FFFF);
-            for (int i = 0; i < 10; ++i) {
-                draw_string(renderer, rows[i], 24, 60 + i * 13,
-                            menu_selection == i ? 0xFFFFFF : 0x888888);
-            }
-            host_color(renderer, 0, 255, 0, 255);
-            HostRect box = menu_item_rect(menu_selection);
-            host_draw_rect(renderer, &box);
-            draw_string(renderer, "<", 208, 86, 0x00FFFF);
-            draw_string(renderer, ">", 232, 86, 0x00FFFF);
-            draw_string(renderer, "Click/ENTER: Change", 24, 201, 0xFFFF00);
-            draw_string(renderer, "Volume: </> or wheel", 24, 215, 0xFFFF00);
-        }
-
-        if (current_state != GUI_STATE_MENU_MAIN)
-            draw_string(renderer, "< Back", 8, 229, 0x00FFFF);
-        else
-            draw_string(renderer, "Click: Select  RMB: Resume", 24, 229, 0x888888);
-        draw_notification(renderer);
-        draw_debug_panel();
-        host_present(renderer);
-        host_delay(16);
+        host_color(renderer, 18, 18, 22, 255); host_clear(renderer);
+        draw_debug_panel(); desktop_present(renderer); host_delay(16);
     }
 
     while (running && host_poll_event(&event)) {
-        if (event.type == HOST_MOUSEMOTION ||
-            event.type == HOST_MOUSEBUTTONDOWN || event.type == HOST_MOUSEBUTTONUP ||
-            event.type == HOST_MOUSEWHEEL) {
-            last_mouse_activity = host_ticks();
-            HostKey command = menu_mouse_command(&event, renderer);
-            if (command != HOST_KEY_UNKNOWN) {
-                host_zero(event);
-                event.type = HOST_KEYDOWN;
-                event.key.keysym.sym = command;
-            }
-        }
+        if (desktop_event(&event)) continue;
+        if (event.type >= HOST_MOUSEMOTION && event.type <= HOST_MOUSEWHEEL) last_mouse_activity = host_ticks();
         if (event.type == HOST_QUIT) {
             if (save_battery_ram()) running = false;
         } else if (event.type == HOST_WINDOWEVENT) {
             if (event.window.event == HOST_WINDOWEVENT_FOCUS_LOST) {
                 focused = false;
                 clear_host_input();
-                if (current_state == GUI_STATE_GAMEPLAY) {
-                    current_state = GUI_STATE_MENU_MAIN;
-                    menu_selection = 0;
-                }
+                if (nes_sys.cart) paused = true;
                 runtime_reset_pending = true;
             } else if (event.window.event == HOST_WINDOWEVENT_FOCUS_GAINED) {
                 focused = true;
@@ -1342,7 +1320,7 @@ static void app_frame(void) {
                 nes_sys.zapper_light = false;
             }
         } else if (event.type == HOST_MOUSEBUTTONDOWN) {
-            if (focused && current_state == GUI_STATE_GAMEPLAY && !debugger_active &&
+            if (focused && !debugger_active &&
                 nes_sys.zapper_enabled && event.button.button == HOST_BUTTON_LEFT)
                 nes_sys.zapper_trigger = true;
         } else if (event.type == HOST_MOUSEBUTTONUP) {
@@ -1358,12 +1336,12 @@ static void app_frame(void) {
             if (!focused || game_controller < 0 || event.cbutton.which !=
                 game_controller) continue;
             if (rebinding && !control_mode_keyboard) {
-                controller_button_mappings[menu_selection - 1] = event.cbutton.button;
+                controller_button_mappings[control_selection - 1] = event.cbutton.button;
                 save_emulator_settings();
                 rebinding = false;
                 continue;
             }
-            if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+            if (nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active) {
                 if (event.cbutton.button == controller_button_mappings[8]) {
                     char filename[128];
                     get_rolling_quicksave_filename(filename, sizeof(filename), true);
@@ -1379,20 +1357,6 @@ static void app_frame(void) {
                         }
                     }
                 }
-            } else {
-                if (event.cbutton.button == HOST_CONTROLLER_BUTTON_DPAD_UP) {
-                    push_synthetic_key(HOST_KEY_UP, HOST_KEYDOWN);
-                } else if (event.cbutton.button == HOST_CONTROLLER_BUTTON_DPAD_DOWN) {
-                    push_synthetic_key(HOST_KEY_DOWN, HOST_KEYDOWN);
-                } else if (event.cbutton.button == HOST_CONTROLLER_BUTTON_DPAD_LEFT) {
-                    push_synthetic_key(HOST_KEY_LEFT, HOST_KEYDOWN);
-                } else if (event.cbutton.button == HOST_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                    push_synthetic_key(HOST_KEY_RIGHT, HOST_KEYDOWN);
-                } else if (event.cbutton.button == HOST_CONTROLLER_BUTTON_A || event.cbutton.button == HOST_CONTROLLER_BUTTON_START) {
-                    push_synthetic_key(HOST_KEY_RETURN, HOST_KEYDOWN);
-                } else if (event.cbutton.button == HOST_CONTROLLER_BUTTON_B || event.cbutton.button == HOST_CONTROLLER_BUTTON_BACK) {
-                    push_synthetic_key(HOST_KEY_ESCAPE, HOST_KEYDOWN);
-                }
             }
         } else if (event.type == HOST_CONTROLLERBUTTONUP) {
             if (game_controller < 0 || event.cbutton.which !=
@@ -1403,7 +1367,7 @@ static void app_frame(void) {
         } else if (event.type == HOST_CONTROLLERAXISMOTION) {
             if (!focused || game_controller < 0 || event.caxis.which !=
                 game_controller) continue;
-            if (current_state == GUI_STATE_GAMEPLAY && !debugger_active) {
+            if (nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active) {
                 if (event.caxis.axis == HOST_CONTROLLER_AXIS_LEFTX)
                     host_input_axis(&host_input, false, event.caxis.value);
                 if (event.caxis.axis == HOST_CONTROLLER_AXIS_LEFTY)
@@ -1435,7 +1399,7 @@ static void app_frame(void) {
             }
             if (rebinding) {
                 if (control_mode_keyboard && event.key.keysym.sym != HOST_KEY_ESCAPE) {
-                    control_mappings[menu_selection - 1] = event.key.keysym.sym;
+                    control_mappings[control_selection - 1] = event.key.keysym.sym;
                     save_emulator_settings();
                 }
                 rebinding = false;
@@ -1443,261 +1407,14 @@ static void app_frame(void) {
             }
 
             if (event.key.keysym.sym == HOST_KEY_ESCAPE || event.key.keysym.sym == HOST_KEY_F1) {
-                if (current_state == GUI_STATE_GAMEPLAY) {
-                    current_state = GUI_STATE_MENU_MAIN;
-                    menu_selection = nes_sys.cart ? 0 : 1;
-                } else if (current_state == GUI_STATE_MENU_MAIN) {
-                    if (nes_sys.cart != NULL) {
-                        current_state = GUI_STATE_GAMEPLAY;
-                    }
-                } else {
-                    current_state = GUI_STATE_MENU_MAIN;
-                    menu_selection = nes_sys.cart ? 0 : 1;
-                }
-                break;
+                if (nes_sys.cart) desktop_command(MENU_PAUSE);
+                else desktop_command(MENU_OPEN);
+                continue;
             }
-
-            if (current_state != GUI_STATE_GAMEPLAY) {
-                switch (event.key.keysym.sym) {
-                    case HOST_KEY_UP:
-                        do {
-                            menu_selection--;
-                            if (menu_selection < 0) {
-                                if (current_state == GUI_STATE_MENU_MAIN) menu_selection = 6;
-                                else if (current_state == GUI_STATE_MENU_LOAD_ROM) menu_selection = rom_file_count - 1;
-                                else if (current_state == GUI_STATE_MENU_SAVE_STATE) menu_selection = state_file_count;
-                                else if (current_state == GUI_STATE_MENU_LOAD_STATE) menu_selection = state_file_count - 1;
-                                else if (current_state == GUI_STATE_MENU_SETTINGS) menu_selection = 9;
-                                else if (current_state == GUI_STATE_MENU_CONTROLS) menu_selection = (CONTROL_COUNT + 1);
-                            }
-                        } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
-                        break;
-                    case HOST_KEY_DOWN:
-                        do {
-                            menu_selection++;
-                            if (current_state == GUI_STATE_MENU_MAIN && menu_selection > 6) menu_selection = 0;
-                            else if (current_state == GUI_STATE_MENU_LOAD_ROM && menu_selection >= rom_file_count) menu_selection = 0;
-                            else if (current_state == GUI_STATE_MENU_SAVE_STATE && menu_selection > state_file_count) menu_selection = 0;
-                            else if (current_state == GUI_STATE_MENU_LOAD_STATE && menu_selection >= state_file_count) menu_selection = 0;
-                            else if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection > 9) menu_selection = 0;
-                            else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection > (CONTROL_COUNT + 1)) menu_selection = 0;
-                        } while (current_state == GUI_STATE_MENU_MAIN && nes_sys.cart == NULL && (menu_selection == 0 || menu_selection == 2 || menu_selection == 3));
-                        break;
-                    case HOST_KEY_LEFT:
-                        if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection == 2) {
-                            master_volume -= 10;
-                            if (master_volume < 0) master_volume = 0;
-                            play_volume_ding();
-                            save_emulator_settings();
-                        } else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection == 0) {
-                            control_mode_keyboard = !control_mode_keyboard;
-                        }
-                        break;
-                    case HOST_KEY_RIGHT:
-                        if (current_state == GUI_STATE_MENU_SETTINGS && menu_selection == 2) {
-                            master_volume += 10;
-                            if (master_volume > 100) master_volume = 100;
-                            play_volume_ding();
-                            save_emulator_settings();
-                        } else if (current_state == GUI_STATE_MENU_CONTROLS && menu_selection == 0) {
-                            control_mode_keyboard = !control_mode_keyboard;
-                        }
-                        break;
-                    case HOST_KEY_BACKSPACE:
-                        if (current_state != GUI_STATE_MENU_MAIN) {
-                            current_state = GUI_STATE_MENU_MAIN;
-                            menu_selection = nes_sys.cart ? 0 : 1;
-                        }
-                        break;
-                    case HOST_KEY_RETURN:
-                        if (current_state == GUI_STATE_MENU_MAIN) {
-                            if (menu_selection == 0) {
-                                if (nes_sys.cart != NULL) {
-                                    current_state = GUI_STATE_GAMEPLAY;
-                                }
-                            } else if (menu_selection == 1) {
-                                current_state = GUI_STATE_MENU_LOAD_ROM;
-                                menu_selection = 0;
-                                rom_scroll_offset = 0;
-                                scan_rom_directory();
-                            } else if (menu_selection == 2) {
-                                if (nes_sys.cart != NULL) {
-                                    current_state = GUI_STATE_MENU_SAVE_STATE;
-                                    menu_selection = 0;
-                                    rom_scroll_offset = 0;
-                                    scan_save_state_directory();
-                                }
-                            } else if (menu_selection == 3) {
-                                if (nes_sys.cart != NULL) {
-                                    current_state = GUI_STATE_MENU_LOAD_STATE;
-                                    menu_selection = 0;
-                                    rom_scroll_offset = 0;
-                                    scan_save_state_directory();
-                                }
-                            } else if (menu_selection == 4) {
-                                current_state = GUI_STATE_MENU_CONTROLS;
-                                menu_selection = 0;
-                            } else if (menu_selection == 5) {
-                                current_state = GUI_STATE_MENU_SETTINGS;
-                                menu_selection = 0;
-                            } else if (menu_selection == 6) {
-                                if (save_battery_ram()) running = false;
-                            }
-                        } else if (current_state == GUI_STATE_MENU_CONTROLS) {
-                            if (menu_selection == 0) {
-                                control_mode_keyboard = !control_mode_keyboard;
-                            } else if (menu_selection == (CONTROL_COUNT + 1)) {
-                                for (int i = 0; i < CONTROL_COUNT; i++) {
-                                    control_mappings[i] = default_control_mappings[i];
-                                    controller_button_mappings[i] = default_controller_mappings[i];
-                                }
-                                save_emulator_settings();
-                            } else {
-                                rebinding = true;
-                            }
-                        } else if (current_state == GUI_STATE_MENU_LOAD_ROM) {
-                            if (rom_file_count > 0) {
-                                if (nes_sys.cart) {
-                                    if (!save_battery_ram()) continue;
-                                    cartridge_free(nes_sys.cart);
-                                    nes_sys.cart = NULL;
-                                }
-
-                                nes_init(&nes_sys);
-                                bool trace_enabled = diagnostics.tracing;
-                                memset(&diagnostics, 0, sizeof(diagnostics));
-                                diagnostics.tracing = trace_enabled;
-                                memset(&audio_monitor, 0, sizeof(audio_monitor));
-                                nes_sys.diagnostics = &diagnostics;
-                                apply_rom_preferences();
-
-                                char rom_error[128];
-                                Cartridge *cart = cartridge_load_ex(&nes_sys, rom_files[menu_selection], rom_error, sizeof(rom_error));
-                                if (!cart && strcmp(rom_error, "Cannot open ROM") == 0) {
-                                    char *base_path = host_base_path();
-                                    if (base_path) {
-                                        char full_path[1024];
-                                        snprintf(full_path, sizeof(full_path), "%s%s", base_path, rom_files[menu_selection]);
-                                        cart = cartridge_load_ex(&nes_sys, full_path, rom_error, sizeof(rom_error));
-                                        free(base_path);
-                                    }
-                                }
-
-                                if (!cart) {
-                                    show_notification(rom_error);
-                                    notification_timer = 180;
-                                    fprintf(stderr, "%s: %s\n", rom_files[menu_selection], rom_error);
-                                }
-
-                                if (cart) {
-                                    nes_sys.cart = cart;
-                                    apply_rom_preferences();
-                                    strncpy(loaded_rom_name, rom_files[menu_selection], sizeof(loaded_rom_name) - 1);
-                                    loaded_rom_name[sizeof(loaded_rom_name) - 1] = '\0';
-
-                                    char rom_name_clean[256];
-                                    strncpy(rom_name_clean, rom_files[menu_selection], sizeof(rom_name_clean) - 1);
-                                    rom_name_clean[sizeof(rom_name_clean) - 1] = '\0';
-                                    char *ext = strrchr(rom_name_clean, '.');
-                                    if (ext) *ext = '\0';
-
-                                    char *base_path = host_base_path();
-                                    if (base_path) {
-                                        snprintf(save_state_dir, sizeof(save_state_dir), "%s%s/%s", base_path, "saves", rom_name_clean);
-                                        free(base_path);
-                                    } else {
-                                        snprintf(save_state_dir, sizeof(save_state_dir), "%s/%s", "saves", rom_name_clean);
-                                    }
-
-                                    char saves_root_dir[512];
-                                    strncpy(saves_root_dir, save_state_dir, sizeof(saves_root_dir) - 1);
-                                    saves_root_dir[sizeof(saves_root_dir) - 1] = '\0';
-                                    char *last_slash = strrchr(saves_root_dir, '/');
-                                    if (last_slash) *last_slash = '\0';
-                                    MKDIR(saves_root_dir);
-                                    MKDIR(save_state_dir);
-
-                                    nes_reset(&nes_sys);
-                                    nes_clock_tick(&nes_sys);
-                                    debugger_init();
-                                    if (!load_battery_ram()) {
-                                        cartridge_free(nes_sys.cart);
-                                        nes_sys.cart = NULL;
-                                        apply_rom_preferences();
-                                        continue;
-                                    }
-                                    debugger_active = false;
-                                    debugger_logging_active = false;
-                                    if (debugger_active) {
-                                        debugger_view_pc = nes_sys.cpu.program_counter;
-                                        debugger_selected_line = 0;
-                                        clear_view_history(debugger_view_pc);
-                                    }
-                                    current_state = GUI_STATE_GAMEPLAY;
-                                }
-                            }
-                        } else if (current_state == GUI_STATE_MENU_SAVE_STATE) {
-                            if (menu_selection == 0) {
-                                time_t t = time(NULL);
-                                struct tm *tm_info = localtime(&t);
-                                char name_buf[128];
-                                if (tm_info) {
-                                    strftime(name_buf, sizeof(name_buf), "manual_%Y%m%d_%H%M%S.state", tm_info);
-                                } else {
-                                    snprintf(name_buf, sizeof(name_buf), "manual_%ld.state", (long)t);
-                                }
-                                save_emulator_state(save_state_dir, name_buf);
-                            } else {
-                                save_emulator_state(save_state_dir, state_files[menu_selection - 1]);
-                            }
-                            current_state = GUI_STATE_GAMEPLAY;
-                        } else if (current_state == GUI_STATE_MENU_LOAD_STATE) {
-                            if (state_file_count > 0) {
-                                load_emulator_state(save_state_dir, state_files[menu_selection]);
-                                current_state = GUI_STATE_GAMEPLAY;
-                            }
-                        } else if (current_state == GUI_STATE_MENU_SETTINGS) {
-                            if (menu_selection == 0) {
-                                preferences_inherit = false;
-                                window_scale++;
-                                if (window_scale > 5) window_scale = 1;
-                                apply_display();
-                            } else if (menu_selection == 1) {
-                                audio_muted = !audio_muted;
-                                runtime_reset_pending = true;
-                            } else if (menu_selection == 2) {
-                                play_volume_ding();
-                            } else if (menu_selection == 3) {
-                                preferences_inherit = false;
-                                fullscreen = !fullscreen;
-                                apply_display();
-                            } else if (menu_selection == 4) {
-                                debug_panel_enabled = !debug_panel_enabled;
-                            } else if (menu_selection == 5) {
-                                preferences_inherit = false;
-                                zapper_enabled = !zapper_enabled;
-                                nes_sys.zapper_enabled = zapper_enabled;
-                                nes_sys.zapper_trigger = false;
-                                nes_sys.zapper_light = false;
-                                nes_reset_zapper_watchdog(&nes_sys);
-                            } else if (menu_selection == 6) {
-                                preferences_inherit = true;
-                                save_emulator_settings();
-                                apply_rom_preferences();
-                            } else if (menu_selection == 7) {
-                                global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
-                                show_notification("GLOBAL DEFAULTS UPDATED");
-                            } else if (menu_selection == 8) {
-                                performance_visible = !performance_visible;
-                            } else if (menu_selection == 9) {
-                                diagnostics.tracing = !diagnostics.tracing;
-                            }
-                            save_emulator_settings();
-                        }
-                        break;
-                    default: break;
-                }
-            } else {
+            if (event.key.keysym.sym == 'o' && (event.key.keysym.mod & HOST_MOD_CTRL)) {
+                desktop_command(MENU_OPEN); continue;
+            }
+            if (nes_sys.cart) {
                 HostKey sym = event.key.keysym.sym;
                 if (sym == control_mappings[8]) {
                     char filename[128];
@@ -1778,38 +1495,13 @@ static void app_frame(void) {
                         }
                         break;
                     }
-                    case HOST_KEY_F10: {
-                        if (debugger_active) {
-                            debugger_step_instruction(&nes_sys.cpu, &cpu_bus_bridge);
-                            clear_view_history(debugger_view_pc);
-                        } else {
-                            debugger_active = true;
-                            debugger_view_pc = nes_sys.cpu.program_counter;
-                            debugger_selected_line = 0;
-                            clear_view_history(debugger_view_pc);
-                        }
+                    case HOST_KEY_F10:
+                        if (event.key.keysym.mod & HOST_MOD_SHIFT) desktop_command(MENU_STEP);
                         break;
-                    }
-                    case HOST_KEY_F9: {
-                        if (debugger_active) {
-                            debugger_step_instruction(&nes_sys.cpu, &cpu_bus_bridge);
-                            debugger_active = false;
-                        } else {
-                            debugger_active = true;
-                            debugger_view_pc = nes_sys.cpu.program_counter;
-                            debugger_selected_line = 0;
-                            clear_view_history(debugger_view_pc);
-                        }
+                    case HOST_KEY_F9: desktop_command(MENU_RUN); break;
+                    case HOST_KEY_F12:
+                        if (debugger_active) desktop_command(MENU_RESET);
                         break;
-                    }
-                    case HOST_KEY_F12: {
-                        if (debugger_active) {
-                            nes_reset(&nes_sys);
-                            nes_clock_tick(&nes_sys);
-                            runtime_reset_pending = true;
-                        }
-                        break;
-                    }
                     default: {
                         if (!debugger_active) {
                             for (int i = 0; i < 8; i++) {
@@ -1822,7 +1514,7 @@ static void app_frame(void) {
                     }
                 }
             }
-    }
+            }
         } else if (event.type == HOST_KEYUP) {
             for (int i = 0; i < 8; i++) {
                 if (event.key.keysym.sym == control_mappings[i]) {
@@ -1832,10 +1524,10 @@ static void app_frame(void) {
         }
     }
 
-    if (current_state != GUI_STATE_GAMEPLAY || debugger_active || !focused)
+    if (!nes_sys.cart || debugger_active || paused || desktop_menu.active || help_page || file_browser.active || !focused)
         clear_host_input();
     nes_sys.controller_state[0] = host_input_value(&host_input);
-    if (focused && current_state == GUI_STATE_GAMEPLAY && !debugger_active && nes_sys.zapper_enabled) {
+    if (nes_sys.cart && focused && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && nes_sys.zapper_enabled) {
         int mx, my;
         float lx, ly;
         host_mouse_position(&mx, &my);
@@ -1851,7 +1543,7 @@ static void app_frame(void) {
     float game_x, game_y;
     host_mouse_position(&cursor_x, &cursor_y);
     host_to_logical(renderer, cursor_x, cursor_y, &game_x, &game_y);
-    bool can_hide_cursor = current_state == GUI_STATE_GAMEPLAY &&
+    bool can_hide_cursor = !desktop_menu.active && !help_page && !file_browser.active &&
         nes_sys.cart != NULL && !debugger_active && !nes_sys.zapper_enabled &&
         game_x >= 0 && game_x < 256 && game_y >= 0 && game_y < 240 &&
         (window_flags & HOST_WINDOW_INPUT_FOCUS) &&

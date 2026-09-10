@@ -371,8 +371,8 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
     draw_string(renderer, buf, 8, 210, 0x00FF00);
 
     char log_status_str[64];
-    snprintf(log_status_str, sizeof(log_status_str), "F10:Step|F9:Run|F6:Log:%s", debugger_logging_active ? "ON" : "OFF");
+    snprintf(log_status_str, sizeof(log_status_str), "Shift+F10:Step|F9:Run|F6:Log:%s", debugger_logging_active ? "ON" : "OFF");
     draw_string(renderer, log_status_str, 8, 222, 0xFF00FF);
 
-    draw_string(renderer, "F7:BRK | UP/DN:Nav | ESC:Menu", 8, 231, 0xFF00FF);
+    draw_string(renderer, "F7:BRK | UP/DN:Nav | F10:Menu", 8, 231, 0xFF00FF);
 }

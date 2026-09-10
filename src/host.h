@@ -32,6 +32,10 @@ typedef int32_t HostKey;
 #define HOST_KEY_DOWN (0x40000000 + 81)
 #define HOST_KEY_UP (0x40000000 + 82)
 #define HOST_MOD_CTRL 1
+#define HOST_MOD_SHIFT 2
+#define HOST_MOD_ALT 4
+#define HOST_KEY_LALT (0x40000000 + 226)
+#define HOST_KEY_RALT (0x40000000 + 230)
 typedef int32_t HostButton;
 enum {
     HOST_CONTROLLER_BUTTON_A, HOST_CONTROLLER_BUTTON_B,
@@ -46,7 +50,7 @@ enum {
 enum { HOST_QUIT = 1, HOST_KEYDOWN, HOST_KEYUP, HOST_MOUSEMOTION,
     HOST_MOUSEBUTTONDOWN, HOST_MOUSEBUTTONUP, HOST_MOUSEWHEEL, HOST_WINDOWEVENT,
     HOST_CONTROLLERDEVICEADDED, HOST_CONTROLLERDEVICEREMOVED,
-    HOST_CONTROLLERBUTTONDOWN, HOST_CONTROLLERBUTTONUP, HOST_CONTROLLERAXISMOTION };
+    HOST_CONTROLLERBUTTONDOWN, HOST_CONTROLLERBUTTONUP, HOST_CONTROLLERAXISMOTION, HOST_TEXTINPUT };
 enum { HOST_WINDOWEVENT_FOCUS_LOST, HOST_WINDOWEVENT_FOCUS_GAINED, HOST_WINDOWEVENT_LEAVE };
 enum { HOST_BUTTON_LEFT = 1, HOST_BUTTON_RIGHT = 3 };
 enum { HOST_CONTROLLER_AXIS_LEFTX, HOST_CONTROLLER_AXIS_LEFTY };
@@ -59,6 +63,8 @@ enum { HOST_WINDOW_INPUT_FOCUS = 1, HOST_WINDOW_MOUSE_FOCUS = 2 };
 #define host_zero(v) memset(&(v), 0, sizeof(v))
 typedef struct HostEvent {
     uint32_t type;
+    uint32_t character;
+    struct { int x, y; bool valid; } window_mouse;
     struct { int state; bool repeat; struct { HostKey sym; int mod; } keysym; } key;
     struct { int x, y; } motion;
     struct { int x, y, button; } button;
@@ -98,6 +104,11 @@ void host_mouse_position(int *x, int *y);
 void host_to_logical(HostCanvas *canvas, int x, int y, float *lx, float *ly);
 void host_viewport(int width, int height, HostRect *rect);
 void host_set_debug_panel(HostCanvas *panel);
+void host_set_chrome(void (*draw)(void), const uint8_t font[95][8]);
+void host_ui_rect(HostRect rect, uint32_t color);
+void host_ui_text(const char *text, int x, int y, uint32_t color);
+/* UI pixels share one uniform scale with drawing and window-space hit tests. */
+float host_chrome_layout(int width, int height, int *logical_width, int *logical_height);
 void host_layout(int width, int height, HostRect *game, HostRect *panel);
 uint32_t host_window_flags(void);
 void host_show_cursor(bool show);
