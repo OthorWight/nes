@@ -10,6 +10,8 @@ void nes_init(NES *nes) {
 }
 
 void nes_reset(NES *nes) {
+    nes->oam_dma_pending = false;
+    nes->dmc_dma_pending = false;
     nes_reset_zapper_watchdog(nes);
     cpu_trigger_reset(&nes->cpu);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->reset) {
@@ -157,6 +159,70 @@ static inline void nes_step_subsystems(NES *nes) {
     if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
 }
 
+void nes_request_dmc_dma(NES *nes, bool load) {
+    if (!nes || nes->dmc_dma_pending) return;
+    nes->dmc_dma_pending = true;
+    uint64_t cycle = nes->cpu.cycle_count;
+    // This machine powers on with even get / odd put cycles. Load DMA
+    // halts on the second following APU get; reload DMA halts on a put.
+    nes->dmc_dma_cycle = load ? cycle + ((cycle & 1) ? 3 : 4)
+                              : cycle + ((cycle & 1) ? 0 : 1);
+}
+
+static void dma_clock(NES *nes) {
+    nes->cpu.cycle_count++;
+    nes_step_subsystems(nes);
+}
+
+// Called only on a CPU read, after its clock has advanced. DMA cannot halt
+// writes. Once halted, OAM transfers and DMC setup share cycles; only DMC's
+// get takes the bus away from OAM. No CPU instruction executes in this loop.
+static void nes_run_dma(NES *nes, uint16_t cpu_address) {
+    while (nes->oam_dma_pending ||
+           (nes->dmc_dma_pending && nes->cpu.cycle_count >= nes->dmc_dma_cycle)) {
+        bool oam = nes->oam_dma_pending;
+        uint16_t source = (uint16_t)nes->oam_dma_page << 8;
+        uint8_t start = nes->ppu.oam_addr;
+        unsigned index = 0;
+        uint8_t value = 0;
+        bool have_value = false;
+        unsigned dmc_phase = (nes->dmc_dma_pending &&
+            nes->cpu.cycle_count >= nes->dmc_dma_cycle) ? 1 : 0;
+        nes->oam_dma_pending = false;
+        (void)nes_cpu_bus_read(nes, cpu_address); // Halt repeats the CPU read.
+        while (oam || dmc_phase) {
+            dma_clock(nes);
+            bool get = !(nes->cpu.cycle_count & 1);
+            bool bus_used = false;
+            if (dmc_phase == 1) {
+                dmc_phase = 2; // Dummy cycle; OAM can still transfer.
+            } else if (dmc_phase == 2 && get) {
+                apu_dmc_dma_complete(&nes->apu, nes);
+                nes->dmc_dma_pending = false;
+                dmc_phase = 0;
+                bus_used = true;
+            } else if (!dmc_phase && nes->dmc_dma_pending &&
+                       nes->cpu.cycle_count >= nes->dmc_dma_cycle) {
+                dmc_phase = 1; // DMC halt overlaps the already halted CPU.
+            }
+            if (oam && !bus_used) {
+                if (get && !have_value) {
+                    value = nes_cpu_bus_read(nes, source + index);
+                    have_value = true;
+                    bus_used = true;
+                } else if (!get && have_value) {
+                    nes->ppu.oam_ram[(start + index) & 255] = value;
+                    have_value = false;
+                    bus_used = true;
+                    if (++index == 256) oam = false;
+                }
+            }
+            if (!bus_used) (void)nes_cpu_bus_read(nes, cpu_address);
+        }
+        dma_clock(nes); // The CPU finally completes its interrupted read.
+    }
+}
+
 static void cpu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
     nes->cpu_open_bus = data;
     if (addr <= 0x1FFF) {
@@ -170,31 +236,8 @@ static void cpu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
     }
 
     if (addr == 0x4014) {
-        uint16_t dma_addr = (uint16_t)(data << 8);
-        uint8_t oam_start = nes->ppu.oam_addr;
-
-        // OAM DMA always has one halt cycle, plus one alignment cycle
-        // when the $4014 write finishes on an odd CPU cycle.  Capture the
-        // parity before advancing the clock, then keep the PPU/APU synchronized
-        // for every stalled CPU cycle.
-        bool needs_alignment_cycle = (nes->cpu.cycle_count & 1u) != 0;
-
-        nes->cpu.cycle_count++;
-        nes_step_subsystems(nes);
-        if (needs_alignment_cycle) {
-            nes->cpu.cycle_count++;
-            nes_step_subsystems(nes);
-        }
-
-        for (int i = 0; i < 256; i++) {
-            uint8_t val = nes_cpu_bus_read(nes, dma_addr + i);
-            nes->cpu.cycle_count++;
-            nes_step_subsystems(nes);
-
-            nes->ppu.oam_ram[(oam_start + i) & 0xFF] = val;
-            nes->cpu.cycle_count++;
-            nes_step_subsystems(nes);
-        }
+        nes->oam_dma_page = data;
+        nes->oam_dma_pending = true;
         return;
     }
 
@@ -322,6 +365,7 @@ static void nes_cpu_cycle_tick_wrapper(void *context) {
 
 static uint8_t nes_cpu_bus_read_wrapper(void *context, uint16_t addr) {
     NES *nes = (NES*)context;
+    nes_run_dma(nes, addr);
     return nes_cpu_bus_read(nes, addr); 
 }
 

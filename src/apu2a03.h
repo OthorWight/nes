@@ -101,5 +101,6 @@ void    apu_init(APU2A03 *apu);
 void    apu_write_reg(NES *nes, uint16_t address, uint8_t data);
 uint8_t apu_read_reg(NES *nes, uint16_t address);
 void    apu_step(APU2A03 *apu, NES *nes);
+void    apu_dmc_dma_complete(APU2A03 *apu, NES *nes);
 
 #endif

@@ -44,6 +44,11 @@ struct NES {
     NES_Clock  clock;
     NES_Lines  lines;
 
+    bool       oam_dma_pending;
+    uint8_t    oam_dma_page;
+    bool       dmc_dma_pending;
+    uint64_t   dmc_dma_cycle;
+
     uint8_t    wram[2048];
     uint8_t    ciram[4096]; // Includes the extra 2 KiB used by four-screen boards.
 
@@ -72,6 +77,7 @@ void    nes_ppu_bus_set_address(NES *nes, uint16_t addr);
 void    nes_init(NES *nes);
 void    nes_reset(NES *nes);
 void    nes_clock_tick(NES *nes);
+void    nes_request_dmc_dma(NES *nes, bool load);
 // Call once per completed frame; this detects a suspected polling hang.
 void    nes_check_zapper_stall(NES *nes);
 void    nes_reset_zapper_watchdog(NES *nes);

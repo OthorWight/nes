@@ -33,12 +33,13 @@ static void open_bus_and_partial_reads(void) {
     assert(nes_cpu_bus_read(n, 0x4015) == 0x20);
     n->wram[0x2FF] = 0xB9;
     nes_cpu_bus_write(n, 0x4014, 2);
-    assert(nes_cpu_bus_read(n, 0x5000) == 0xB9);
+    assert(n->oam_dma_pending && nes_cpu_bus_read(n, 0x5000) == 2);
     // Indexed absolute open bus sees the operand's high byte, not effective address.
     const uint8_t code[] = {0xBD, 0xFF, 0x50};
     memcpy(n->wram + 0x100, code, sizeof(code));
     n->cpu.program_counter = 0x100; n->cpu.index_x = 1;
     nes_clock_tick(n); assert(n->cpu.accumulator == 0x50);
+    assert(!n->oam_dma_pending && n->ppu.oam_ram[255] == 0xB9);
     free(n);
 }
 static void all_mapper_rom_ram_boundaries(void) {

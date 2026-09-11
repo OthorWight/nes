@@ -219,6 +219,17 @@ static void payload(NES *n, StateIO *io, unsigned version) {
         // Bootstrap from PPUMASK, matching their immediate-enable behavior.
         n->ppu.odd_skip_rendering = (n->ppu.ppu_mask & 0x18) != 0;
     }
+    if (version >= 4) {
+        n->oam_dma_pending = state_bool(io, n->oam_dma_pending);
+        n->oam_dma_page = state_u8(io, n->oam_dma_page);
+        n->dmc_dma_pending = state_bool(io, n->dmc_dma_pending);
+        n->dmc_dma_cycle = state_u64(io, n->dmc_dma_cycle);
+    } else if (io->reading) {
+        n->oam_dma_pending = false;
+        n->oam_dma_page = 0;
+        n->dmc_dma_pending = false;
+        n->dmc_dma_cycle = 0;
+    }
     if (!valid_machine(n)) io->ok = false;
 }
 

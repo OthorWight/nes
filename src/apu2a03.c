@@ -71,9 +71,8 @@ static bool is_sweep_muting(APU2A03 *apu, int ch) {
     return (target > 0x07FF);
 }
 
-static void dmc_fetch(APU2A03 *apu, NES *nes) {
+void apu_dmc_dma_complete(APU2A03 *apu, NES *nes) {
     if (apu->dmc_bytes_remaining > 0 && nes) {
-        nes->cpu.stall_cycles += 4;
         apu->dmc_buffer = nes_cpu_bus_read(nes, apu->dmc_current_addr);
         apu->dmc_buffer_empty = false;
         apu->dmc_current_addr = (apu->dmc_current_addr + 1) | 0x8000;
@@ -305,8 +304,11 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
                 apu->dmc_current_addr = apu->dmc_sample_addr;
                 apu->dmc_bytes_remaining = apu->dmc_sample_len;
             }
+            if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining)
+                nes_request_dmc_dma(nes, true);
         } else {
             apu->dmc_bytes_remaining = 0;
+            nes->dmc_dma_pending = false;
         }
     } else if (address == 0x4017) {
         apu->frame_mode = (data & 0x80) != 0;
@@ -421,7 +423,7 @@ static void apu_step_dmc(APU2A03 *apu, NES *nes) {
      * discard a byte already in the sample buffer.
      */
     if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining > 0) {
-        dmc_fetch(apu, nes);
+        nes_request_dmc_dma(nes, false);
     }
 
     /* The table entries are complete CPU-cycle periods. */
@@ -454,11 +456,9 @@ static void apu_step_dmc(APU2A03 *apu, NES *nes) {
                 apu->dmc_shift_reg = apu->dmc_buffer;
                 apu->dmc_buffer_empty = true;
 
-                /* A refill is requested when the output unit empties the
-                   sample buffer.  This coarse core completes the DMA here;
-                   dmc_fetch accounts for the CPU stall. */
+                /* The bus arbiter performs the refill on a DMA get cycle. */
                 if (apu->dmc_bytes_remaining > 0) {
-                    dmc_fetch(apu, nes);
+                    nes_request_dmc_dma(nes, false);
                 }
             }
         }

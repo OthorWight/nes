@@ -17,6 +17,7 @@ static void hidden_sprites_do_not_overflow(void) {
                 s.prg[0] = 0x8D; s.prg[1] = 0x14; s.prg[2] = 0x40;
                 s.nes.cpu.accumulator = 2; // STA $4014: load OAM via DMA.
                 nes_clock_tick(&s.nes);
+                nes_clock_tick(&s.nes); // DMA halts the following opcode read.
                 nes_cpu_bus_write(&s.nes, 0x2000, tall ? 0x20 : 0);
                 nes_cpu_bus_write(&s.nes, 0x2001, masks[mode]);
                 // A full frame from any starting dot covers every scanline.
