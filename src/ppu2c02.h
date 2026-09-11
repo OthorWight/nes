@@ -55,6 +55,7 @@ typedef struct {
     uint8_t  bg_next_tile_lsb;
     uint8_t  bg_next_tile_msb;
     bool     odd_frame;
+    bool     odd_skip_rendering;
 
     uint8_t bg_palette_index;
 

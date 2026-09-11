@@ -24,11 +24,12 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 | --- | --- |
 | `system_clock.c` | Three PPU dots and one mapper M2 tick per CPU cycle; APU advancement; dummy/read-modify-write cycles; indexed-read and branch penalties; seven-cycle reset without stack writes |
 | `dma_timing.c` | 513/514-cycle OAM DMA plus the initiating instruction; full copy and OAM address wrap; CPU/APU/PPU advancement during DMA; deferred NMI service; DMC cartridge reads, address wrap, CPU stalls, final-byte IRQ and acknowledgement |
-| `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |
+| `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; NMI poll boundary across all three PPU dots and deferred PPUCTRL enable; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |
 | `cpu_irq_polling.c` | IRQ edges on the penultimate/final CPU cycle, retained sampled IRQ after deassertion, CLI/SEI/PLP/RTI flag timing, branch poll points and stalled boundaries |
-| `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
-| `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle |
+| `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; CPU PPUMASK writes around the skip-decision boundary; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
+| `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle; single-dot vblank set/clear boundaries, status-read NMI suppression and PPUCTRL disable timing |
 | `ppu_pixels.c` | Transparency and background priority, first-opaque-sprite ordering, horizontal flips and bounds, sprite-zero hit clipping/right edge/persistence, forced-blank palette selection and mask changes |
+| `ppu_sprite_overflow.c` | DMA-loaded hidden sprites at Y=240..255 across both sprite heights and rendering enables; eight/nine-sprite threshold, vertical range boundaries, Y=239 evaluation and status-read persistence |
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM first pre-render clock and exact split dots with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
@@ -121,6 +122,41 @@ References: [Blargg's exact boundary tests](https://github.com/christopherpow/ne
 [Mesen's dot-based A12 filter](https://github.com/SourMesen/Mesen2/blob/master/Core/NES/Mappers/A12Watcher.h).
 
 Passing these tests is a regression baseline, not full NES hardware certification.
+The local legacy `vbl_nmi_timing` ROMs `1.frame_basics`, `2.vbl_timing`,
+`3.even_odd_frames`, `4.vbl_clear_timing`, `5.nmi_suppression`, `6.nmi_disable`,
+and `7.nmi_timing` also pass when checked via their on-screen results
+(these older ROMs do not use the
+runner's `$6000` protocol). The vblank status-read regression hid the set flag
+for one dot and suppressed only NMI on a pre-edge read, which made the clear
+edge appear one dot early after synchronization. The set and clear events
+remain 6820 PPU dots apart. NMI polling distinguishes an edge on the first dot
+of the CPU cycle from later edges, and disabling PPUCTRL's NMI output cancels
+the short pulse at the vblank edge. This models the alignment exercised by
+[Blargg's hardware-tested suite](https://github.com/christopherpow/nes-test-roms/tree/master/vbl_nmi_timing),
+not every electrical CPU/PPU power-on alignment.
+
+The combined `ppu_vbl_nmi.nes` also passes all ten tests through the `$6000`
+runner. Enabling NMI one dot before the pre-render clear does not latch the
+short output pulse; enabling two dots before still does. The odd-frame skip
+circuit samples rendering enable at dot 338 and omits dot 340 after the dot
+339 fetch. This is the timing observed by
+[07-nmi_on_timing](https://github.com/christopherpow/nes-test-roms/blob/master/ppu_vbl_nmi/source/07-nmi_on_timing.s)
+and [10-even_odd_timing](https://github.com/christopherpow/nes-test-roms/blob/master/ppu_vbl_nmi/source/10-even_odd_timing.s)
+in the supported CPU/PPU alignment. Other rendering-enable propagation delays
+remain approximate. Save-state version 3 retains the skip latch across late
+PPUMASK changes; versions 1 and 2 remain readable.
+
+The local `ppu_read_buffer.nes` passes through the `$6000` runner. Its #62
+message mentions sprite-zero hit, but the source checks the sprite-overflow
+bit (`$20`) after hiding all sprites. Overflow evaluation must retain a
+negative scanline-minus-Y result: truncating it to eight bits wraps hidden
+sprites onto the top of the frame. The legacy sprite-overflow `1.Basics`,
+`2.Details`, and `5.Emulator` ROMs pass. `3.Timing` (#12) and `4.Obscure` (#2)
+retain their existing failures; this range correction does not fix the full
+overflow search algorithm. References:
+[read-buffer test source](https://github.com/christopherpow/nes-test-roms/blob/master/ppu_read_buffer/source/test_ppu_read_buffer.s),
+[overflow detail tests](https://github.com/christopherpow/nes-test-roms/blob/master/sprite_overflow_tests/source/2.Details.a).
+
 In particular, the following are not yet exhaustively covered:
 
 - Exact four/five-step APU sequencer event cycles and frame-IRQ reassertion windows.

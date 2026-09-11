@@ -141,8 +141,14 @@ void nes_check_zapper_stall(NES *nes) {
 }
 
 static inline void nes_step_subsystems(NES *nes) {
+    bool nmi_before = nes->cpu.nmi_line;
     for (int p = 0; p < 3; p++) {
         ppu_step(nes);
+        // For this CPU/PPU alignment the NMI poll boundary falls after
+        // the first dot. An edge here belongs to the preceding poll cycle;
+        // later edges on an instruction's final cycle must be deferred.
+        if (p == 0 && !nmi_before && nes->cpu.nmi_line && nes->cpu.cycle_count)
+            nes->cpu.nmi_pulsed_cycle = nes->cpu.cycle_count - 1;
     }
     apu_step(&nes->apu, nes);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->clock_m2) {

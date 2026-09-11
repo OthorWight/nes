@@ -2,7 +2,7 @@
 #define SAVE_STATE_H
 #include "nes_system.h"
 
-#define NES_STATE_VERSION 2u
+#define NES_STATE_VERSION 3u
 #define NES_STATE_HEADER_SIZE 32u
 #define NES_STATE_MAX_SIZE (16u * 1024u * 1024u)
 

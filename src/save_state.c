@@ -212,6 +212,13 @@ static void payload(NES *n, StateIO *io, unsigned version) {
         n->cpu.irq_pending = false;
         n->cpu.irq_poll_valid = false;
     }
+    if (version >= 3) {
+        n->ppu.odd_skip_rendering = state_bool(io, n->ppu.odd_skip_rendering);
+    } else if (io->reading) {
+        // Older files have no rendering history for the skip decision.
+        // Bootstrap from PPUMASK, matching their immediate-enable behavior.
+        n->ppu.odd_skip_rendering = (n->ppu.ppu_mask & 0x18) != 0;
+    }
     if (!valid_machine(n)) io->ok = false;
 }
 
@@ -258,7 +265,7 @@ NES_StateResult nes_state_decode(NES *n, const uint8_t *data, size_t size) {
     if (size < NES_STATE_HEADER_SIZE || size > NES_STATE_MAX_SIZE || memcmp(data, state_magic, 8)) return NES_STATE_CORRUPT;
     StateIO in = {(uint8_t *)data, size, 8, true, true};
     unsigned version = state_u32(&in, 0);
-    if (version != 1 && version != NES_STATE_VERSION) return NES_STATE_VERSION_ERROR;
+    if (version < 1 || version > NES_STATE_VERSION) return NES_STATE_VERSION_ERROR;
     uint32_t length = state_u32(&in, 0);
     uint32_t checksum = state_u32(&in, 0);
     if (length != size - NES_STATE_HEADER_SIZE || checksum != state_crc32(data + NES_STATE_HEADER_SIZE, length))

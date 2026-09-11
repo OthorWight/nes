@@ -75,9 +75,60 @@ static void status_is_sampled_on_the_cpu_read_cycle(void) {
     assert(!(s.nes.ppu.ppu_status & 0x80));
 }
 
+// NESdev PPU frame timing: a read one dot before vblank suppresses the
+// flag and NMI; reads on the set dot or one later return it set but cancel
+// NMI. Two dots either side behave normally. Run actual LDA bus cycles.
+static void status_reads_around_vblank_start(void) {
+    for (int offset = -2; offset <= 2; ++offset) {
+        test_system_init(&s);
+        nes_cpu_bus_write(&s.nes, 0x2000, 0x80);
+        s.nes.ppu.scanline = 240;
+        // LDA advances 12 dots before sampling; cycle names the next dot.
+        s.nes.ppu.cycle = 331 + offset;
+        assert(!!(cpu_read(0x2002) & 0x80) == (offset >= 0));
+        assert(!(s.nes.ppu.ppu_status & 0x80));
+        while (s.nes.ppu.cycle < 10) ppu_step(&s.nes);
+        assert(!!(s.nes.ppu.ppu_status & 0x80) == (offset == -2));
+        assert(s.nes.cpu.nmi_line == (offset == -2));
+        assert((s.nes.cpu.nmi_edge || s.nes.cpu.nmi_delayed) ==
+               (offset == -2 || offset == 2));
+    }
+}
+
+static void status_reads_around_vblank_end(void) {
+    for (int offset = -2; offset <= 2; ++offset) {
+        test_system_init(&s);
+        s.nes.ppu.scanline = 241;
+        s.nes.ppu.cycle = 0;
+        ppu_step(&s.nes);
+        ppu_step(&s.nes); // Vblank set at dot 1.
+        // Hardware clears vblank exactly 6820 dots after setting it.
+        for (int dots = 0; dots < 6820 + offset - 12; ++dots)
+            ppu_step(&s.nes);
+        assert(!!(cpu_read(0x2002) & 0x80) == (offset < 0));
+    }
+}
+
+static void disabling_nmi_around_vblank_start(void) {
+    for (int offset = -2; offset <= 2; ++offset) {
+        test_system_init(&s);
+        nes_cpu_bus_write(&s.nes, 0x2000, 0x80);
+        s.nes.ppu.scanline = 240;
+        s.nes.ppu.cycle = 331 + offset;
+        cpu_write(0x2000, 0);
+        while (s.nes.ppu.cycle < 10) ppu_step(&s.nes);
+        assert(s.nes.ppu.ppu_status & 0x80); // Disabling NMI preserves vblank.
+        assert(!s.nes.cpu.nmi_line);
+        assert((s.nes.cpu.nmi_edge || s.nes.cpu.nmi_delayed) == (offset == 2));
+    }
+}
+
 int main(void) {
     RUN_TEST(cpu_ram_and_ppu_register_mirrors);
     RUN_TEST(ppudata_buffer_and_palette_bypass);
     RUN_TEST(status_is_sampled_on_the_cpu_read_cycle);
+    RUN_TEST(status_reads_around_vblank_start);
+    RUN_TEST(status_reads_around_vblank_end);
+    RUN_TEST(disabling_nmi_around_vblank_start);
     return 0;
 }

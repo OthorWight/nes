@@ -42,6 +42,33 @@ static void vblank_and_prerender_flag_edges(void) {
     assert(!s.nes.cpu.nmi_line);
 }
 
+// ppu_vbl_nmi/10-even_odd_timing checks late PPUMASK changes. A write
+// before dot 338 is processed affects the skip; one after it is too late.
+static void rendering_toggle_at_odd_frame_skip_boundary(void) {
+    const uint8_t masks[] = {0x08, 0x10, 0x18};
+    for (unsigned odd = 0; odd < 2; ++odd) {
+        for (unsigned mode = 0; mode < sizeof(masks); ++mode) {
+            for (unsigned enable = 0; enable < 2; ++enable) {
+                for (int write_at = 336; write_at <= 340; ++write_at) {
+                    test_system_init(&s);
+                    nes_cpu_bus_write(&s.nes, 0x2001, enable ? 0 : masks[mode]);
+                    s.nes.ppu.scanline = 261;
+                    s.nes.ppu.odd_frame = odd != 0;
+                    s.prg[0] = 0x8D; s.prg[1] = 1; s.prg[2] = 0x20;
+                    s.nes.cpu.accumulator = enable ? masks[mode] : 0;
+                    for (int dot = 0; dot < write_at - 12; ++dot) ppu_step(&s.nes);
+                    test_step(&s, 4); // STA $2001 samples after 12 PPU dots.
+                    for (int dot = 0; dot < 5 && s.nes.ppu.scanline == 261; ++dot)
+                        ppu_step(&s.nes);
+                    bool skip = odd && (write_at <= 338 ? enable : !enable);
+                    assert(s.ppu_ticks == (skip ? 340u : 341u));
+                    assert(s.nes.ppu.scanline == 0 && s.nes.ppu.cycle == 0);
+                }
+            }
+        }
+    }
+}
+
 static void status_read_acknowledges_vblank_and_resets_write_latch(void) {
     test_system_init(&s);
     nes_cpu_bus_write(&s.nes, 0x2000, 0x80);
@@ -59,6 +86,7 @@ static void status_read_acknowledges_vblank_and_resets_write_latch(void) {
 int main(void) {
     RUN_TEST(ntsc_frame_lengths_and_odd_frame_skip);
     RUN_TEST(vblank_and_prerender_flag_edges);
+    RUN_TEST(rendering_toggle_at_odd_frame_skip_boundary);
     RUN_TEST(status_read_acknowledges_vblank_and_resets_write_latch);
     return 0;
 }

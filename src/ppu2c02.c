@@ -12,10 +12,12 @@ static inline bool bee52_ppu_rendering_enabled(const PPU2C02 *p) {
 
 static inline bool bee52_sprite_y_in_range(const PPU2C02 *p, uint8_t y) {
     /* Evaluation on scanline N prepares sprites for N+1.  OAM Y stores
-       top-1, so unsigned (N-Y) is the sprite row for the next scanline. */
-    uint8_t row = (uint8_t)((uint8_t)p->scanline - y);
-    uint8_t height = (p->ppu_ctrl & 0x20u) ? 16u : 8u;
-    return row < height;
+       top-1, so N-Y is the sprite row for the next scanline. Keep the
+       subtraction signed: hidden sprites at Y=$F0-$FF must not wrap
+       into range at the top of the frame and falsely set overflow. */
+    int row = p->scanline - (int)y;
+    int height = (p->ppu_ctrl & 0x20u) ? 16 : 8;
+    return row >= 0 && row < height;
 }
 
 static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
@@ -184,6 +186,15 @@ static inline uint8_t ppu_get_fine_y(uint16_t v) { return (v >> 12) & 0x0007; }
 
 static void ppu_update_nmi(PPU2C02 *ppu, NES *nes) {
     bool nmi_line = (ppu->ppu_ctrl & 0x80) && (ppu->ppu_status & 0x80);
+    // cycle names the next dot. Enabling at pre-render dot 1 leaves only
+    // one dot before vblank clears: the output pulse is too short for the
+    // CPU to detect. Update the line without latching a new edge, preserving
+    // any older pending NMI. Two or more dots before the clear is detectable.
+    if (nmi_line && !nes->cpu.nmi_line &&
+        ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 1) {
+        nes->cpu.nmi_line = true;
+        return;
+    }
     cpu_set_nmi_line(&nes->cpu, nmi_line);
 }
 
@@ -278,6 +289,7 @@ void ppu_init(PPU2C02 *ppu) {
     ppu->bg_next_tile_lsb = 0;
     ppu->bg_next_tile_msb = 0;
     ppu->odd_frame = false;
+    ppu->odd_skip_rendering = false;
     ppu->open_bus_value = 0;
     ppu->overflow_cycle = -1;
     memset(ppu->open_bus_decay_cycles, 0, sizeof(ppu->open_bus_decay_cycles));
@@ -328,14 +340,14 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
     switch (address & 0x2007) {
         case 0x2002: {
             uint8_t status = ppu->ppu_status;
+            // cycle is the next dot to execute: 1 is just before the set
+            // edge; 2 and 3 are on/just after it. Only the pre-edge read
+            // returns clear. All three reads suppress the pending NMI.
             if (ppu->scanline == 241) {
                 if (ppu->cycle >= 1 && ppu->cycle <= 3) {
                     nes->cpu.nmi_edge = false;
                     nes->cpu.nmi_delayed = false;
                     ppu->nmi_suppressed = true;
-                }
-                if (ppu->cycle >= 1 && ppu->cycle <= 2) {
-                    status &= ~0x80;
                 }
             }
             data = (uint8_t)((status & 0xE0) | (ppu->open_bus_value & 0x1F));
@@ -381,6 +393,14 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
 
     switch (address & 0x2007) {
         case 0x2000:
+            // A short NMI pulse at vblank start can be cancelled by
+            // disabling the output before the CPU samples it, just as
+            // with a status read in the same two-dot window.
+            if ((ppu->ppu_ctrl & 0x80) && !(data & 0x80) && ppu->scanline == 241 &&
+                ppu->cycle >= 2 && ppu->cycle <= 3) {
+                nes->cpu.nmi_edge = false;
+                nes->cpu.nmi_delayed = false;
+            }
             ppu->ppu_ctrl = data;
             ppu->t = (uint16_t)((ppu->t & 0xF3FF) | (((uint16_t)data & 0x03) << 10));
             ppu_update_nmi(ppu, nes);
@@ -504,6 +524,11 @@ void ppu_step(NES *nes) {
     const bool rendering_scanline = (ppu->scanline < SCANLINE_VISIBLE_MAX ||
                                      ppu->scanline == SCANLINE_PRERENDER);
 
+    // Rendering enable takes time to reach the odd-frame skip circuit.
+    // Sample it one dot before the final pre-render fetch/skip decision.
+    if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 338)
+        ppu->odd_skip_rendering = rendering_enabled;
+
     /* Update the internal OAM evaluation bus and sprite-overflow timing for
        the current PPU dot before CPU-visible register reads can occur. */
     bee52_ppu_oam_eval_tick(ppu);
@@ -516,9 +541,9 @@ void ppu_step(NES *nes) {
     }
 
     if (ppu->scanline == 241 && ppu->cycle == 1) {
-        ppu->nmi_occurred = true;
-        ppu->ppu_status |= 0x80;
         if (!ppu->nmi_suppressed) {
+            ppu->nmi_occurred = true;
+            ppu->ppu_status |= 0x80;
             ppu_update_nmi(ppu, nes);
         }
     }
@@ -678,7 +703,7 @@ void ppu_step(NES *nes) {
     }
     if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 339 &&
-        ppu->odd_frame && rendering_enabled) {
+        ppu->odd_frame && ppu->odd_skip_rendering) {
         /* Odd NTSC frames omit the final pre-render dot. */
         ppu->cycle = 0;
         ppu->scanline = 0;

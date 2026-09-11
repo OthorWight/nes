@@ -132,7 +132,7 @@ static void all_mapper_replay(void) {
         setup(a);
         uint8_t *save; size_t size;
         assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
-        assert(!memcmp(save, "NESSTATE\2\0\0\0", 12));
+        assert(!memcmp(save, "NESSTATE\3\0\0\0", 12));
         assert(nes_state_decode(b, save, size) == NES_STATE_OK);
         equal_machine(a, b);
         for (unsigned i = 0; i < 24000; ++i) {
@@ -184,6 +184,10 @@ static void corrupt_and_wrong_states(void) {
     rejection_keeps_machine(n, bad, size, NES_STATE_WRONG_ROM);
     memcpy(bad, good, size); bad[size - 1] ^= 1;
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
+    // Reject an invalid PPU skip latch even with a valid checksum.
+    memcpy(bad, good, size); bad[size - 1] = 2;
+    refresh_checksum(bad, size);
+    rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Valid checksum but an invalid bool in the CPU state (offset 20).
     memcpy(bad, good, size); bad[NES_STATE_HEADER_SIZE + 20] = 2;
     refresh_checksum(bad, size);
@@ -192,8 +196,8 @@ static void corrupt_and_wrong_states(void) {
     memcpy(bad, good, size); memset(bad + NES_STATE_HEADER_SIZE + 39, 0xFF, 4);
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
-    // Mapper A12 filter precedes the two version 2 CPU IRQ booleans.
-    memcpy(bad, good, size); memset(bad + size - 6, 0xFF, 4);
+    // Mapper A12 filter precedes the two IRQ booleans and PPU skip latch.
+    memcpy(bad, good, size); memset(bad + size - 7, 0xFF, 4);
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Version 1 still carries CHR bytes, but cannot overwrite cartridge ROM.
@@ -242,8 +246,8 @@ static void state_files_and_failed_replace(void) {
     assert(remove(sentinel) == 0); assert(SAVE_RMDIR(directory) == 0);
 }
 
-static void irq_poll_state_and_v1_import(void) {
-    puts("  IRQ poll state survives restore; version 1 states still load");
+static void irq_poll_state_and_older_import(void) {
+    puts("  IRQ poll state survives restore; versions 1 and 2 still load");
     char rom[512]; fixture_path(rom, "irq-state.nes");
     fixture_rom(rom, 0, false, true, 0);
     NES *n = fixture_load(rom);
@@ -258,10 +262,22 @@ static void irq_poll_state_and_v1_import(void) {
     nes_clock_tick(n);
     assert(n->cpu.cycle_count - before == 7 && n->cpu.program_counter == 0x0100);
 
-    // Version 2 appends only the poll booleans. Recreate the original layout
+    // Version 3 appends the PPU skip latch; version 2 appends IRQ booleans.
+    // Recreate version 2 without letting omitted data inherit live history.
+    size -= 1;
+    StateIO header = {save, size, 8, false, true};
+    state_u32(&header, 2);
+    state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
+    refresh_checksum(save, size);
+    n->ppu.odd_skip_rendering = true;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(!n->ppu.odd_skip_rendering); // Saved PPUMASK is zero.
+    assert(n->cpu.irq_pending && n->cpu.irq_poll_valid);
+
+    // Recreate the version 1 layout
     // and header rather than letting omitted data inherit from the live CPU.
     size -= 2;
-    StateIO header = {save, size, 8, false, true};
+    header = (StateIO){save, size, 8, false, true};
     state_u32(&header, 1);
     state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
     refresh_checksum(save, size);
@@ -271,12 +287,36 @@ static void irq_poll_state_and_v1_import(void) {
     free(save); fixture_free(n); assert(remove(rom) == 0);
 }
 
+static void odd_frame_skip_latch_survives_restore(void) {
+    puts("  late rendering toggle retains the skip decision across save/load");
+    char rom[512]; fixture_path(rom, "ppu-skip-state.nes");
+    fixture_rom(rom, 0, false, true, 0);
+    NES *n = fixture_load(rom);
+    for (unsigned enabled = 0; enabled < 2; ++enabled) {
+        n->ppu.scanline = 261; n->ppu.cycle = 338; n->ppu.odd_frame = true;
+        nes_cpu_bus_write(n, 0x2001, enabled ? 0x08 : 0);
+        ppu_step(n); // Sample the skip circuit's rendering enable.
+        nes_cpu_bus_write(n, 0x2001, enabled ? 0 : 0x08);
+        uint8_t *save; size_t size;
+        assert(nes_state_encode(n, &save, &size) == NES_STATE_OK);
+        n->ppu.odd_skip_rendering = !enabled;
+        assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+        assert(n->ppu.odd_skip_rendering == !!enabled);
+        ppu_step(n);
+        assert(n->ppu.scanline == (enabled ? 0 : 261));
+        assert(n->ppu.cycle == (enabled ? 0 : 340));
+        free(save);
+    }
+    fixture_free(n); assert(remove(rom) == 0);
+}
+
 int main(void) {
     fixture_start("states");
     all_mapper_replay();
     corrupt_and_wrong_states();
     state_files_and_failed_replace();
-    irq_poll_state_and_v1_import();
+    irq_poll_state_and_older_import();
+    odd_frame_skip_latch_survives_restore();
     assert(SAVE_RMDIR(fixture_dir) == 0);
     puts("Save-state replay, validation and file I/O checks passed.");
     return 0;

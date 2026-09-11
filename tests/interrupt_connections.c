@@ -42,6 +42,64 @@ static void pending_nmi_takes_priority_over_irq(void) {
     assert(s.nes.cpu.program_counter == 0x9000);
 }
 
+// Blargg vbl_nmi_timing/7.nmi_timing checks the interrupt boundary to one
+// PPU dot. Cover each dot of a NOP's final CPU cycle in this alignment.
+static void nmi_poll_boundary_within_final_cpu_cycle(void) {
+    for (int dot = 0; dot < 3; ++dot) {
+        test_system_init(&s);
+        nes_cpu_bus_write(&s.nes, 0x2000, 0x80);
+        s.nes.ppu.scanline = 240;
+        s.nes.ppu.cycle = 339 - dot;
+        test_step(&s, 2);
+        if (dot != 0) {
+            assert(s.nes.cpu.nmi_delayed && !s.nes.cpu.nmi_edge);
+            test_step(&s, 2);
+        }
+        test_step(&s, 7);
+        assert(s.nes.cpu.program_counter == 0xA000);
+        assert(s.nes.wram[0x1FC] == (dot == 0 ? 1 : 2));
+    }
+}
+
+static void enabling_nmi_during_vblank_defers_one_instruction(void) {
+    test_system_init(&s);
+    s.nes.ppu.scanline = 241;
+    s.nes.ppu.cycle = 0;
+    for (int dot = 0; dot < 10; ++dot) ppu_step(&s.nes);
+    s.prg[0] = 0x8D; s.prg[1] = 0; s.prg[2] = 0x20; // STA $2000.
+    s.nes.cpu.accumulator = 0x80;
+    test_step(&s, 4);
+    assert(s.nes.cpu.nmi_delayed && !s.nes.cpu.nmi_edge);
+    test_step(&s, 2);
+    test_step(&s, 7);
+    assert(s.nes.cpu.program_counter == 0xA000);
+    assert(s.nes.wram[0x1FC] == 4);
+}
+
+// ppu_vbl_nmi/07-nmi_on_timing: enabling one PPU dot before vblank
+// clears produces no detectable NMI; enabling two dots before does.
+static void enabling_nmi_near_vblank_end(void) {
+    for (int offset = -3; offset <= 2; ++offset) {
+        test_system_init(&s);
+        s.nes.ppu.scanline = 241;
+        s.nes.ppu.cycle = 0;
+        ppu_step(&s.nes);
+        ppu_step(&s.nes);
+        for (int dot = 0; dot < 6820 + offset - 12; ++dot)
+            ppu_step(&s.nes);
+        s.prg[0] = 0x8D; s.prg[1] = 0; s.prg[2] = 0x20;
+        s.nes.cpu.accumulator = 0x80; // STA $2000.
+        test_step(&s, 4);
+        bool detected = offset <= -2;
+        assert((s.nes.cpu.nmi_edge || s.nes.cpu.nmi_delayed) == detected);
+        test_step(&s, 2); // The next NOP runs before any immediate NMI.
+        assert(!(s.nes.ppu.ppu_status & 0x80));
+        assert(!s.nes.cpu.nmi_line);
+        test_step(&s, detected ? 7 : 2);
+        assert(s.nes.cpu.program_counter == (detected ? 0xA000 : 0x8005));
+    }
+}
+
 static void apu_and_mapper_irq_acknowledgements_are_independent(void) {
     test_system_init(&s);
     mapper_118_init(&s.cart); // Use an actual mapper IRQ acknowledgement path.
@@ -113,6 +171,9 @@ static void rendering_ppu_clocks_mapper_irq_into_cpu(void) {
 int main(void) {
     RUN_TEST(ppu_nmi_reaches_cpu_and_returns_to_interrupted_code);
     RUN_TEST(pending_nmi_takes_priority_over_irq);
+    RUN_TEST(nmi_poll_boundary_within_final_cpu_cycle);
+    RUN_TEST(enabling_nmi_during_vblank_defers_one_instruction);
+    RUN_TEST(enabling_nmi_near_vblank_end);
     RUN_TEST(apu_and_mapper_irq_acknowledgements_are_independent);
     RUN_TEST(running_apu_delivers_frame_irq_to_cpu);
     RUN_TEST(rendering_ppu_clocks_mapper_irq_into_cpu);
