@@ -1087,7 +1087,16 @@ static void desktop_draw(void) {
     }
     menu_bar_draw(&desktop_menu, &painter);
 }
-static void desktop_present(HostCanvas *game) { host_present(game); }
+static void desktop_present(HostCanvas *game) {
+    if (nes_sys.cart && paused) {
+        /* Use game pixels so the OSD grows with the picture, unlike desktop text. */
+        HostRect badge = {96, 108, 64, 24};
+        host_color(game, 0, 0, 0, 220);
+        host_fill_rect(game, &badge);
+        draw_string(game, "Paused", 104, 116, 0xFFFFFF);
+    }
+    host_present(game);
+}
 static bool desktop_event(const HostEvent *event) {
     MenuEvent e = {0};
     MenuCommand command;

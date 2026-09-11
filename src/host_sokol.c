@@ -286,8 +286,9 @@ void host_set_chrome(void (*draw)(void), const uint8_t font[95][8]) {
     chrome_view = sg_make_view(&(sg_view_desc){.texture.image = chrome_image});
 }
 float host_chrome_layout(int width, int height, int *logical_width, int *logical_height) {
-    /* Desktop controls follow monitor DPI only, never NES zoom or window size. */
-    float scale = fmaxf(1.0f, sapp_dpi_scale());
+    /* Double the desktop UI and keep bitmap pixels uniform at fractional monitor DPI. */
+    const float ui_scale = 2.0f;
+    float scale = fmaxf(ui_scale, roundf(ui_scale * sapp_dpi_scale()));
     *logical_width = (int)ceilf(width / scale);
     *logical_height = (int)ceilf(height / scale);
     return scale;

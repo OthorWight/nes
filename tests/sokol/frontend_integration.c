@@ -167,6 +167,8 @@ static bool scripted_poll(HostEvent *e) {
             key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 19:
             assert(paused && !nes_sys.controller_state[0]);
+            assert(renderer->pixels[108 * 256 + 96] == 0xDC000000u);
+            capture_window("paused.bmp");
             key(e, HOST_KEYUP, HOST_KEY_LEFT); break;
         case 20:
             memset(&diagnostics, 0, sizeof(diagnostics)); diagnostics.tracing = true;
@@ -175,6 +177,7 @@ static bool scripted_poll(HostEvent *e) {
             key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 21:
             assert(!paused && !nes_sys.zapper_trigger);
+            assert(renderer->pixels[108 * 256 + 96] == 0); /* OSD clears on resume. */
             key(e, HOST_KEYDOWN, HOST_KEY_F3);
             break;
         case 22:

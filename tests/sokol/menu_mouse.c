@@ -19,6 +19,7 @@ static void click(HostEvent *e, int x, int y) {
 static void key(HostEvent *e, HostKey code) { e->type = HOST_KEYDOWN; e->key.keysym.sym = code; }
 static void geometry(void) {
     int w,h; float dpi = host_chrome_layout(256,276,&w,&h);
+    assert(dpi >= 2.0f && dpi == floorf(dpi)); /* Enlarged, uniform bitmap pixels. */
     const int sizes[][2] = {{256,276},{768,756},{1024,996},{2557,1401},{3840,2160}};
     for (unsigned i=0;i<sizeof(sizes)/sizeof(sizes[0]);++i) {
         assert(host_chrome_layout(sizes[i][0],sizes[i][1],&w,&h) == dpi);

@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-enum { MENU_BAR_HEIGHT = 20, STATUS_BAR_HEIGHT = 16, MENU_DEPTH = 4 };
+enum { MENU_BAR_HEIGHT = 24, STATUS_BAR_HEIGHT = 20, MENU_DEPTH = 4 };
 typedef enum MenuCommand {
     MENU_NONE, MENU_OPEN, MENU_SAVE, MENU_LOAD, MENU_EXIT, MENU_PAUSE,
     MENU_RESET, MENU_POWER, MENU_CONTROLLER, MENU_ZAPPER,

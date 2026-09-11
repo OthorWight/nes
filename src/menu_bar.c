@@ -166,7 +166,7 @@ void menu_bar_draw(const MenuBar *b, const MenuPainter *p) {
         MenuRect r = top_rect(b, i);
         bool selected = b->active && b->top == i;
         if (selected || b->hover == i) p->fill(p->context, r, selected ? 0x0A246A : 0xE8E6E0);
-        p->text(p->context, b->menus[i].label, r.x + 4, 6, selected ? 0xFFFFFF : 0x202020);
+        p->text(p->context, b->menus[i].label, r.x + 4, (MENU_BAR_HEIGHT - 8) / 2, selected ? 0xFFFFFF : 0x202020);
     }
     for (int d = 0; d < b->depth; ++d) {
         MenuRect r = b->popup[d];
@@ -198,5 +198,5 @@ void status_bar_draw(const StatusBar *b, const MenuPainter *p, int width, int he
     int y = height - STATUS_BAR_HEIGHT;
     p->fill(p->context, (MenuRect){0, y, width, STATUS_BAR_HEIGHT}, 0xD4D0C8);
     p->fill(p->context, (MenuRect){0, y, width, 1}, 0x888888);
-    clipped_text(p, b->text, 5, y + 5, width - 10, 0x202020);
+    clipped_text(p, b->text, 5, y + (STATUS_BAR_HEIGHT - 8) / 2, width - 10, 0x202020);
 }
