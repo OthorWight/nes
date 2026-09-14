@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include "crt_shader.h"
 #ifdef _WIN32
 #include <xinput.h>
 #else
@@ -59,6 +60,10 @@ static sg_image chrome_image;
 static sg_view chrome_view;
 static int windowed_scale;
 static sg_sampler frame_sampler;
+static sg_sampler crt_sampler;
+static sg_pipeline crt_pipeline;
+static sg_buffer crt_vertices;
+static bool crt_enabled;
 static sgl_pipeline overlay_pipeline;
 static bool audio_initialized;
 static HostEvent events[1024];
@@ -142,6 +147,13 @@ void host_setup(void) {
         .src_factor_alpha = SG_BLENDFACTOR_ONE, .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA}});
     frame_sampler = sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_NEAREST,
         .mag_filter = SG_FILTER_NEAREST, .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE});
+    crt_sampler = sg_make_sampler(&(sg_sampler_desc){.min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR, .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE});
+    sg_shader_desc crt_desc = crt_shader_desc();
+    crt_pipeline = sg_make_pipeline(&(sg_pipeline_desc){.shader = sg_make_shader(&crt_desc),
+        .layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT2, .label = "crt-shader"});
+    const float triangle[] = {-1, -1, 3, -1, -1, 3};
+    crt_vertices = sg_make_buffer(&(sg_buffer_desc){.data = SG_RANGE(triangle)});
 #ifdef _WIN32
     InitializeCriticalSection(&audio.mutex);
 #else
@@ -365,6 +377,18 @@ static void textured_quad(sg_view view, float u0, float v0, float u1, float v1) 
     sgl_v2f_t2f(1, -1, u1, v1); sgl_v2f_t2f(-1, -1, u0, v1);
     sgl_end();
 }
+void host_set_crt(bool enabled) { crt_enabled = enabled; }
+
+static void draw_crt(const HostCanvas *c, HostRect rect) {
+    const float uniforms[] = {(float)c->crop.x, (float)c->crop.y,
+        (float)c->crop.w, (float)c->crop.h, rect.h / (float)c->crop.h, 0, 0, 0};
+    sg_apply_viewport(rect.x, rect.y, rect.w, rect.h, true);
+    sg_apply_pipeline(crt_pipeline);
+    sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = crt_vertices,
+        .views[0] = frame_view, .samplers[0] = crt_sampler});
+    sg_apply_uniforms(0, &SG_RANGE(uniforms));
+    sg_draw(0, 3, 1);
+}
 void host_present(HostCanvas *c) {
     sg_update_image(overlay_image, &(sg_image_data){.mip_levels[0] = {c->pixels, 256 * 240 * sizeof(uint32_t)}});
     HostRect rect, panel; host_layout(sapp_width(), sapp_height(), &rect, &panel);
@@ -372,8 +396,9 @@ void host_present(HostCanvas *c) {
     sgl_enable_texture();
     if (c->has_frame) {
         sg_update_image(frame_image, &(sg_image_data){.mip_levels[0] = {c->frame, sizeof(c->frame)}});
-        textured_quad(frame_view, c->crop.x / 256.0f, c->crop.y / 240.0f,
-            (c->crop.x + c->crop.w) / 256.0f, (c->crop.y + c->crop.h) / 240.0f);
+        if (!crt_enabled)
+            textured_quad(frame_view, c->crop.x / 256.0f, c->crop.y / 240.0f,
+                (c->crop.x + c->crop.w) / 256.0f, (c->crop.y + c->crop.h) / 240.0f);
         sgl_load_pipeline(overlay_pipeline);
     }
     textured_quad(overlay_view, 0, 0, 1, 1);
@@ -394,6 +419,7 @@ void host_present(HostCanvas *c) {
     }
     sg_begin_pass(&(sg_pass){.swapchain = sglue_swapchain(),
         .action.colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0, 0, 0, 1}}});
+    if (crt_enabled && c->has_frame && rect.w > 0 && rect.h > 0) draw_crt(c, rect);
     sgl_draw(); sg_end_pass(); sg_commit();
 }
 void host_push_event(const HostEvent *event) {

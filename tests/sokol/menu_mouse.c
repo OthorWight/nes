@@ -53,6 +53,13 @@ static bool scripted_poll(HostEvent *e) {
         case 10:
             assert(!rebinding && control_mappings[0]=='k'); capture_window("controls.bmp"); key(e,HOST_KEY_ESCAPE); break;
         case 11:
+            assert(!crt_enabled && !desktop_state(NULL, MENU_CRT));
+            desktop_command(MENU_CRT);
+            assert(crt_enabled && (desktop_state(NULL, MENU_CRT) & MENU_CHECKED));
+            crt_enabled = false; load_emulator_settings(); assert(crt_enabled);
+            desktop_command(MENU_CRT);
+            assert(!crt_enabled && !desktop_state(NULL, MENU_CRT));
+            load_emulator_settings(); assert(!crt_enabled);
             assert(!help_page); desktop_command(MENU_MUTE); assert(audio_muted);
             desktop_command(MENU_VOLUME_DOWN); assert(master_volume==90);
             desktop_command(MENU_VOLUME_UP); assert(master_volume==100);

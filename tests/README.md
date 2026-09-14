@@ -45,7 +45,11 @@ The optional `powershell -File tests/sokol/run.ps1` (Windows/GCC) or
 `bash tests/sokol/run.sh` runs the Sokol frontend with scripted input and real
 platform graphics/audio. It checks menus, focus/disconnect/debugger transitions,
 per-ROM defaults, save/load and audio/muted/unavailable pacing. Windows also
-checks the D3D11 render target. Captures remain under `build/tests/`.
+checks the D3D11 render target, including CRT shader edge blending, shallow
+scanlines, rounded contour corners, solid black thin outlines and preserved midtones,
+sharp overlays/sidebar, and restoring unfiltered colors. Menu checks
+verify that the CRT toggle is checked correctly and survives settings reloads.
+Captures remain under `build/tests/`.
 See [Sokol checks and limits](../docs/SOKOL.md). The Zapper characterization probe
 reports the existing sensor discrepancy without treating it as an accuracy pass.
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus

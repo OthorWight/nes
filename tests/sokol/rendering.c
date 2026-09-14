@@ -42,12 +42,50 @@ static void check_pixel(const D3D11_MAPPED_SUBRESOURCE *map, int x, int y, uint3
     const uint32_t *row = (const uint32_t *)((const char *)map->pData + y * map->RowPitch);
     assert((row[x] & 0xffffff) == expected);
 }
+static uint32_t read_pixel(const D3D11_MAPPED_SUBRESOURCE *map, int x, int y) {
+    return ((const uint32_t *)((const char *)map->pData + y * map->RowPitch))[x];
+}
+static void check_crt(const D3D11_MAPPED_SUBRESOURCE *map, HostRect r) {
+    /* Flat colors remain recognizable, with a shallow scanline modulation. */
+    int low = 255, high = 0;
+    for (int y = r.y + r.h / 4; y < r.y + r.h / 4 + 20; ++y) {
+        uint32_t p = read_pixel(map, r.x + r.w / 4, y);
+        int red = (p >> 16) & 255;
+        assert((p & 0xffff) == 0 && red >= 238);
+        if (red < low) low = red;
+        if (red > high) high = red;
+    }
+    assert(high > low && high - low <= 16);
+    /* Straight edges retain contrast; the blend is narrower than these samples. */
+    uint32_t left = read_pixel(map, r.x + r.w / 2 - 1, r.y + r.h / 4);
+    uint32_t right = read_pixel(map, r.x + (r.w + 1) / 2, r.y + r.h / 4);
+    assert(((left >> 16) & 255) >= 238 && ((left >> 8) & 255) <= 2);
+    assert(((right >> 8) & 255) >= 238 && ((right >> 16) & 255) <= 2);
+    assert((left & 255) == 0 && (right & 255) == 0);
+    /* At these scales vertical blending stays narrower than an output pixel;
+       only the tiny glow reaches the next row. */
+    uint32_t above = read_pixel(map, r.x + r.w / 4, r.y + r.h / 2 - 1);
+    assert(((above >> 16) & 255) >= 238 && (above & 255) <= 1);
+}
 static void frame(void) {
     if (stage == 0) input_checks();
     host_color(&sidebar, 17, 34, 51, 255); host_clear(&sidebar);
-    host_set_debug_panel(stage == 1 ? &sidebar : NULL);
+    bool crt = stage == 3 || stage == 4 || stage == 6 || stage == 8;
+    if (stage == 6) {
+        /* White beside black, plus a single-pixel black outline on white. */
+        for (int y = 0; y < 240; ++y) for (int x = 0; x < 256; ++x)
+            pixels[y * 256 + x] = y >= 180 ? 0xff808080u :
+                x < 128 || x == 192 ? 0xff000000u : 0xffffffffu;
+    }
+    if (stage == 8) {
+        for (int y = 0; y < 240; ++y) for (int x = 0; x < 256; ++x)
+            pixels[y * 256 + x] = x >= 112 && x < 128 && y >= 48 && y < 64 ?
+                0xff000000u : 0xffffffffu;
+    }
+    host_set_crt(crt);
+    host_set_debug_panel(stage == 1 || stage == 4 ? &sidebar : NULL);
     host_color(&canvas, 0, 0, 0, 255); host_clear(&canvas);
-    host_draw_frame(&canvas, pixels, &(HostRect){8, 8, 240, 224});
+    host_draw_frame(&canvas, pixels, stage == 8 ? &(HostRect){96, 32, 64, 64} : &(HostRect){8, 8, 240, 224});
     host_color(&canvas, 255, 0, 255, 255);
     host_fill_rect(&canvas, &(HostRect){120, 112, 16, 16});
     host_present(&canvas);
@@ -67,7 +105,7 @@ static void frame(void) {
     D3D11_MAPPED_SUBRESOURCE map;
     assert(SUCCEEDED(ID3D11DeviceContext_Map(context, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &map)));
     HostRect r, panel; host_layout(sapp_width(), sapp_height(), &r, &panel);
-    if (stage == 1) {
+    if (stage == 1 || stage == 4) {
         assert(r.x + r.w <= panel.x);
         check_pixel(&map, panel.x + panel.w / 2, panel.y + panel.h / 2, 0x112233);
         float x, y;
@@ -81,12 +119,48 @@ static void frame(void) {
     }
     assert(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
     check_pixel(&map, 0, 0, 0);
-    check_pixel(&map, r.x + r.w / 4, r.y + r.h / 4, 0xff0000);
-    check_pixel(&map, r.x + 3 * r.w / 4, r.y + r.h / 4, 0x00ff00);
-    check_pixel(&map, r.x + r.w / 4, r.y + 3 * r.h / 4, 0x0000ff);
-    check_pixel(&map, r.x + 3 * r.w / 4, r.y + 3 * r.h / 4, 0xffffff);
+    if (stage == 8) {
+        /* Zoom a contour: round its tip while keeping the pixel body black. */
+        int corner_x = r.x + (int)(16.08f * r.w / 64);
+        int corner_y = r.y + (int)(16.08f * r.h / 64);
+        int center_x = r.x + (int)(16.5f * r.w / 64);
+        int center_y = r.y + (int)(16.5f * r.h / 64);
+        int edge_x = r.x + (int)(20.5f * r.w / 64);
+        int edge_y = r.y + (int)(16.3f * r.h / 64);
+        assert((read_pixel(&map, corner_x, corner_y) & 255) > 160);
+        assert((read_pixel(&map, center_x, center_y) & 255) <= 2);
+        assert((read_pixel(&map, edge_x, edge_y) & 255) <= 2);
+    }
+    else if (stage >= 6) {
+        int y = r.y + r.h / 4;
+        int dark = read_pixel(&map, r.x + r.w / 2 - 1, y) & 255;
+        int bright = read_pixel(&map, r.x + r.w / 2, y) & 255;
+        int white = read_pixel(&map, r.x + 3 * r.w / 4, y) & 255;
+        int outline_x = r.x + (int)((192.5f - 8) * r.w / 240);
+        int outline = read_pixel(&map, outline_x, y) & 255;
+        uint32_t gray = read_pixel(&map, r.x + r.w / 4, r.y + 7 * r.h / 8) & 0xffffff;
+        int level = gray & 255;
+        assert(gray == (uint32_t)level * 0x010101u);
+        assert(crt ? level >= 120 && level <= 128 : level == 128);
+        check_pixel(&map, r.x + r.w / 4, y, 0);
+        if (crt) {
+            assert(white >= 238 && bright > 220);
+            assert(dark <= 2);
+            assert(outline <= 2); /* A one-pixel black outline stays black. */
+        } else {
+            assert(dark == 0 && bright == 255 && white == 255 && outline == 0);
+        }
+    }
+    else if (crt) check_crt(&map, r);
+    else {
+        check_pixel(&map, r.x + r.w / 4, r.y + r.h / 4, 0xff0000);
+        check_pixel(&map, r.x + 3 * r.w / 4, r.y + r.h / 4, 0x00ff00);
+        check_pixel(&map, r.x + r.w / 4, r.y + 3 * r.h / 4, 0x0000ff);
+        check_pixel(&map, r.x + 3 * r.w / 4, r.y + 3 * r.h / 4, 0xffffff);
+    }
     check_pixel(&map, r.x + r.w / 2, r.y + r.h / 2, 0xff00ff);
-    FILE *file = fopen(stage == 1 ? "sidebar.bmp" : "rendering.bmp", "wb"); assert(file);
+    FILE *file = fopen(stage == 8 ? "crt-corners.bmp" : stage >= 6 ? (crt ? "crt-outlines.bmp" : "outlines.bmp") :
+        crt ? "crt.bmp" : stage == 1 ? "sidebar.bmp" : "rendering.bmp", "wb"); assert(file);
     uint32_t size = 54 + desc.Width * desc.Height * 4;
     unsigned char header[54] = {'B','M'};
     memcpy(header + 2, &size, 4); header[10] = 54; header[14] = 40;
@@ -98,8 +172,8 @@ static void frame(void) {
     assert(!fclose(file));
     ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)staging, 0);
     ID3D11Texture2D_Release(staging); ID3D11Resource_Release(resource);
-    if (++stage == 3) {
-        puts("Sokol GPU colors, sidebar layout/toggling, mouse aim and letterbox checks passed");
+    if (++stage == 9) {
+        puts("Sokol GPU colors, CRT shader, sidebar layout/toggling, mouse aim and letterbox checks passed");
         sapp_quit();
     }
 }

@@ -100,6 +100,7 @@ uint32_t host_ticks(void);
 void host_delay(uint32_t ms);
 char *host_base_path(void); /* malloc-owned, with trailing separator */
 void host_display(int scale, bool fullscreen);
+void host_set_crt(bool enabled);
 void host_mouse_position(int *x, int *y);
 void host_to_logical(HostCanvas *canvas, int x, int y, float *lx, float *ly);
 void host_viewport(int width, int height, HostRect *rect);

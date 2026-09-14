@@ -14,6 +14,7 @@
 * **Up / Backspace** goes to the parent folder; **Home** goes to your home folder. At a Windows drive root, Up lists drives.
 * **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
 * **Emulation > Audio** provides mute and volume controls. **Controller Bindings** edits keyboard/gamepad mappings.
+* **View > CRT Shader** toggles lightly rounded contour corners, narrow color transitions, gentle scanlines, and a tiny bright-pixel glow. Solid black outlines, pixel centers, and menus stay sharp. Off by default; the choice is saved globally.
 * **File > Save State As / Load State From** provides named-state file browsers; quicksave shortcuts remain available.
 
 ### Gamepad Layout (Windows: XInput-compatible controllers)

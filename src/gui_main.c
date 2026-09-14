@@ -38,6 +38,7 @@ static bool audio_muted = false;
 static bool debug_panel_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
+static bool crt_enabled = false;
 static int master_volume = 100;
 static bool performance_visible = false;
 static bool focused = true;
@@ -341,7 +342,7 @@ static void save_emulator_settings(void) {
     }
     uint8_t data[128];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 5);
+    state_u32(&io, 6);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -351,11 +352,13 @@ static void save_emulator_settings(void) {
     for (unsigned i = 0; i < CONTROL_COUNT; ++i) state_i32(&io, controller_button_mappings[i]);
     state_i32(&io, global_preferences.zapper ? 1 : 0);
     state_i32(&io, performance_visible ? 1 : 0);
+    state_i32(&io, crt_enabled ? 1 : 0);
     if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
 static void load_emulator_settings(void) {
     zapper_enabled = false;
+    crt_enabled = false;
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -363,7 +366,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 5) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 6) {
         fclose(f);
         return;
     }
@@ -396,6 +399,10 @@ static void load_emulator_settings(void) {
     if (version >= 5) {
         int temp_perf = 0;
         if (fread(&temp_perf, sizeof(temp_perf), 1, f) == 1) performance_visible = temp_perf == 1;
+    }
+    if (version >= 6) {
+        int temp_crt = 0;
+        if (fread(&temp_crt, sizeof(temp_crt), 1, f) == 1) crt_enabled = temp_crt == 1;
     }
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
@@ -872,6 +879,7 @@ static const MenuItem emulation_items[] = {
 };
 static const MenuItem view_items[] = {
     SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
+    ITEM("CRT Shader", NULL, MENU_CRT),
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
 };
 static const MenuItem debug_items[] = {
@@ -907,6 +915,7 @@ static unsigned desktop_state(void *context, MenuCommand command) {
         case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
         case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
         case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
+        case MENU_CRT: return crt_enabled ? MENU_CHECKED : 0;
         case MENU_DEBUG_PANEL: return debug_panel_enabled ? MENU_CHECKED : 0;
         case MENU_METRICS: return performance_visible ? MENU_CHECKED : 0;
         case MENU_TRACE: return diagnostics.tracing ? MENU_CHECKED : 0;
@@ -956,6 +965,8 @@ static void desktop_command(MenuCommand command) {
         case MENU_FULLSCREEN:
             preferences_inherit = false; fullscreen = !fullscreen; apply_display(); save_emulator_settings(); break;
         case MENU_DEBUG_PANEL: debug_panel_enabled = !debug_panel_enabled; save_emulator_settings(); break;
+        case MENU_CRT:
+            crt_enabled = !crt_enabled; host_set_crt(crt_enabled); save_emulator_settings(); break;
         case MENU_METRICS: performance_visible = !performance_visible; save_emulator_settings(); break;
         case MENU_STEP: case MENU_RUN:
             paused = false;
@@ -1201,6 +1212,7 @@ static bool desktop_event(const HostEvent *event) {
 
 static void app_init(void) {
     host_setup();
+    host_set_crt(crt_enabled);
     host_set_chrome(desktop_draw, font8x8);
     menu_bar_init(&desktop_menu, desktop_menus, COUNT(desktop_menus), desktop_state, NULL);
     audio_device = host_audio_valid();
