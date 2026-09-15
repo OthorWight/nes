@@ -25,6 +25,7 @@ static inline void update_zero_and_negative_flags(CPU6502 *cpu, uint8_t value) {
 static inline void bus_cycle(CPU6502 *cpu, CPUBus *bus) {
     // The final cycle uses the IRQ level/I flag from the preceding cycle.
     // Sampling before the clock also precedes CLI/SEI/PLP's final flag write.
+    // The NES clock refines this sample at its first PPU-dot boundary.
     cpu->irq_pending = cpu->irq_lines && !get_flag(cpu, FLAG_INTERRUPT_DISABLE);
     cpu->cycle_count++;
     if (bus->cycle_tick) {

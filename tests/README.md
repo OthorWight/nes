@@ -24,7 +24,7 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 | --- | --- |
 | `system_clock.c` | Three PPU dots and one mapper M2 tick per CPU cycle; APU advancement; dummy/read-modify-write cycles; indexed-read and branch penalties; seven-cycle reset without stack writes |
 | `dma_timing.c` | 513/514-cycle OAM DMA plus the initiating instruction; full copy and OAM address wrap; CPU/APU/PPU advancement during DMA; deferred NMI service; DMC cartridge reads, address wrap, CPU stalls, final-byte IRQ and acknowledgement |
-| `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; NMI poll boundary across all three PPU dots and deferred PPUCTRL enable; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |
+| `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; NMI and MMC3/TxSROM IRQ poll boundaries across all three PPU dots, both mapper pattern-table layouts, and deferred PPUCTRL enable; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |
 | `cpu_irq_polling.c` | IRQ edges on the penultimate/final CPU cycle, retained sampled IRQ after deassertion, CLI/SEI/PLP/RTI flag timing, branch poll points and stalled boundaries |
 | `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; CPU PPUMASK writes around the skip-decision boundary; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
 | `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle; single-dot vblank set/clear boundaries, status-read NMI suppression and PPUCTRL disable timing |
@@ -122,6 +122,12 @@ The mapper now observes the current dot's driven address, while idle dot 0 holds
 the bus. The MMC3 filter rejects the short nine-dot low interval between adjacent
 background fetch groups using a ten-dot threshold. This remains a dot-based
 approximation of M2 qualification, not a model of every CPU/PPU phase alignment.
+After correcting PPUSTATUS visibility at vblank, scanline timing test #3 exposed
+an inconsistent CPU poll boundary: NMI included the first PPU dot of the final
+CPU cycle, but IRQ sampled before it. The system clock now samples IRQ after
+that first dot as well, retaining the pre-write I flag for CLI/SEI/PLP. The
+synthetic interrupt tests cover IRQ arrival on each of the three dots with
+MMC3 and TxSROM, alongside the optional ROM's adjacent-dot boundary checks.
 References: [Blargg's exact boundary tests](https://github.com/christopherpow/nes-test-roms/blob/master/mmc3_test_2/source/4-scanline_timing.s),
 [6502 interrupt polling](https://www.nesdev.org/wiki/CPU_interrupts), and
 [Mesen's dot-based A12 filter](https://github.com/SourMesen/Mesen2/blob/master/Core/NES/Mappers/A12Watcher.h).

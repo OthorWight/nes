@@ -168,6 +168,47 @@ static void rendering_ppu_clocks_mapper_irq_into_cpu(void) {
     s.cart.vtable->destroy(&s.cart);
 }
 
+// Blargg mmc3_test_2/4-scanline_timing checks both pattern-table layouts
+// at adjacent PPU dots. In this alignment, the first dot of the final CPU
+// cycle precedes the interrupt poll; the remaining two dots follow it.
+static void mapper_irq_poll_boundary_within_final_cpu_cycle(void) {
+    for (int mapper = 0; mapper < 2; ++mapper) {
+        for (int high = 0; high < 2; ++high) {
+            for (int dot = 0; dot < 3; ++dot) {
+                test_system_init(&s);
+                if (mapper) mapper_118_init(&s.cart);
+                else mapper_004_init(&s.cart);
+                memset(s.nes.ppu.oam_ram, 0xFF, sizeof(s.nes.ppu.oam_ram));
+                nes_cpu_bus_write(&s.nes, 0x2000, high ? 0x10 : 0x08);
+                nes_cpu_bus_write(&s.nes, 0x2001, 0x18);
+                int start = (high ? 325 : 261) - 3 - dot;
+                unsigned ticks = 0;
+                while ((s.nes.ppu.scanline != 20 || s.nes.ppu.cycle != start) &&
+                       ticks++ < 21 * 341) ppu_step(&s.nes);
+                assert(ticks < 21 * 341);
+                nes_cpu_bus_write(&s.nes, 0xC000, 0);
+                nes_cpu_bus_write(&s.nes, 0xC001, 0);
+                nes_cpu_bus_write(&s.nes, 0xE001, 0);
+                s.nes.cpu.status_flags = FLAG_UNUSED;
+                nes_clock_tick(&s.nes); // NOP, IRQ rises during final cycle.
+                assert(s.nes.cpu.program_counter == 0x8001);
+                assert(s.nes.lines.irq_line);
+                assert(s.nes.cpu.irq_pending == (dot == 0));
+                if (dot != 0) {
+                    nes_clock_tick(&s.nes);
+                    assert(s.nes.cpu.program_counter == 0x8002);
+                }
+                uint64_t before = s.nes.cpu.cycle_count;
+                nes_clock_tick(&s.nes);
+                assert(s.nes.cpu.cycle_count - before == 7);
+                assert(s.nes.cpu.program_counter == 0x9000);
+                assert(s.nes.wram[0x1FC] == (dot == 0 ? 1 : 2));
+                s.cart.vtable->destroy(&s.cart);
+            }
+        }
+    }
+}
+
 int main(void) {
     RUN_TEST(ppu_nmi_reaches_cpu_and_returns_to_interrupted_code);
     RUN_TEST(pending_nmi_takes_priority_over_irq);
@@ -177,5 +218,6 @@ int main(void) {
     RUN_TEST(apu_and_mapper_irq_acknowledgements_are_independent);
     RUN_TEST(running_apu_delivers_frame_irq_to_cpu);
     RUN_TEST(rendering_ppu_clocks_mapper_irq_into_cpu);
+    RUN_TEST(mapper_irq_poll_boundary_within_final_cpu_cycle);
     return 0;
 }

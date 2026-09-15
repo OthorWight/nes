@@ -151,6 +151,11 @@ static inline void nes_step_subsystems(NES *nes) {
         // later edges on an instruction's final cycle must be deferred.
         if (p == 0 && !nmi_before && nes->cpu.nmi_line && nes->cpu.cycle_count)
             nes->cpu.nmi_pulsed_cycle = nes->cpu.cycle_count - 1;
+        // IRQ uses the same poll boundary. Include a mapper edge driven by
+        // the first PPU dot, before the CPU's final-cycle status changes.
+        if (p == 0)
+            nes->cpu.irq_pending = nes->cpu.irq_lines &&
+                !(nes->cpu.status_flags & FLAG_INTERRUPT_DISABLE);
     }
     apu_step(&nes->apu, nes);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->clock_m2) {
