@@ -19,6 +19,7 @@
 #include "state_io.h"
 #include "diagnostics.h"
 #include "frontend_runtime.h"
+#include "nametable_view.h"
 #include "rom_preferences.h"
 
 NES nes_sys;
@@ -39,6 +40,8 @@ static bool debug_panel_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
 static bool crt_enabled = false;
+static bool nametable_viewer_enabled = false;
+static NametableView nametable_view;
 static int master_volume = 100;
 static bool performance_visible = false;
 static bool focused = true;
@@ -342,7 +345,7 @@ static void save_emulator_settings(void) {
     }
     uint8_t data[128];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 6);
+    state_u32(&io, 7);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -353,12 +356,14 @@ static void save_emulator_settings(void) {
     state_i32(&io, global_preferences.zapper ? 1 : 0);
     state_i32(&io, performance_visible ? 1 : 0);
     state_i32(&io, crt_enabled ? 1 : 0);
+    state_i32(&io, nametable_viewer_enabled ? 1 : 0);
     if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
 static void load_emulator_settings(void) {
     zapper_enabled = false;
     crt_enabled = false;
+    nametable_viewer_enabled = false;
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -366,7 +371,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 6) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 7) {
         fclose(f);
         return;
     }
@@ -403,6 +408,10 @@ static void load_emulator_settings(void) {
     if (version >= 6) {
         int temp_crt = 0;
         if (fread(&temp_crt, sizeof(temp_crt), 1, f) == 1) crt_enabled = temp_crt == 1;
+    }
+    if (version >= 7) {
+        int temp_nametables = 0;
+        if (fread(&temp_nametables, sizeof(temp_nametables), 1, f) == 1) nametable_viewer_enabled = temp_nametables == 1;
     }
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
@@ -638,6 +647,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
     NES_StateResult result = nes_state_load(&nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
+        nametable_view.valid = false;
         nes_sys.zapper_enabled = zapper_enabled;
         clear_host_input();
         runtime_reset_pending = true;
@@ -653,6 +663,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
 static HostCanvas canvas;
 static HostCanvas *renderer = &canvas;
 static HostCanvas debug_canvas;
+static HostCanvas nametable_canvas;
 
 static void panel_line(int *y, uint32_t color, const char *format, ...) {
     char text[128];
@@ -761,6 +772,7 @@ static bool frontend_load_rom(const char *name) {
     }
 
     debugger_active = false;
+    nametable_view.valid = false;
     nes_init(&nes_sys);
     bool trace_enabled = diagnostics.tracing;
     memset(&diagnostics, 0, sizeof(diagnostics));
@@ -880,6 +892,7 @@ static const MenuItem emulation_items[] = {
 static const MenuItem view_items[] = {
     SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
     ITEM("CRT Shader", NULL, MENU_CRT),
+    ITEM("Nametable Viewer", NULL, MENU_NAMETABLES),
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
 };
 static const MenuItem debug_items[] = {
@@ -915,6 +928,7 @@ static unsigned desktop_state(void *context, MenuCommand command) {
         case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
         case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
         case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
+        case MENU_NAMETABLES: return nametable_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_CRT: return crt_enabled ? MENU_CHECKED : 0;
         case MENU_DEBUG_PANEL: return debug_panel_enabled ? MENU_CHECKED : 0;
         case MENU_METRICS: return performance_visible ? MENU_CHECKED : 0;
@@ -951,6 +965,7 @@ static void desktop_command(MenuCommand command) {
         case MENU_EXIT: if (save_battery_ram()) running = false; break;
         case MENU_PAUSE: paused = !paused; break;
         case MENU_RESET:
+            nametable_view.valid = false;
             nes_reset(&nes_sys); nes_clock_tick(&nes_sys);
             debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0;
             clear_view_history(debugger_view_pc); break;
@@ -965,6 +980,9 @@ static void desktop_command(MenuCommand command) {
         case MENU_FULLSCREEN:
             preferences_inherit = false; fullscreen = !fullscreen; apply_display(); save_emulator_settings(); break;
         case MENU_DEBUG_PANEL: debug_panel_enabled = !debug_panel_enabled; save_emulator_settings(); break;
+        case MENU_NAMETABLES:
+            nametable_viewer_enabled = !nametable_viewer_enabled;
+            nametable_view.valid = false; save_emulator_settings(); break;
         case MENU_CRT:
             crt_enabled = !crt_enabled; host_set_crt(crt_enabled); save_emulator_settings(); break;
         case MENU_METRICS: performance_visible = !performance_visible; save_emulator_settings(); break;
@@ -1098,7 +1116,45 @@ static void desktop_draw(void) {
     }
     menu_bar_draw(&desktop_menu, &painter);
 }
+static void draw_nametable_panel(void) {
+    host_set_nametable_panel(nametable_viewer_enabled ? &nametable_canvas : NULL);
+    if (!nametable_viewer_enabled) return;
+    nametable_canvas.width = HOST_PANEL_WIDTH;
+    nametable_canvas.height = HOST_PANEL_HEIGHT;
+    host_color(&nametable_canvas, 15, 20, 35, 255);
+    host_clear(&nametable_canvas);
+    if (!nes_sys.cart) {
+        draw_string(&nametable_canvas, "NAMETABLES - Open a ROM to view", 8, 4, 0x78C8FF);
+        return;
+    }
+    if (!nametable_view.valid) {
+        draw_string(&nametable_canvas, "NAMETABLES - Resume to capture background", 8, 4, 0x78C8FF);
+        return;
+    }
+    static const char *mirroring[] = {
+        "Horizontal (A A / B B)", "Vertical (A B / A B)",
+        "Four screen", "One screen low", "One screen high"
+    };
+    char title[64];
+    const char *mode = nametable_view.mirroring < 0 ?
+        "Mapper controlled" : mirroring[nametable_view.mirroring];
+    snprintf(title, sizeof(title), "NAMETABLES - %s", mode);
+    draw_string(&nametable_canvas, title, 8, 4, 0x78C8FF);
+    for (int y = 0; y < PPU_NAMETABLE_HEIGHT; ++y) {
+        int dest_y = y + (y < 240 ? 32 : 48);
+        for (int x = 0; x < PPU_NAMETABLE_WIDTH; ++x) {
+            uint32_t p = nametable_view.pixels[y * PPU_NAMETABLE_WIDTH + x];
+            nametable_canvas.pixels[dest_y * HOST_PANEL_WIDTH + x] =
+                0xFF000000u | ((p & 255) << 16) | (p & 0xFF00) | ((p >> 16) & 255);
+        }
+    }
+    draw_string(&nametable_canvas, "$2000", 8, 20, 0xFFFFFF);
+    draw_string(&nametable_canvas, "$2400", 264, 20, 0xFFFFFF);
+    draw_string(&nametable_canvas, "$2800", 8, 276, 0xFFFFFF);
+    draw_string(&nametable_canvas, "$2C00", 264, 276, 0xFFFFFF);
+}
 static void desktop_present(HostCanvas *game) {
+    draw_nametable_panel();
     if (nes_sys.cart && paused) {
         /* Use game pixels so the OSD grows with the picture, unlike desktop text. */
         HostRect badge = {96, 108, 64, 24};
@@ -1130,6 +1186,7 @@ static bool desktop_event(const HostEvent *event) {
             if (!browser_mode) frontend_load_rom(path);
             else {
                 NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
+                if (browser_mode != 2 && result == NES_STATE_OK) nametable_view.valid = false;
                 show_notification(result == NES_STATE_OK ? (browser_mode == 2 ? "STATE SAVED" : "STATE LOADED") : nes_state_message(result));
                 clear_host_input(); runtime_reset_pending = true;
                 nes_sys.zapper_enabled = zapper_enabled;
@@ -1206,6 +1263,8 @@ static bool desktop_event(const HostEvent *event) {
         HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
         HostPoint point = {event->window_mouse.x, event->window_mouse.y};
         if (host_point_in_rect(&point, &panel)) return true;
+        host_nametable_layout(sapp_width(), sapp_height(), &panel);
+        if (host_point_in_rect(&point, &panel)) return true;
     }
     return consumed;
 }
@@ -1232,6 +1291,7 @@ static void app_init(void) {
 
 static void app_frame(void) {
     HostEvent event;
+    nes_sys.nametable_view = nametable_viewer_enabled ? &nametable_view : NULL;
     host_poll_gamepads();
     bool playing = nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && focused;
     if (runtime_reset_pending || playing != was_playing) {
@@ -1254,6 +1314,7 @@ static void app_frame(void) {
             uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
 
             nes_sys.frame_ready = false;
+            if (nametable_viewer_enabled) nametable_view_begin_frame(&nametable_view);
             while (!nes_sys.frame_ready) {
                 if (breakpoints[nes_sys.cpu.program_counter]) {
                     debugger_active = true;
@@ -1266,8 +1327,11 @@ static void app_frame(void) {
                     debugger_log_instruction(&nes_sys.cpu);
                 }
                 nes_clock_tick(&nes_sys);
+                if (nametable_viewer_enabled && !nametable_view.sampled)
+                    nametable_view_sample(&nametable_view, &nes_sys);
             }
 
+            if (nametable_viewer_enabled) nametable_view_finish_frame(&nametable_view);
             if (nes_sys.frame_ready) nes_check_zapper_stall(&nes_sys);
 
             uint64_t emu_end_tick = host_counter();

@@ -8,6 +8,7 @@
 typedef struct NES NES;
 typedef struct Cartridge Cartridge;
 typedef struct NESDiagnostics NESDiagnostics;
+typedef struct NametableView NametableView;
 
 typedef struct {
     bool irq_line;      // Low-active wire-OR line (Cartridge + APU)
@@ -66,6 +67,7 @@ struct NES {
 
     bool       frame_ready;
     NESDiagnostics *diagnostics; // Host observation only; excluded from save states.
+    NametableView *nametable_view; // Optional background-fetch observer; not saved.
 };
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr);

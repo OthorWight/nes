@@ -186,6 +186,36 @@ static bool scripted_poll(HostEvent *e) {
             break;
         case 23:
             assert(!debug_panel_enabled && performance_visible && renderer->has_frame);
+            desktop_command(MENU_NAMETABLES);
+            assert(nametable_viewer_enabled && (desktop_state(NULL, MENU_NAMETABLES) & MENU_CHECKED));
+            nametable_viewer_enabled = false; load_emulator_settings();
+            assert(nametable_viewer_enabled);
+            break;
+        case 24: {
+            assert(!paused && !debugger_active && renderer->has_frame);
+            assert(nametable_view.valid && nametable_view.sampled);
+            HostRect game, panel, nt;
+            host_layout(sapp_width(), sapp_height(), &game, &panel);
+            host_nametable_layout(sapp_width(), sapp_height(), &nt);
+            assert(game.w > 0 && panel.w > 0 && nt.w > 0);
+            assert(game.x + game.w <= panel.x && panel.x + panel.w <= nt.x);
+            assert(abs(nt.w * HOST_NAMETABLE_HEIGHT - nt.h * HOST_PANEL_WIDTH) < HOST_PANEL_HEIGHT);
+            float x, y;
+            host_to_logical(renderer, game.x + game.w / 2, game.y + game.h / 2, &x, &y);
+            assert(fabsf(x - 128) < 1 && fabsf(y - 120) < 1);
+            host_to_logical(renderer, nt.x + nt.w / 2, nt.y + nt.h / 2, &x, &y);
+            assert(x > 256);
+            capture_window("nametable-viewer.bmp");
+            key(e, HOST_KEYDOWN, HOST_KEY_RIGHT);
+            break;
+        }
+        case 25:
+            assert(nes_sys.controller_state[0] & 0x80);
+            key(e, HOST_KEYUP, HOST_KEY_RIGHT);
+            break;
+        case 26:
+            assert(!nes_sys.controller_state[0]);
+            /* Leave the viewer enabled while the pacing/audio checks run. */
             break;
         default: assert(iteration < capture_iteration); break;
     }

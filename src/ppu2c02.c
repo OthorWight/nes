@@ -1,7 +1,9 @@
 #include "ppu2c02.h"
 #include "nes_system.h"
 #include "diagnostics.h"
+#include "nametable_view.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* Cycle-level OAM evaluation supplies the rendering-time $2004 bus and the
    2C02 diagonal sprite-overflow behavior. */
@@ -172,6 +174,76 @@ static const uint32_t NES_PALETTE[64] = {
 };
 
 #define SCREEN_WIDTH         256
+
+bool ppu_render_nametables(const NES *nes, uint32_t *pixels, int *mirroring) {
+    if (!nes || !nes->cart || !nes->cart->vtable || !pixels) return false;
+    NES *snapshot = malloc(sizeof(*snapshot));
+    size_t mapper_size = nes->cart->vtable->state_size;
+    void *mapper = mapper_size ? malloc(mapper_size) : NULL;
+    if (!snapshot || (mapper_size && !mapper)) {
+        free(snapshot); free(mapper); return false;
+    }
+    *snapshot = *nes;
+    Cartridge cart = *nes->cart;
+    if (mapper_size) memcpy(mapper, cart.mapper_data, mapper_size);
+    cart.mapper_data = mapper;
+    cart.nes = snapshot;
+    snapshot->cart = &cart;
+    snapshot->diagnostics = NULL;
+    snapshot->nametable_view = NULL;
+    /* Background fetch context also selects MMC5's background CHR banks. */
+    snapshot->ppu.scanline = 0;
+    snapshot->ppu.cycle = 1;
+    if (mirroring) {
+        /* Mapper registers can override the cartridge header's mirroring.
+           Query the private copy, including custom CIRAM/ExRAM routing. */
+        int pages[4];
+        for (unsigned table = 0; table < 4; ++table) {
+            uint16_t address = (uint16_t)(0x2000 + table * 0x400);
+            bool ciram = true;
+            uint16_t mapped = cart.vtable->remap_ciram_addr ?
+                cart.vtable->remap_ciram_addr(&cart, address, &ciram) :
+                cartridge_default_remap_ciram(cart.mirroring, address);
+            pages[table] = ciram ? (mapped & 0x0FFF) : -1;
+        }
+        *mirroring = -1;
+        for (int mode = MIRROR_HORIZONTAL; mode <= MIRROR_ONE_SCREEN_HIGH; ++mode) {
+            bool matches = true;
+            for (unsigned table = 0; table < 4; ++table)
+                if (pages[table] != cartridge_default_remap_ciram((MirroringMode)mode,
+                        (uint16_t)(0x2000 + table * 0x400))) matches = false;
+            if (matches) { *mirroring = mode; break; }
+        }
+    }
+    uint16_t pattern = (snapshot->ppu.ppu_ctrl & 0x10) ? 0x1000 : 0;
+    for (unsigned table = 0; table < 4; ++table) {
+        uint16_t base = (uint16_t)(0x2000 + table * 0x400);
+        for (unsigned ty = 0; ty < 30; ++ty) {
+            for (unsigned tx = 0; tx < 32; ++tx) {
+                uint8_t tile = nes_ppu_bus_read(snapshot, base + ty * 32 + tx);
+                uint8_t attr = nes_ppu_bus_read(snapshot, base + 0x3C0 + (ty / 4) * 8 + tx / 4);
+                unsigned palette = (attr >> ((ty & 2) * 2 + (tx & 2))) & 3;
+                for (unsigned row = 0; row < 8; ++row) {
+                    uint16_t address = pattern + tile * 16 + row;
+                    uint8_t lo = nes_ppu_bus_read(snapshot, address);
+                    uint8_t hi = nes_ppu_bus_read(snapshot, address + 8);
+                    unsigned y = (table / 2) * 240 + ty * 8 + row;
+                    unsigned x = (table % 2) * 256 + tx * 8;
+                    for (unsigned col = 0; col < 8; ++col) {
+                        unsigned shift = 7 - col;
+                        unsigned color = ((lo >> shift) & 1) | (((hi >> shift) & 1) << 1);
+                        unsigned index = color ? palette * 4 + color : 0;
+                        pixels[y * PPU_NAMETABLE_WIDTH + x + col] =
+                            NES_PALETTE[snapshot->ppu.palette_ram[index] & 0x3F];
+                    }
+                }
+            }
+        }
+    }
+    free(mapper);
+    free(snapshot);
+    return true;
+}
 
 #define SCANLINE_VISIBLE_MAX 240
 #define SCANLINE_PRERENDER   261
@@ -590,6 +662,19 @@ void ppu_step(NES *nes) {
                         ((uint16_t)ppu->bg_next_tile_id << 4) | fine_y;
                     ppu->bg_next_tile_msb = nes_ppu_bus_read(nes,
                                                              pattern_addr + 8);
+                    if (nes->nametable_view && (ppu->ppu_mask & 0x08) &&
+                        (ppu->scanline != SCANLINE_PRERENDER || ppu->cycle >= 321) &&
+                        (ppu->scanline != 239 || ppu->cycle <= 256)) {
+                        uint32_t pixels[8];
+                        for (unsigned col = 0; col < 8; ++col) {
+                            unsigned shift = 7 - col;
+                            unsigned color = ((ppu->bg_next_tile_lsb >> shift) & 1) |
+                                (((ppu->bg_next_tile_msb >> shift) & 1) << 1);
+                            unsigned index = color ? ppu->bg_next_tile_attrib * 4 + color : 0;
+                            pixels[col] = NES_PALETTE[ppu->palette_ram[index] & 0x3F];
+                        }
+                        nametable_view_record(nes->nametable_view, ppu->v, pixels);
+                    }
                     break;
                 }
                 case 7:

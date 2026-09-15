@@ -28,6 +28,7 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 | `cpu_irq_polling.c` | IRQ edges on the penultimate/final CPU cycle, retained sampled IRQ after deassertion, CLI/SEI/PLP/RTI flag timing, branch poll points and stalled boundaries |
 | `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; CPU PPUMASK writes around the skip-decision boundary; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
 | `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle; single-dot vblank set/clear boundaries, status-read NMI suppression and PPUCTRL disable timing |
+| `nametable_viewer.c` | Four-table address layout, horizontal/vertical/one-screen/four-screen mirroring, attribute quadrants, CHR table selection, bit order, transparency, mid-frame capture, actual MMC3 gameplay/HUD fetches, mirrored row updates, frame-cache clearing, identical emulator state with the observer enabled, and snapshot isolation across all 23 mapper IDs |
 | `ppu_pixels.c` | Transparency and background priority, first-opaque-sprite ordering, horizontal flips and bounds, sprite-zero hit clipping/right edge/persistence, forced-blank palette selection and mask changes |
 | `ppu_sprite_overflow.c` | DMA-loaded hidden sprites at Y=240..255 across both sprite heights and rendering enables; eight/nine-sprite threshold, vertical range boundaries, Y=239 evaluation and status-read persistence |
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
@@ -44,7 +45,7 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 The optional `powershell -File tests/sokol/run.ps1` (Windows/GCC) or
 `bash tests/sokol/run.sh` runs the Sokol frontend with scripted input and real
 platform graphics/audio. It checks menus, focus/disconnect/debugger transitions,
-per-ROM defaults, save/load and audio/muted/unavailable pacing. Windows also
+per-ROM defaults, save/load and audio/muted/unavailable pacing. The nametable viewer stays open during pacing checks; tests verify its saved toggle, controller input, simultaneous panel layout, and game-only mouse aiming. Windows also
 checks the D3D11 render target, including CRT shader edge blending, shallow
 scanlines, rounded contour corners, solid black thin outlines and preserved midtones,
 sharp overlays/sidebar, and restoring unfiltered colors. Menu checks

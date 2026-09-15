@@ -55,6 +55,9 @@ static sg_view overlay_view;
 static sg_image panel_image;
 static sg_view panel_view;
 static HostCanvas *debug_panel;
+static HostCanvas *nametable_panel;
+static sg_image nametable_image;
+static sg_view nametable_view;
 static void (*chrome)(void);
 static sg_image chrome_image;
 static sg_view chrome_view;
@@ -141,6 +144,9 @@ void host_setup(void) {
     panel_image = sg_make_image(&(sg_image_desc){.width = HOST_PANEL_WIDTH, .height = HOST_PANEL_HEIGHT,
         .pixel_format = SG_PIXELFORMAT_RGBA8, .usage.dynamic_update = true});
     panel_view = sg_make_view(&(sg_view_desc){.texture.image = panel_image});
+    nametable_image = sg_make_image(&(sg_image_desc){.width = HOST_PANEL_WIDTH, .height = HOST_PANEL_HEIGHT,
+        .pixel_format = SG_PIXELFORMAT_RGBA8, .usage.dynamic_update = true});
+    nametable_view = sg_make_view(&(sg_view_desc){.texture.image = nametable_image});
     overlay_pipeline = sgl_make_pipeline(&(sg_pipeline_desc){.colors[0].blend = {
         .enabled = true, .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
         .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
@@ -212,8 +218,8 @@ void host_display(int scale, bool fullscreen) {
     windowed_scale = scale;
     if (fullscreen != sapp_is_fullscreen()) sapp_toggle_fullscreen();
     if (fullscreen) return;
-    int content_width = (debug_panel ? 448 : 256) * scale;
-    int content_height = 240 * scale;
+    int content_width = (256 + (debug_panel ? 192 : 0) + (nametable_panel ? 256 : 0)) * scale;
+    int content_height = (nametable_panel ? HOST_NAMETABLE_HEIGHT / 2 : 240) * scale;
     if (chrome) {
         int w, h;
         float ui_scale = host_chrome_layout(content_width, content_height, &w, &h);
@@ -263,7 +269,13 @@ void host_set_debug_panel(HostCanvas *panel) {
     if (changed && windowed_scale > 0 && windowed_scale < 5 && !sapp_is_fullscreen())
         host_display(windowed_scale, false);
 }
-void host_layout(int width, int height, HostRect *game, HostRect *panel) {
+void host_set_nametable_panel(HostCanvas *panel) {
+    bool changed = (nametable_panel != NULL) != (panel != NULL);
+    nametable_panel = panel;
+    if (changed && windowed_scale > 0 && windowed_scale < 5 && !sapp_is_fullscreen())
+        host_display(windowed_scale, false);
+}
+static void layout_views(int width, int height, HostRect *game, HostRect *panel, HostRect *nametables) {
     int top = 0;
     if (chrome) {
         int w, h;
@@ -272,18 +284,38 @@ void host_layout(int width, int height, HostRect *game, HostRect *panel) {
         height -= top + (int)ceilf(STATUS_BAR_HEIGHT * scale);
         if (height < 0) height = 0;
     }
-    int game_width = debug_panel ? width * 4 / 7 : width;
+    int units = 256 + (debug_panel ? 192 : 0) + (nametable_panel ? 256 : 0);
+    int game_width = width * 256 / units;
+    int debug_width = debug_panel ? width * 192 / units : 0;
     host_viewport(game_width, height, game);
     game->y += top;
     *panel = (HostRect){0};
     if (debug_panel) {
-        double scale = fmin((width - game_width) / (double)HOST_PANEL_WIDTH,
+        double scale = fmin(debug_width / (double)HOST_PANEL_WIDTH,
                             height / (double)HOST_PANEL_HEIGHT);
         panel->w = (int)(HOST_PANEL_WIDTH * scale);
         panel->h = (int)(HOST_PANEL_HEIGHT * scale);
-        panel->x = game_width + (width - game_width - panel->w) / 2;
+        panel->x = game_width + (debug_width - panel->w) / 2;
         panel->y = top + (height - panel->h) / 2;
     }
+    *nametables = (HostRect){0};
+    if (nametable_panel) {
+        int start = game_width + debug_width;
+        double scale = fmin((width - start) / (double)HOST_PANEL_WIDTH,
+                            height / (double)HOST_NAMETABLE_HEIGHT);
+        nametables->w = (int)(HOST_PANEL_WIDTH * scale);
+        nametables->h = (int)(HOST_NAMETABLE_HEIGHT * scale);
+        nametables->x = start + (width - start - nametables->w) / 2;
+        nametables->y = top + (height - nametables->h) / 2;
+    }
+}
+void host_layout(int width, int height, HostRect *game, HostRect *panel) {
+    HostRect nametables;
+    layout_views(width, height, game, panel, &nametables);
+}
+void host_nametable_layout(int width, int height, HostRect *rect) {
+    HostRect game, panel;
+    layout_views(width, height, &game, &panel, rect);
 }
 void host_set_chrome(void (*draw)(void), const uint8_t font[95][8]) {
     chrome = draw;
@@ -408,6 +440,13 @@ void host_present(HostCanvas *c) {
         sgl_viewport(panel.x, panel.y, panel.w, panel.h, true);
         sgl_enable_texture();
         textured_quad(panel_view, 0, 0, 1, 1);
+    }
+    if (nametable_panel) {
+        HostRect nt; host_nametable_layout(sapp_width(), sapp_height(), &nt);
+        sg_update_image(nametable_image, &(sg_image_data){.mip_levels[0] = {nametable_panel->pixels, sizeof(nametable_panel->pixels)}});
+        sgl_defaults(); sgl_viewport(nt.x, nt.y, nt.w, nt.h, true);
+        sgl_enable_texture();
+        textured_quad(nametable_view, 0, 0, 1, HOST_NAMETABLE_HEIGHT / (float)HOST_PANEL_HEIGHT);
     }
     if (chrome) {
         int w, h;

@@ -72,6 +72,13 @@ typedef struct {
 void    ppu_init(PPU2C02 *ppu);
 void    ppu_step(NES *nes);
 
+enum { PPU_NAMETABLE_WIDTH = 512, PPU_NAMETABLE_HEIGHT = 480 };
+/* ARGB background snapshot in $2000/$2400, $2800/$2C00 order. Mapper
+   reads run on a private copy so latches and IRQs cannot affect gameplay.
+   Uses current banks/palettes; does not reconstruct mid-frame changes. */
+/* Optional mirroring output: a MirroringMode value, or -1 for custom routing. */
+bool ppu_render_nametables(const NES *nes, uint32_t *pixels, int *mirroring);
+
 uint8_t ppu_read_reg(NES *nes, uint16_t address);
 void    ppu_write_reg(NES *nes, uint16_t address, uint8_t data);
 
