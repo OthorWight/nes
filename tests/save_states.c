@@ -82,6 +82,13 @@ static void setup(NES *n) {
             write_mapper(n, 0x8000, 14);
             write_mapper(n, 0xA000, 0x57);
             break;
+        case 85:
+            write_mapper(n, 0x8008, 3);
+            write_mapper(n, 0xE000, 0x80);
+            write_mapper(n, 0x9010, 0x30); write_mapper(n, 0x9030, 0x10);
+            write_mapper(n, 0x9010, 0x10); write_mapper(n, 0x9030, 0x90);
+            write_mapper(n, 0x9010, 0x20); write_mapper(n, 0x9030, 0x17);
+            break;
         default: write_mapper(n, 0x8000, 3); break;
     }
     // Save at a visible fetch boundary with DMA/APU and controller work pending.
@@ -103,6 +110,10 @@ static void equal_machine(NES *a, NES *b) {
     assert(ac && bc);
     *ac = *a; *bc = *b;
     ac->cart = bc->cart = NULL;
+    // Native FM pointers refer to the owning core's patch array. All actual
+    // synthesis state still participates in the byte comparison below.
+    for (unsigned i = 0; i < 18; ++i)
+        ac->expansion.vrc7.core.slot[i].patch = bc->expansion.vrc7.core.slot[i].patch = NULL;
     assert(memcmp(ac, bc, sizeof(*ac)) == 0);
     free(ac); free(bc);
     assert(a->cart->mirroring == b->cart->mirroring);
@@ -123,7 +134,7 @@ static void inputs_and_step(NES *n, unsigned step) {
     nes_clock_tick(n);
 }
 static void all_mapper_replay(void) {
-    static const unsigned ids[] = {0,1,2,3,4,5,7,9,10,11,19,23,24,26,34,64,66,69,71,78,118,206,227};
+    static const unsigned ids[] = {0,1,2,3,4,5,7,9,10,11,19,23,24,26,34,64,66,69,71,78,85,118,206,227};
     char rom[512]; fixture_path(rom, "replay.nes");
     for (unsigned m = 0; m < sizeof(ids) / sizeof(ids[0]); ++m) {
         printf("  mapper %u: mid-frame restore and fixed-input replay\n", ids[m]); fflush(stdout);
@@ -132,7 +143,7 @@ static void all_mapper_replay(void) {
         setup(a);
         uint8_t *save; size_t size;
         assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
-        assert(!memcmp(save, "NESSTATE\3\0\0\0", 12));
+        assert(!memcmp(save, "NESSTATE\5\0\0\0", 12));
         assert(nes_state_decode(b, save, size) == NES_STATE_OK);
         equal_machine(a, b);
         for (unsigned i = 0; i < 24000; ++i) {
@@ -163,6 +174,13 @@ static void refresh_checksum(uint8_t *data, size_t size) {
     StateIO io = {data, size, 16, false, true};
     state_u32(&io, state_crc32(data + NES_STATE_HEADER_SIZE, size - NES_STATE_HEADER_SIZE));
 }
+static size_t version5_size(NES *n) {
+    StateIO io = {NULL, SIZE_MAX, 2, false, true}; // Region override and PPU region.
+    apu_state_extension(&n->apu, &io);
+    expansion_audio_state(&n->expansion, &io);
+    assert(io.ok);
+    return io.pos;
+}
 static void corrupt_and_wrong_states(void) {
     puts("  invalid states leave all live state unchanged");
     char rom[512]; fixture_path(rom, "invalid.nes");
@@ -171,6 +189,7 @@ static void corrupt_and_wrong_states(void) {
     setup(n);
     uint8_t *good; size_t size;
     assert(nes_state_encode(n, &good, &size) == NES_STATE_OK);
+    size_t v3_end = size - version5_size(n) - 11; // Version 4 DMA fields.
     uint8_t *bad = malloc(size + 1); assert(bad);
     memcpy(bad, good, size);
     const size_t cuts[] = {0,1,4,8,31,32,100,1000};
@@ -185,7 +204,7 @@ static void corrupt_and_wrong_states(void) {
     memcpy(bad, good, size); bad[size - 1] ^= 1;
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Reject an invalid PPU skip latch even with a valid checksum.
-    memcpy(bad, good, size); bad[size - 1] = 2;
+    memcpy(bad, good, size); bad[v3_end - 1] = 2;
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Valid checksum but an invalid bool in the CPU state (offset 20).
@@ -197,14 +216,14 @@ static void corrupt_and_wrong_states(void) {
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Mapper A12 filter precedes the two IRQ booleans and PPU skip latch.
-    memcpy(bad, good, size); memset(bad + size - 7, 0xFF, 4);
+    memcpy(bad, good, size); memset(bad + v3_end - 7, 0xFF, 4);
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     // Version 1 still carries CHR bytes, but cannot overwrite cartridge ROM.
     StateIO mapper_count = {NULL, SIZE_MAX, 0, false, true};
     n->cart->vtable->state(n->cart, &mapper_count);
     memcpy(bad, good, size);
-    bad[size - mapper_count.pos - n->cart->chr_rom_size + 17] ^= 0x80;
+    bad[v3_end - 3 - mapper_count.pos - n->cart->chr_rom_size + 17] ^= 0x80;
     refresh_checksum(bad, size);
     rejection_keeps_machine(n, bad, size, NES_STATE_CORRUPT);
     rejection_keeps_machine(n, (uint8_t *)"TATS", 4, NES_STATE_LEGACY);
@@ -247,7 +266,7 @@ static void state_files_and_failed_replace(void) {
 }
 
 static void irq_poll_state_and_older_import(void) {
-    puts("  IRQ poll state survives restore; versions 1 and 2 still load");
+    puts("  IRQ poll state survives restore; versions 1 through 4 still load");
     char rom[512]; fixture_path(rom, "irq-state.nes");
     fixture_rom(rom, 0, false, true, 0);
     NES *n = fixture_load(rom);
@@ -262,10 +281,27 @@ static void irq_poll_state_and_older_import(void) {
     nes_clock_tick(n);
     assert(n->cpu.cycle_count - before == 7 && n->cpu.program_counter == 0x0100);
 
+    size -= version5_size(n);
+    StateIO header = {save, size, 8, false, true};
+    state_u32(&header, 4);
+    state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
+    refresh_checksum(save, size);
+    nes_set_region(n, NES_PAL);
+    n->apu.sample_integrator = 0.5f;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(n->apu.region == NES_NTSC && n->ppu.region == NES_NTSC && n->apu.sample_integrator == 0);
+    size -= 11;
+    header = (StateIO){save, size, 8, false, true};
+    state_u32(&header, 3);
+    state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
+    refresh_checksum(save, size);
+    n->oam_dma_pending = true;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(!n->oam_dma_pending);
     // Version 3 appends the PPU skip latch; version 2 appends IRQ booleans.
     // Recreate version 2 without letting omitted data inherit live history.
     size -= 1;
-    StateIO header = {save, size, 8, false, true};
+    header = (StateIO){save, size, 8, false, true};
     state_u32(&header, 2);
     state_u32(&header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
     refresh_checksum(save, size);
@@ -310,6 +346,24 @@ static void odd_frame_skip_latch_survives_restore(void) {
     fixture_free(n); assert(remove(rom) == 0);
 }
 
+static void pal_midframe_replay(void) {
+    char rom[512]; fixture_path(rom, "pal-state.nes");
+    fixture_rom(rom, 0, false, true, 0);
+    NES *a = fixture_load(rom), *b = fixture_load(rom);
+    a->region_override = NES_PAL;
+    nes_set_region(a, NES_PAL);
+    setup(a);
+    a->ppu.scanline = 300; // Outside the old NTSC save-state bounds.
+    a->clock.ppu_divider = 4;
+    uint8_t *save; size_t size;
+    assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
+    assert(nes_state_decode(b, save, size) == NES_STATE_OK);
+    equal_machine(a, b);
+    for (unsigned i = 0; i < 3000; ++i) { inputs_and_step(a, i); inputs_and_step(b, i); }
+    equal_machine(a, b);
+    free(save); fixture_free(a); fixture_free(b); assert(remove(rom) == 0);
+}
+
 int main(void) {
     fixture_start("states");
     all_mapper_replay();
@@ -317,6 +371,7 @@ int main(void) {
     state_files_and_failed_replace();
     irq_poll_state_and_older_import();
     odd_frame_skip_latch_survives_restore();
+    pal_midframe_replay();
     assert(SAVE_RMDIR(fixture_dir) == 0);
     puts("Save-state replay, validation and file I/O checks passed.");
     return 0;

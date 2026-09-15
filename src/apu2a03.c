@@ -2,12 +2,6 @@
 #include "nes_system.h"
 #include <string.h>
 
-#define CPU_CLOCK_RATE      1789773.0
-#define AUDIO_SAMPLE_RATE   44100.0
-#define AUDIO_BUFFER_SIZE   4096
-#define MIX_PULSE_DIVISOR   8128.0f
-#define MIX_TND_DIVISOR     100.0f
-
 static const uint8_t LENGTH_TABLE[32] = {
     10, 254, 20,  2, 40,  4, 80,  6,160,  8, 60, 10, 14, 12, 26, 14,
     12,  16, 24, 18, 48, 20, 96, 22,192, 24, 72, 26, 16, 28, 32, 30
@@ -34,17 +28,18 @@ static const uint16_t DMC_RATE_TABLE[16] = {
     428, 380, 340, 320, 286, 254, 226, 214,
     190, 160, 142, 128, 106,  84,  72,  54
 };
+static const uint16_t PAL_NOISE_PERIOD[16] = {
+    4,8,14,30,60,88,118,148,188,236,354,472,708,944,1890,3778
+};
+static const uint16_t PAL_DMC_PERIOD[16] = {
+    398,354,316,298,276,236,210,198,176,148,132,118,98,78,66,50
+};
 
-// NTSC frame sequencer events in CPU cycles after the delayed $4017 reset.
-#define FRAME_4_STEP1 7457u
-#define FRAME_4_STEP2 14913u
-#define FRAME_4_STEP3 22371u
-#define FRAME_4_STEP4 29829u
-#define FRAME_5_STEP1 7457u
-#define FRAME_5_STEP2 14913u
-#define FRAME_5_STEP3 22371u
-#define FRAME_5_STEP4 29829u
-#define FRAME_5_STEP5 37281u
+void apu_set_region(APU2A03 *a, unsigned region) {
+    a->region = (uint8_t)region;
+    a->noise_timer_reload = (region == NES_PAL ? PAL_NOISE_PERIOD : NOISE_PERIOD)[a->noise_rate & 15];
+    a->dmc_timer_reload = (region == NES_PAL ? PAL_DMC_PERIOD : DMC_RATE_TABLE)[a->dmc_rate & 15];
+}
 
 static bool is_sweep_muting(APU2A03 *apu, int ch) {
     uint16_t period = apu->pulse_timer_reload[ch];
@@ -175,12 +170,12 @@ static bool *halt_flag(APU2A03 *a, unsigned ch) {
         &a->triangle_control_flag : &a->noise_halt;
 }
 static void load_length(APU2A03 *a, unsigned ch, uint8_t data) {
-    a->length_previous[ch] = *length_counter(a, ch);
+    if (!(a->length_pending & (1u << ch))) a->length_previous[ch] = *length_counter(a, ch);
     a->length_pending |= 1u << ch;
     *length_counter(a, ch) = LENGTH_TABLE[data >> 3];
 }
 static void set_halt(APU2A03 *a, unsigned ch, bool value) {
-    a->halt_previous[ch] = *halt_flag(a, ch);
+    if (!(a->halt_pending & (1u << ch))) a->halt_previous[ch] = *halt_flag(a, ch);
     a->halt_pending |= 1u << ch;
     *halt_flag(a, ch) = value;
 }
@@ -192,6 +187,8 @@ void apu_init(APU2A03 *apu) {
     apu->dmc_buffer_empty = true;
     apu->dmc_silent = true;
     apu->dmc_bits_remaining = 8;
+    apu->dmc_sample_addr = 0xC000;
+    apu->dmc_sample_len = 1;
     apu->dmc_timer_reload = DMC_RATE_TABLE[0];
     apu->dmc_timer = 0;
     apu->audio_accumulator = 0.0;
@@ -237,7 +234,8 @@ void apu_reset(NES *nes) {
     a->frame_irq_active = false;
     cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, false);
     a->frame_cycles = 0;
-    apu_write_reg(nes, 0x4017, (a->frame_mode ? 0x80 : 0) | (a->frame_irq_inhibit ? 0x40 : 0));
+    a->frame_clock_block = 0;
+    apu_write_reg(nes, 0x4017, (a->frame_next_mode ? 0x80 : 0) | (a->frame_irq_inhibit ? 0x40 : 0));
 }
 
 void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
@@ -276,7 +274,8 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
                 break;
             case 2:
                 apu->noise_mode = (data & 0x80) != 0;
-                apu->noise_timer_reload = NOISE_PERIOD[data & 0x0F];
+                apu->noise_rate = data & 15;
+                apu->noise_timer_reload = (apu->region == NES_PAL ? PAL_NOISE_PERIOD : NOISE_PERIOD)[data & 15];
                 break;
             case 3:
                 if (apu->noise_enabled) {
@@ -291,7 +290,7 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
                 apu->dmc_irq_enable = (data & 0x80) != 0;
                 apu->dmc_loop = (data & 0x40) != 0;
                 apu->dmc_rate = data & 0x0F;
-                apu->dmc_timer_reload = DMC_RATE_TABLE[apu->dmc_rate];
+                apu->dmc_timer_reload = (apu->region == NES_PAL ? PAL_DMC_PERIOD : DMC_RATE_TABLE)[apu->dmc_rate];
                 if (!apu->dmc_irq_enable) {
                     apu->dmc_irq_active = false;
                     cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_DMC, false);
@@ -335,7 +334,7 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
             nes->dmc_dma_pending = false;
         }
     } else if (address == 0x4017) {
-        apu->frame_mode = (data & 0x80) != 0;
+        apu->frame_next_mode = (data & 0x80) != 0;
         apu->frame_irq_inhibit = (data & 0x40) != 0;
 
         if (apu->frame_irq_inhibit) {
@@ -375,73 +374,39 @@ static void apu_frame_counter_reset(APU2A03 *apu) {
     apu->frame_counter_reset_pending = false;
     apu->frame_counter_reset_delay = 0;
     apu->frame_cycles = 0;
+    apu->frame_mode = apu->frame_next_mode;
 
     // In 5-step mode, the reset event immediately generates the first
     // quarter+half-frame clock. In 4-step mode it only resets the sequence.
-    if (apu->frame_mode) {
+    if (apu->frame_mode && !apu->frame_clock_block) {
         apu_clock_half_frame(apu);
+        apu->frame_clock_block = 2;
     }
 }
 
 static void apu_step_frame_sequencer(APU2A03 *apu, NES *nes) {
-    if (apu->frame_counter_reset_pending) {
-        if (apu->frame_counter_reset_delay > 0) {
-            apu->frame_counter_reset_delay--;
-        }
-
-        if (apu->frame_counter_reset_delay == 0) {
-            apu_frame_counter_reset(apu);
-        }
-
-        if (!apu->frame_counter_reset_pending) return;
+    bool pal = apu->region == NES_PAL;
+    unsigned q1 = pal ? 8313 : 7457, h1 = pal ? 16627 : 14913;
+    unsigned q2 = pal ? 24939 : 22371;
+    unsigned h2 = apu->frame_mode ? (pal ? 41565 : 37281) : (pal ? 33253 : 29829);
+    unsigned cycle = ++apu->frame_cycles;
+    if (!apu->frame_mode && cycle >= h2 - 1 && !apu->frame_irq_inhibit) {
+        apu->frame_irq_active = true;
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, true);
     }
-
-    apu->frame_cycles++;
-
-    if (!apu->frame_mode) {
-        if (apu->frame_cycles >= FRAME_4_STEP4 - 1 && !apu->frame_irq_inhibit) {
-            apu->frame_irq_active = true;
-            cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, true);
-        }
-        switch (apu->frame_cycles) {
-            case FRAME_4_STEP1:
-                apu_clock_quarter_frame(apu);
-                break;
-            case FRAME_4_STEP2:
-                apu_clock_half_frame(apu);
-                break;
-            case FRAME_4_STEP3:
-                apu_clock_quarter_frame(apu);
-                break;
-            case FRAME_4_STEP4:
-                apu_clock_half_frame(apu);
-                break;
-            case FRAME_4_STEP4 + 1:
-                apu->frame_cycles = 0;
-                break;
-        }
-    } else {
-        switch (apu->frame_cycles) {
-            case FRAME_5_STEP1:
-                apu_clock_quarter_frame(apu);
-                break;
-            case FRAME_5_STEP2:
-                apu_clock_half_frame(apu);
-                break;
-            case FRAME_5_STEP3:
-                apu_clock_quarter_frame(apu);
-                break;
-            case FRAME_5_STEP4:
-                // The fourth position in 5-step mode has no unit clock.
-                break;
-            case FRAME_5_STEP5:
-                apu_clock_half_frame(apu);
-                break;
-            case FRAME_5_STEP5 + 1:
-                apu->frame_cycles = 0;
-                break;
+    if (!apu->frame_clock_block) {
+        if (cycle == h1 || cycle == h2) {
+            apu_clock_half_frame(apu);
+            apu->frame_clock_block = 2;
+        } else if (cycle == q1 || cycle == q2) {
+            apu_clock_quarter_frame(apu);
+            apu->frame_clock_block = 2;
         }
     }
+    if (cycle == h2 + 1) apu->frame_cycles = 0;
+    if (apu->frame_counter_reset_pending && apu->frame_counter_reset_delay &&
+        --apu->frame_counter_reset_delay == 0) apu_frame_counter_reset(apu);
+    if (apu->frame_clock_block) --apu->frame_clock_block;
 }
 
 static void apu_step_dmc(APU2A03 *apu, NES *nes) {
@@ -521,9 +486,7 @@ static void apu_step_timers(APU2A03 *apu) {
     }
 }
 
-static void apu_mix_audio_output(APU2A03 *apu) {
-    float pulse_out = 0.0f;
-    float tnd_out = 0.0f;
+static float apu_mix_audio_output(APU2A03 *apu) {
     float ch_out[2] = {0.0f, 0.0f};
     float tri_out = 0.0f;
     float noise_out = 0.0f;
@@ -548,17 +511,8 @@ static void apu_mix_audio_output(APU2A03 *apu) {
             : (float)apu->noise_envelope_decay;
     }
 
-    if (ch_out[0] != 0.0f || ch_out[1] != 0.0f) {
-        pulse_out = 95.88f / ((MIX_PULSE_DIVISOR / (ch_out[0] + ch_out[1])) + 100.0f);
-    }
-
-    if (tri_out != 0.0f || noise_out != 0.0f || dmc_out != 0.0f) {
-        tnd_out = 159.79f / ((1.0f / ((tri_out / 8227.0f) + (noise_out / 12241.0f) + (dmc_out / 22638.0f))) + 100.0f);
-    }
-
-    if (apu->audio_buffer_idx < AUDIO_BUFFER_SIZE) {
-        apu->audio_buffer[apu->audio_buffer_idx++] = pulse_out + tnd_out;
-    }
+    return apu_mix_dac((unsigned)ch_out[0], (unsigned)ch_out[1], (unsigned)tri_out,
+        (unsigned)noise_out, (unsigned)dmc_out);
 }
 
 void apu_step(APU2A03 *apu, NES *nes) {
@@ -586,9 +540,5 @@ void apu_step(APU2A03 *apu, NES *nes) {
     apu_step_dmc(apu, nes);
     apu_step_timers(apu);
 
-    apu->audio_accumulator += (AUDIO_SAMPLE_RATE / CPU_CLOCK_RATE);
-    if (apu->audio_accumulator >= 1.0) {
-        apu->audio_accumulator -= 1.0;
-        apu_mix_audio_output(apu);
-    }
+    apu_audio_clock(apu, apu_mix_audio_output(apu) + expansion_audio_clock(nes));
 }

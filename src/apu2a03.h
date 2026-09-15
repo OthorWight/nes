@@ -3,11 +3,13 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "nes_region.h"
 
 #define APU_IRQ_SOURCE_FRAME 1
 #define APU_IRQ_SOURCE_DMC   2
 
 typedef struct NES NES;
+typedef struct StateIO StateIO;
 
 typedef struct {
     // Pulse 1 & Pulse 2
@@ -98,10 +100,22 @@ typedef struct {
     uint8_t  length_pending, halt_pending;
     uint8_t  length_previous[4];
     bool     halt_previous[4];
+    uint8_t  region, noise_rate;
+    bool     frame_next_mode;
+    uint8_t  frame_clock_block;
+    /* Band-limited step synthesis and NES analog output filters. */
+    float    sample_impulses[32];
+    uint8_t  sample_cursor;
+    float    mixed_previous, sample_integrator;
+    float    hp90_input, hp90_output, hp440_input, hp440_output, lp14000;
 } APU2A03;
 
 void    apu_init(APU2A03 *apu);
 void    apu_reset(NES *nes);
+void    apu_set_region(APU2A03 *apu, unsigned region);
+float   apu_mix_dac(unsigned pulse1, unsigned pulse2, unsigned triangle, unsigned noise, unsigned dmc);
+void    apu_audio_clock(APU2A03 *apu, float level);
+void    apu_state_extension(APU2A03 *apu, StateIO *io);
 void    apu_write_reg(NES *nes, uint16_t address, uint8_t data);
 uint8_t apu_read_reg(NES *nes, uint16_t address);
 void    apu_step(APU2A03 *apu, NES *nes);

@@ -29,8 +29,9 @@ mapper callbacks; CHR ROM writes cannot change graphics data.
 | NES 2.0 RAM shift zero | No such memory; do not invent 8 KiB of RAM |
 | NES 2.0 RAM shift nonzero | Allocate `64 << shift` bytes, subject to board limits |
 | Trainer | Validate/read all 512 bytes and install at `$7000–$71FF`, including after canonical battery-save selection |
-| Dual-region NES 2.0 image | Run with the existing NTSC timing |
-| Nonstandard console, PAL-only or Dendy | Reject; those hardware/timing modes are not implemented |
+| Dual-region NES 2.0 image | Default to NTSC; the Region menu can override it |
+| PAL-only or Dendy | Select the header's timing in Auto mode |
+| Nonstandard console | Reject; other console types are not implemented |
 | Unknown mapper or unsupported submapper | Reject explicitly, preserving the full mapper ID in the error; mapper 78 supports submappers 1 and 3 |
 | Mixed CHR ROM/RAM, mixed volatile/nonvolatile chips on one bus | Reject until board-specific selection is implemented |
 | Miscellaneous ROM areas or invalid NES 2.0 reserved fields | Reject |
@@ -39,7 +40,7 @@ The parser caps PRG ROM at 64 MiB and CHR ROM at 8 MiB. Loading additionally
 requires PRG ROM of at least 16 KiB, CHR RAM of at least 8 KiB when no CHR ROM is
 present, and PRG RAM within the implemented bank capacity (8 KiB, or 64 KiB for
 MMC5). Unbanked CHR RAM boards reject larger NES 2.0 RAM layouts. NES 2.0 NROM,
-MMC1, MMC2/MMC4, MMC3/TxSROM, MMC5 and mapper 78 images also have ROM limits matching their
+MMC1, MMC2/MMC4, MMC3/TxSROM, MMC5, mapper 78 and VRC7 images also have ROM limits matching their
 implemented address lines; larger outer-bank variants are rejected. Legacy iNES
 images retain the existing bank-wrapping behavior for compatibility.
 
@@ -114,7 +115,8 @@ save/replay tests continue to cover all mapper IDs. Run `./build.sh --test` or
 
 These focused checks do not certify every mapper or board variant. MMC6, outer
 bank variants, MMC5's complete ExRAM/CHR-mode-transition behavior, Namco/VRC wiring
-variants, and expansion audio still need dedicated work. Reset values used for
+variants, and expansion audio accuracy still need dedicated work. See
+[APU status](APU_STATUS.md) for the newly implemented audio paths and their validation status. Reset values used for
 unspecified hardware registers are deterministic emulator defaults, not claims
 about physical power-on contents. Native Windows and commercial-game checks
 were not run for this milestone.

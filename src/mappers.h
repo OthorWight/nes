@@ -26,6 +26,7 @@ void mapper_066_init(Cartridge *cart);
 void mapper_069_init(Cartridge *cart);
 void mapper_071_init(Cartridge *cart);
 void mapper_078_init(Cartridge *cart);
+void mapper_085_init(Cartridge *cart);
 void mapper_118_init(Cartridge *cart);
 void mapper_206_init(Cartridge *cart);
 void mapper_227_init(Cartridge *cart);

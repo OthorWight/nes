@@ -7,12 +7,32 @@ void nes_init(NES *nes) {
     cpu_init(&nes->cpu, CPU_MODEL_RICOH_2A03);
     ppu_init(&nes->ppu);
     apu_init(&nes->apu);
+    nes->region_override = NES_REGION_AUTO;
+    expansion_audio_reset(nes);
+}
+
+void nes_set_region(NES *nes, unsigned region) {
+    if (region > NES_DENDY) region = NES_NTSC;
+    if (nes->ppu.region != region) {
+        nes->ppu.scanline = nes->ppu.cycle = 0;
+        nes->ppu.odd_frame = nes->ppu.odd_skip_rendering = false;
+        nes->clock.ppu_divider = 0;
+    }
+    nes->ppu.region = (uint8_t)region;
+    apu_set_region(&nes->apu, region);
 }
 
 void nes_reset(NES *nes) {
+    unsigned region = nes->region_override;
+    if (region == NES_REGION_AUTO) {
+        unsigned timing = nes->cart ? nes->cart->info.timing : 0;
+        region = timing == 1 ? NES_PAL : timing == 3 ? NES_DENDY : NES_NTSC;
+    }
+    nes_set_region(nes, region);
     nes->oam_dma_pending = false;
     nes->dmc_dma_pending = false;
     apu_reset(nes);
+    expansion_audio_reset(nes);
     nes_reset_zapper_watchdog(nes);
     cpu_trigger_reset(&nes->cpu);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->reset) {
@@ -94,6 +114,8 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
         return (val & 0x01) | zapper_bit3 | zapper_bit4 | (nes->cpu_open_bus & 0xE0);
     }
 
+    uint8_t expansion_value;
+    if (expansion_audio_read(nes, addr, &expansion_value)) return expansion_value;
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->cpu_read) {
         bool handled = false;
         uint8_t data = nes->cart->vtable->cpu_read(nes->cart, addr, &handled);
@@ -105,6 +127,7 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr) {
     uint8_t value = cpu_bus_read_value(nes, addr);
+    expansion_audio_observe_read(nes, addr, value);
     if (nes->diagnostics && (addr == 0x4016 || addr == 0x4017)) {
         ++nes->diagnostics->polls[addr - 0x4016];
         diagnostics_event(nes, DIAG_INPUT_READ, addr, value);
@@ -145,7 +168,12 @@ void nes_check_zapper_stall(NES *nes) {
 
 static inline void nes_step_subsystems(NES *nes) {
     bool nmi_before = nes->cpu.nmi_line;
-    for (int p = 0; p < 3; p++) {
+    unsigned dots = 3;
+    if (nes->ppu.region == NES_PAL && ++nes->clock.ppu_divider == 5) {
+        nes->clock.ppu_divider = 0;
+        dots = 4; // PAL master clock: CPU /16, PPU /5.
+    }
+    for (unsigned p = 0; p < dots; p++) {
         ppu_step(nes);
         // For this CPU/PPU alignment the NMI poll boundary falls after
         // the first dot. An edge here belongs to the preceding poll cycle;
@@ -180,6 +208,13 @@ static void dma_clock(NES *nes) {
     nes_step_subsystems(nes);
 }
 
+static void dma_repeat_read(NES *nes, uint16_t address) {
+    // The 2A07 gates controller strobes during DMA. The interrupted read
+    // still happens once when the CPU resumes; NTSC retains the extra clocks.
+    if (nes->apu.region == NES_PAL && (address == 0x4016 || address == 0x4017)) return;
+    (void)nes_cpu_bus_read(nes, address);
+}
+
 // Called only on a CPU read, after its clock has advanced. DMA cannot halt
 // writes. Once halted, OAM transfers and DMC setup share cycles; only DMC's
 // get takes the bus away from OAM. No CPU instruction executes in this loop.
@@ -195,7 +230,7 @@ static void nes_run_dma(NES *nes, uint16_t cpu_address) {
         unsigned dmc_phase = (nes->dmc_dma_pending &&
             nes->cpu.cycle_count >= nes->dmc_dma_cycle) ? 1 : 0;
         nes->oam_dma_pending = false;
-        (void)nes_cpu_bus_read(nes, cpu_address); // Halt repeats the CPU read.
+        dma_repeat_read(nes, cpu_address);
         while (oam || dmc_phase) {
             dma_clock(nes);
             bool get = !(nes->cpu.cycle_count & 1);
@@ -223,7 +258,7 @@ static void nes_run_dma(NES *nes, uint16_t cpu_address) {
                     if (++index == 256) oam = false;
                 }
             }
-            if (!bus_used) (void)nes_cpu_bus_read(nes, cpu_address);
+            if (!bus_used) dma_repeat_read(nes, cpu_address);
         }
         dma_clock(nes); // The CPU finally completes its interrupted read.
     }
@@ -267,6 +302,7 @@ static void cpu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
         return;
     }
 
+    if (expansion_audio_write(nes, addr, data)) return;
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->cpu_write) {
         nes->cart->vtable->cpu_write(nes->cart, addr, data);
     }

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "nes_region.h"
 
 typedef struct NES NES;
 
@@ -56,6 +57,7 @@ typedef struct {
     uint8_t  bg_next_tile_msb;
     bool     odd_frame;
     bool     odd_skip_rendering;
+    uint8_t  region;
 
     uint8_t bg_palette_index;
 
@@ -68,6 +70,13 @@ typedef struct {
 
     uint32_t screen_buffer[256 * 240];
 } PPU2C02;
+
+static inline int ppu_prerender_line(const PPU2C02 *p) {
+    return p->region == NES_NTSC ? 261 : 311;
+}
+static inline int ppu_vblank_line(const PPU2C02 *p) {
+    return p->region == NES_DENDY ? 291 : 241;
+}
 
 void    ppu_init(PPU2C02 *ppu);
 void    ppu_step(NES *nes);

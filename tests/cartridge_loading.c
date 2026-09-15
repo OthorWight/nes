@@ -51,8 +51,19 @@ static void invalid_and_unsupported_images(void) {
     h[6] = 0; h[10] = 0;
     h[8] = 1; emit(path, h, 0, 0, 0); rejected_load(path, "mapper 256"); h[8] = 0x10;
     emit(path, h, 0, 0, 0); rejected_load(path, "Submapper"); h[8] = 0;
-    h[12] = 1; emit(path, h, 0, 0, 0); rejected_load(path, "timing"); h[12] = 3;
-    emit(path, h, 0, 0, 0); rejected_load(path, "timing"); h[12] = 0;
+    for (unsigned timing = 0; timing < 4; ++timing) {
+        h[12] = (uint8_t)timing;
+        emit(path, h, 16384, 8192, 0);
+        NES *n = fixture_load(path);
+        nes_reset(n);
+        unsigned expected = timing == 1 ? NES_PAL : timing == 3 ? NES_DENDY : NES_NTSC;
+        assert(n->apu.region == expected && n->ppu.region == expected);
+        n->region_override = NES_PAL;
+        nes_reset(n);
+        assert(n->apu.region == NES_PAL && n->ppu.region == NES_PAL);
+        fixture_free(n);
+    }
+    h[12] = 0;
     h[7] = 9; emit(path, h, 0, 0, 0); rejected_load(path, "Console"); h[7] = 8;
     h[14] = 1; emit(path, h, 0, 0, 0); rejected_load(path, "Miscellaneous"); h[14] = 0;
     h[13] = 1; emit(path, h, 0, 0, 0); rejected_load(path, "reserved"); h[13] = 0;

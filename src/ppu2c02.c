@@ -153,7 +153,7 @@ static inline void bee52_ppu_increment_y(PPU2C02 *p) {
 
 static void bee52_ppu_increment_after_2007(PPU2C02 *p) {
     const int sl = p->scanline;
-    if (bee52_ppu_rendering_enabled(p) && ((sl >= 0 && sl < 240) || sl == 261 || sl == -1)) {
+    if (bee52_ppu_rendering_enabled(p) && ((sl >= 0 && sl < 240) || sl == ppu_prerender_line(p) || sl == -1)) {
         bee52_ppu_increment_x(p);
         bee52_ppu_increment_y(p);
     } else {
@@ -246,7 +246,7 @@ bool ppu_render_nametables(const NES *nes, uint32_t *pixels, int *mirroring) {
 }
 
 #define SCANLINE_VISIBLE_MAX 240
-#define SCANLINE_PRERENDER   261
+#define SCANLINE_PRERENDER   ppu_prerender_line(ppu)
 
 #define CYCLE_SCANLINE_END   341
 
@@ -415,7 +415,7 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
             // cycle is the next dot to execute: 1 is just before the set
             // edge; 2 and 3 are on/just after it. Only the pre-edge read
             // returns clear. All three reads suppress the pending NMI.
-            if (ppu->scanline == 241) {
+            if (ppu->scanline == ppu_vblank_line(ppu)) {
                 if (ppu->cycle >= 1 && ppu->cycle <= 3) {
                     nes->cpu.nmi_edge = false;
                     nes->cpu.nmi_delayed = false;
@@ -468,7 +468,7 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
             // A short NMI pulse at vblank start can be cancelled by
             // disabling the output before the CPU samples it, just as
             // with a status read in the same two-dot window.
-            if ((ppu->ppu_ctrl & 0x80) && !(data & 0x80) && ppu->scanline == 241 &&
+            if ((ppu->ppu_ctrl & 0x80) && !(data & 0x80) && ppu->scanline == ppu_vblank_line(ppu) &&
                 ppu->cycle >= 2 && ppu->cycle <= 3) {
                 nes->cpu.nmi_edge = false;
                 nes->cpu.nmi_delayed = false;
@@ -485,7 +485,7 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
             break;
         case 0x2004: {
             bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
-            bool is_rendering_scanline = (ppu->scanline < 240 || ppu->scanline == 261);
+            bool is_rendering_scanline = (ppu->scanline < 240 || ppu->scanline == SCANLINE_PRERENDER);
             if (!(rendering_enabled && is_rendering_scanline)) {
                 if ((ppu->oam_addr & 0x03) == 0x02) {
                     data &= 0xE3;
@@ -612,7 +612,7 @@ void ppu_step(NES *nes) {
         ppu_update_nmi(ppu, nes);
     }
 
-    if (ppu->scanline == 241 && ppu->cycle == 1) {
+    if (ppu->scanline == ppu_vblank_line(ppu) && ppu->cycle == 1) {
         if (!ppu->nmi_suppressed) {
             ppu->nmi_occurred = true;
             ppu->ppu_status |= 0x80;
@@ -788,7 +788,7 @@ void ppu_step(NES *nes) {
     }
     if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 339 &&
-        ppu->odd_frame && ppu->odd_skip_rendering) {
+        ppu->region == NES_NTSC && ppu->odd_frame && ppu->odd_skip_rendering) {
         /* Odd NTSC frames omit the final pre-render dot. */
         ppu->cycle = 0;
         ppu->scanline = 0;
@@ -799,10 +799,10 @@ void ppu_step(NES *nes) {
             ppu->cycle = 0;
             ppu->scanline++;
 
-            if (ppu->scanline == 241) {
+            if (ppu->scanline == ppu_vblank_line(ppu)) {
                 ppu->frame_complete = true;
                 nes->frame_ready = true;
-            } else if (ppu->scanline >= 262) {
+            } else if (ppu->scanline > SCANLINE_PRERENDER) {
                 ppu->scanline = 0;
                 ppu->odd_frame = !ppu->odd_frame;
             }

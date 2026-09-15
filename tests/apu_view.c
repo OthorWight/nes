@@ -60,8 +60,34 @@ static void emulated_time_history_and_isolation(void) {
     assert(view.count == 5 && !apu_view_age(&view, 1)->active[0]);
 }
 
+static void expansion_snapshot_is_read_only(void) {
+    test_system_init(&s);
+    s.cart.mapper_id = 19;
+    s.nes.expansion.n163.ram[127] = 0x1F; // Two channels.
+    s.nes.expansion.n163.ram[0x78] = 0xFF;
+    s.nes.expansion.n163.ram[0x7A] = 0xFF;
+    s.nes.expansion.n163.ram[0x7C] = 0xFC;
+    s.nes.expansion.n163.ram[0x77] = 8;
+    static NES before;
+    before = s.nes;
+    ApuViewSample sample;
+    apu_view_snapshot_nes(&s.nes, &sample);
+    assert(sample.expansion_count == 2 && sample.expansion_level[0] == 255);
+    assert(sample.expansion_active[0] && sample.expansion_hz[0] > 14000);
+    assert(!memcmp(&before, &s.nes, sizeof(before)));
+    memset(&view, 0, sizeof(view));
+    apu_view_sample_nes(&view, &s.nes);
+    assert(apu_view_age(&view, 0)->expansion_count == 2);
+    assert(!memcmp(&before, &s.nes, sizeof(before)));
+    s.cart.mapper_id = 85;
+    apu_view_snapshot_nes(&s.nes, &sample);
+    assert(sample.expansion_count == 6);
+    for (unsigned ch = 0; ch < 6; ++ch) assert(!sample.expansion_active[ch]);
+}
+
 int main(void) {
     RUN_TEST(pitches_and_channel_gates);
     RUN_TEST(emulated_time_history_and_isolation);
+    RUN_TEST(expansion_snapshot_is_read_only);
     return 0;
 }

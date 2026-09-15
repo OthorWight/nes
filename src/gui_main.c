@@ -45,6 +45,7 @@ static bool nametable_viewer_enabled = false;
 static NametableView nametable_view;
 static bool apu_viewer_enabled;
 static ApuView apu_view;
+static int region_setting = NES_REGION_AUTO;
 static int master_volume = 100;
 static bool performance_visible = false;
 static bool focused = true;
@@ -348,7 +349,7 @@ static void save_emulator_settings(void) {
     }
     uint8_t data[128];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 8);
+    state_u32(&io, 9);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -361,6 +362,7 @@ static void save_emulator_settings(void) {
     state_i32(&io, crt_enabled ? 1 : 0);
     state_i32(&io, nametable_viewer_enabled ? 1 : 0);
     state_i32(&io, apu_viewer_enabled ? 1 : 0);
+    state_i32(&io, region_setting);
     if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
@@ -369,6 +371,7 @@ static void load_emulator_settings(void) {
     crt_enabled = false;
     nametable_viewer_enabled = false;
     apu_viewer_enabled = false;
+    region_setting = NES_REGION_AUTO;
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -376,7 +379,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 8) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 9) {
         fclose(f);
         return;
     }
@@ -421,6 +424,11 @@ static void load_emulator_settings(void) {
     if (version >= 8) {
         int temp_apu = 0;
         if (fread(&temp_apu, sizeof(temp_apu), 1, f) == 1) apu_viewer_enabled = temp_apu == 1;
+    }
+    if (version >= 9) {
+        int value;
+        if (fread(&value, sizeof(value), 1, f) == 1 && value >= NES_NTSC && value <= NES_REGION_AUTO)
+            region_setting = value;
     }
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
@@ -656,6 +664,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
     NES_StateResult result = nes_state_load(&nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
+        region_setting = nes_sys.region_override;
         nametable_view.valid = false;
         memset(&apu_view, 0, sizeof(apu_view));
         nes_sys.zapper_enabled = zapper_enabled;
@@ -708,9 +717,9 @@ static void draw_debug_panel(void) {
     DiagnosticSummary s = diagnostics_summary(&diagnostics);
     panel_line(&y, 0x78C8FF, "PERFORMANCE / AUDIO / INPUT");
     panel_line(&y, 0xFFFFFF, "ROM: %.56s", nes_sys.cart ? loaded_rom_name : "[None]");
-    panel_line(&y, 0xFFFFFF, "%s  FPS %.2f/60.10  SPEED %.2f%%", playing ? "RUNNING" : "PAUSED",
-        playing ? s.fps : 0, playing ? s.speed : 0);
-    panel_line(&y, 0xFFFFFF, "CPU %.4f MHz  HOST LOAD %.1f%%", playing ? 1.789773 * s.speed / 100 : 0,
+    panel_line(&y, 0xFFFFFF, "%s %s  FPS %.2f  SPEED %.2f%%", playing ? "RUNNING" : "PAUSED",
+        nes_region_name(nes_sys.apu.region), playing ? s.fps : 0, playing ? s.speed : 0);
+    panel_line(&y, 0xFFFFFF, "CPU %.4f MHz  HOST LOAD %.1f%%", playing ? nes_region_cpu_hz(nes_sys.apu.region) / 1000000.0 * s.speed / 100 : 0,
         playing && debug_total_ticks ? 100.0 * debug_emu_ticks / debug_total_ticks : 0);
     panel_line(&y, 0xFFFFFF, "FRAME MAX %.2f ms  SPIKES %u", s.max_ms, s.spikes);
     panel_line(&y, 0xFFFFFF, "AUDIO %s  QUEUE %u B  DEVICE %.1f ms",
@@ -786,6 +795,7 @@ static bool frontend_load_rom(const char *name) {
     nametable_view.valid = false;
     memset(&apu_view, 0, sizeof(apu_view));
     nes_init(&nes_sys);
+    nes_sys.region_override = (uint8_t)region_setting;
     bool trace_enabled = diagnostics.tracing;
     memset(&diagnostics, 0, sizeof(diagnostics));
     diagnostics.tracing = trace_enabled;
@@ -895,9 +905,15 @@ static const MenuItem audio_items[] = {
     ITEM("Mute", NULL, MENU_MUTE), ITEM("Volume Down", NULL, MENU_VOLUME_DOWN), ITEM("Volume Up", NULL, MENU_VOLUME_UP)
 };
 static const Menu audio_menu = {"Audio", audio_items, COUNT(audio_items)};
+static const MenuItem region_items[] = {
+    ITEM("Automatic (ROM header)", NULL, MENU_REGION_AUTO),
+    ITEM("NTSC", NULL, MENU_REGION_NTSC), ITEM("PAL", NULL, MENU_REGION_PAL),
+    ITEM("Dendy", NULL, MENU_REGION_DENDY)
+};
+static const Menu region_menu = {"Region", region_items, COUNT(region_items)};
 static const MenuItem emulation_items[] = {
     ITEM("Pause", NULL, MENU_PAUSE), ITEM("Reset", NULL, MENU_RESET),
-    ITEM("Power Cycle", NULL, MENU_POWER), SEPARATOR, SUB("Port 2", port_menu), SUB("Audio", audio_menu),
+    ITEM("Power Cycle", NULL, MENU_POWER), SEPARATOR, SUB("Region", region_menu), SUB("Port 2", port_menu), SUB("Audio", audio_menu),
     ITEM("Controller Bindings...", NULL, MENU_BINDINGS), SEPARATOR,
     ITEM("Use Global ROM Settings", NULL, MENU_INHERIT), ITEM("Set as Global Defaults", NULL, MENU_GLOBAL_DEFAULTS)
 };
@@ -941,6 +957,10 @@ static unsigned desktop_state(void *context, MenuCommand command) {
         case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
         case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
         case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
+        case MENU_REGION_AUTO: return region_setting == NES_REGION_AUTO ? MENU_CHECKED : 0;
+        case MENU_REGION_NTSC: return region_setting == NES_NTSC ? MENU_CHECKED : 0;
+        case MENU_REGION_PAL: return region_setting == NES_PAL ? MENU_CHECKED : 0;
+        case MENU_REGION_DENDY: return region_setting == NES_DENDY ? MENU_CHECKED : 0;
         case MENU_APU_VIEWER: return apu_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_NAMETABLES: return nametable_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_CRT: return crt_enabled ? MENU_CHECKED : 0;
@@ -998,6 +1018,15 @@ static void desktop_command(MenuCommand command) {
         case MENU_APU_VIEWER:
             apu_viewer_enabled = !apu_viewer_enabled;
             memset(&apu_view, 0, sizeof(apu_view));
+            save_emulator_settings(); break;
+        case MENU_REGION_AUTO: case MENU_REGION_NTSC: case MENU_REGION_PAL: case MENU_REGION_DENDY:
+            region_setting = command == MENU_REGION_AUTO ? NES_REGION_AUTO :
+                command == MENU_REGION_NTSC ? NES_NTSC : command == MENU_REGION_PAL ? NES_PAL : NES_DENDY;
+            nes_sys.region_override = (uint8_t)region_setting;
+            nes_reset(&nes_sys);
+            nametable_view.valid = false;
+            memset(&apu_view, 0, sizeof(apu_view));
+            runtime_reset_pending = true;
             save_emulator_settings(); break;
         case MENU_NAMETABLES:
             nametable_viewer_enabled = !nametable_viewer_enabled;
@@ -1184,6 +1213,7 @@ static uint32_t apu_level_color(uint32_t color, unsigned level, unsigned maximum
 }
 static void draw_apu_panel(void) {
     static const uint32_t colors[5] = {0x59D8FF, 0xFFAF61, 0x9BE876, 0xD49AFF, 0xFF7799};
+    static const uint32_t expansion_colors[8] = {0xFFE36E,0x7DFFCE,0xFF83CB,0xA4AAFF,0xFF896E,0xBBE878,0x72C8FF,0xF3B8FF};
     static const char *names[5] = {"Pulse 1", "Pulse 2", "Triangle", "Noise", "DMC DAC"};
     static const char *notes[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     host_set_apu_panel(apu_viewer_enabled ? &apu_canvas : NULL);
@@ -1195,7 +1225,7 @@ static void draw_apu_panel(void) {
         (paused || debugger_active || desktop_menu.active || !focused || help_page || file_browser.active)
         ? "PAUSED - history frozen" : audio_muted ? "LIVE - audio muted" : "LIVE - notes and sound effects", 12, 28, 0x90A6BD);
     ApuViewSample current;
-    apu_view_snapshot(&nes_sys.apu, &current);
+    apu_view_snapshot_nes(&nes_sys, &current);
     for (unsigned ch = 0; ch < 3; ++ch) {
         char label[32];
         int note = (int)lroundf(current.note[ch]);
@@ -1239,6 +1269,12 @@ static void draw_apu_panel(void) {
                 apu_rect(x, 80 + (107 - note) * 3 + (int)ch, 1, 1,
                     apu_level_color(colors[ch], s->level[ch], 15));
         }
+        for (unsigned ch = 0; ch < s->expansion_count; ++ch) {
+            int note = (int)lroundf(s->expansion_note[ch]);
+            if (s->expansion_active[ch] && note >= 24 && note <= 107)
+                apu_rect(x, 80 + (107 - note) * 3 + (int)(ch % 3), 1, 1,
+                    apu_level_color(expansion_colors[ch], s->expansion_level[ch], 255));
+        }
         if (s->active[3]) apu_rect(x, 369 - s->level[3], 1, s->level[3], colors[3]);
         int height = (s->level[4] * 15 + 126) / 127;
         if (height) apu_rect(x, 393 - height, 1, height,
@@ -1260,7 +1296,27 @@ static void draw_apu_panel(void) {
         else snprintf(text, sizeof(text), "%3u/127 %s", level, current.active[ch] ? "Sample playing" : "Held DAC level");
         draw_string(&apu_canvas, text, 224, y, 0xD9E3F0);
     }
-    draw_string(&apu_canvas, "Timer pitches / C1-B7 / ~7.7 seconds", 12, 512, 0x90A6BD);
+    if (current.expansion_count) {
+        unsigned mapper = nes_sys.cart->mapper_id;
+        const char *chip = mapper == 5 ? "MMC5" : mapper == 19 ? "N163" : mapper == 20 ? "FDS" :
+            mapper == 69 ? "5B" : mapper == 85 ? "VRC7" : "VRC6";
+        draw_string(&apu_canvas, "EXPANSION / LEVEL / NOMINAL PITCH", 12, 508, 0x90A6BD);
+        for (unsigned ch = 0; ch < current.expansion_count; ++ch) {
+            int y = 524 + (int)ch * 12;
+            char label[48];
+            snprintf(label, sizeof(label), "%s %u", chip, ch + 1);
+            draw_string(&apu_canvas, label, 12, y, expansion_colors[ch]);
+            unsigned level = current.expansion_active[ch] ? current.expansion_level[ch] : 0;
+            apu_rect(92, y, 120, 8, 0x28374D);
+            apu_rect(92, y, (int)(120 * level / 255), 8, expansion_colors[ch]);
+            int note = (int)lroundf(current.expansion_note[ch]);
+            if (level && note >= 0 && note <= 127)
+                snprintf(label, sizeof(label), "%s%d %.1fHz", notes[note % 12], note / 12 - 1, current.expansion_hz[ch]);
+            else snprintf(label, sizeof(label), "%s", level ? "Noise / held DAC" : "Idle");
+            draw_string(&apu_canvas, label, 224, y, 0xD9E3F0);
+        }
+    }
+    draw_string(&apu_canvas, "Timer pitches / C1-B7 / ~7.7 seconds", 12, 628, 0x90A6BD);
 }
 static void desktop_present(HostCanvas *game) {
     draw_nametable_panel();
@@ -1297,6 +1353,7 @@ static bool desktop_event(const HostEvent *event) {
             else {
                 NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
                 if (browser_mode != 2 && result == NES_STATE_OK) {
+                    region_setting = nes_sys.region_override;
                     nametable_view.valid = false;
                     memset(&apu_view, 0, sizeof(apu_view));
                 }
@@ -1394,6 +1451,7 @@ static void app_init(void) {
     apply_display();
     nes_init(&nes_sys);
     nes_sys.diagnostics = &diagnostics;
+    nes_sys.region_override = (uint8_t)region_setting;
     nes_sys.zapper_enabled = zapper_enabled;
 
     cpu_bus_bridge.bus_context = &nes_sys;
@@ -1442,7 +1500,7 @@ static void app_frame(void) {
                     debugger_log_instruction(&nes_sys.cpu);
                 }
                 nes_clock_tick(&nes_sys);
-                if (apu_viewer_enabled) apu_view_sample(&apu_view, &nes_sys.apu, nes_sys.cpu.cycle_count);
+                if (apu_viewer_enabled) apu_view_sample_nes(&apu_view, &nes_sys);
                 if (nametable_viewer_enabled && !nametable_view.sampled)
                     nametable_view_sample(&nametable_view, &nes_sys);
             }
@@ -1482,7 +1540,8 @@ static void app_frame(void) {
 
             if (nes_sys.frame_ready) {
                 uint64_t cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
-                double wait = frame_scheduler_advance(&frame_scheduler, host_time(), cycles);
+                double wait = frame_scheduler_advance_rate(&frame_scheduler, host_time(), cycles,
+                    nes_region_cpu_hz(nes_sys.apu.region));
                 while (wait > 0) {
                     host_delay(wait >= 0.001 ? (uint32_t)(wait * 1000) : 0);
                     wait = frame_scheduler.deadline - host_time();

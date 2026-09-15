@@ -58,6 +58,7 @@ static bool initialize_mapper(Cartridge *cart) {
         case 69:  mapper_069_init(cart); break;
         case 71:  mapper_071_init(cart); break;
         case 78:  mapper_078_init(cart); break;
+        case 85:  mapper_085_init(cart); break;
         case 118: mapper_118_init(cart); break;
         case 206: mapper_206_init(cart); break;
         case 227: mapper_227_init(cart); break;
@@ -77,7 +78,7 @@ static bool supported_board(const CartridgeInfo *i, char *error, size_t size) {
     switch (i->mapper_id) {
         case 0: case 1: case 2: case 3: case 4: case 5: case 7: case 9:
         case 10: case 11: case 19: case 23: case 24: case 26: case 34:
-        case 64: case 66: case 69: case 71: case 78: case 118: case 206: case 227: break;
+        case 64: case 66: case 69: case 71: case 78: case 85: case 118: case 206: case 227: break;
         default:
             if (error && size) snprintf(error, size, "Unsupported mapper %u", i->mapper_id);
             return false;
@@ -94,6 +95,7 @@ static bool supported_board(const CartridgeInfo *i, char *error, size_t size) {
             case 9: prg_limit = 131072; chr_limit = 131072; break;
             case 10: prg_limit = 262144; chr_limit = 131072; break;
             case 78: prg_limit = 131072; chr_limit = 131072; break;
+            case 85: prg_limit = 524288; chr_limit = 262144; break;
             case 118: prg_limit = 524288; chr_limit = 131072; break;
             default: break;
         }
@@ -104,7 +106,6 @@ static bool supported_board(const CartridgeInfo *i, char *error, size_t size) {
     // separate implementations; never silently run them as submapper zero.
     if (i->submapper && !(i->mapper_id == 78 && (i->submapper == 1 || i->submapper == 3)))
         return load_error(error, size, "Submapper unsupported");
-    if (i->timing == 1 || i->timing == 3) return load_error(error, size, "PAL/Dendy timing unsupported");
     if (i->prg_rom_size < 16384) return load_error(error, size, "PRG layout unsupported");
     if (i->prg_ram_size && i->prg_nvram_size) return load_error(error, size, "Mixed PRG RAM unsupported");
     if (i->chr_ram_size && i->chr_nvram_size) return load_error(error, size, "Mixed CHR RAM unsupported");

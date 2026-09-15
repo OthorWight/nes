@@ -53,14 +53,29 @@ static void read_modify_write_emits_both_bus_writes(void) {
 }
 
 static void reset_clocks_devices_without_writing_stack(void) {
-    test_system_init(&s);
-    memset(s.nes.wram + 0x100, 0x5A, 256);
-    nes_reset(&s.nes);
-    test_step(&s, 7);
-    assert(s.nes.cpu.program_counter == 0x8000);
-    assert(s.nes.cpu.stack_pointer == 0xFA);
-    for (int i = 0x100; i < 0x200; i++) assert(s.nes.wram[i] == 0x5A);
-    assert(s.nes.apu.frame_cycles == 7);
+    for (unsigned phase = 0; phase < 2; ++phase) {
+        test_system_init(&s);
+        if (phase) {
+            s.nes.cpu.stall_cycles = 1;
+            test_step(&s, 1);
+        }
+        memset(s.nes.wram + 0x100, 0x5A, 256);
+        nes_reset(&s.nes);
+        assert(s.nes.apu.frame_counter_reset_pending);
+        assert(s.nes.apu.frame_counter_reset_delay == (phase ? 3 : 4));
+        test_step(&s, 7); // All seven cycles still clock the CPU, PPU and mapper.
+        assert(s.nes.cpu.program_counter == 0x8000);
+        assert(s.nes.cpu.stack_pointer == 0xFA);
+        for (int i = 0x100; i < 0x200; i++) assert(s.nes.wram[i] == 0x5A);
+        // The APU sequencer restarts partway through CPU reset; its phase is
+        // not an elapsed CPU-cycle count. Both divider alignments are covered.
+        assert(!s.nes.apu.frame_counter_reset_pending);
+        assert(s.nes.apu.frame_counter_reset_delay == 0);
+        assert(s.nes.apu.frame_cycles == (phase ? 4u : 3u));
+        assert(s.nes.apu.clock_toggle == (phase == 0));
+        test_step(&s, 2); // The first NOP continues the restarted sequencer.
+        assert(s.nes.apu.frame_cycles == (phase ? 6u : 5u));
+    }
 }
 
 int main(void) {

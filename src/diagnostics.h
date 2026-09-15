@@ -21,6 +21,7 @@ typedef struct {
     bool trigger;
 } DiagnosticFrame;
 typedef struct NESDiagnostics {
+    uint32_t cpu_hz;
     bool tracing;
     uint8_t irq;
     bool nmi;

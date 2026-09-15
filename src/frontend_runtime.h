@@ -14,6 +14,7 @@
 typedef struct { double deadline; } FrameScheduler;
 void frame_scheduler_reset(FrameScheduler *s, double now);
 double frame_scheduler_advance(FrameScheduler *s, double now, uint64_t cycles);
+double frame_scheduler_advance_rate(FrameScheduler *s, double now, uint64_t cycles, double cpu_hz);
 
 typedef struct {
     bool playing;

@@ -11,7 +11,13 @@ history belongs to the host and is excluded from the state format.
 
 ## Compatibility
 
-New saves use version 3, which also preserves the PPU rendering-enable latch
+New saves use version 5, adding region selection, delayed APU register changes,
+resampler/filter history, and every expansion sound unit, including pointer-free
+VRC7 FM state. Version 4 added pending OAM/DMC DMA. Versions 1–4 still load;
+their missing audio fields start from deterministic defaults and their region
+is NTSC. These imports cannot reconstruct audio history that was never stored.
+
+Version 3 preserves the PPU rendering-enable latch
 used for the odd-frame skip decision. Versions 1 and 2 still load; the missing
 PPU latch is initialized from PPUMASK, so a late rendering toggle at the saved
 pre-render boundary cannot be reconstructed exactly. Version 2 preserves the
@@ -19,7 +25,7 @@ CPU's sampled IRQ and whether an instruction has established a poll result.
 Version 1 saves still load; because
 they lack that history, their first boundary uses the former live-line behavior.
 Precise cross-version interrupt timing cannot be recovered from those files.
-Older emulator builds cannot read new version 3 saves.
+Older emulator builds cannot read new version 5 saves.
 
 The former unversioned `STAT` format is rejected with **OLD STATE: CREATE A NEW
 SAVE**. It omitted mapper registers, CHR memory, and rendering state, so the
@@ -52,7 +58,7 @@ the ROM again. Non-battery cartridges do not create automatic `.sav` files.
 Loading a state restores PRG RAM too. Exiting afterward saves that restored
 progress to the battery file, as expected when resuming an older point in a game.
 
-## Version 3 format
+## Version 5 format
 
 All integers use explicit little-endian encoding. Booleans are one byte (`0` or
 `1`); enums and C `int` fields use 32 bits; signed fields use two's complement.
@@ -62,7 +68,7 @@ allocation sizes, function pointers, or host addresses are stored.
 | Header offset | Bytes | Value |
 | --- | --- | --- |
 | 0 | 8 | ASCII `NESSTATE` |
-| 8 | 4 | Format version, currently 3 (versions 1 and 2 remain readable) |
+| 8 | 4 | Format version, currently 5 (versions 1–4 remain readable) |
 | 12 | 4 | Payload byte count |
 | 16 | 4 | CRC32 of payload |
 | 20 | 4 | CRC32 of original 16-byte NES header plus trainer bytes, if present |
@@ -93,8 +99,8 @@ Payload order is defined explicitly by `machine_fields` and `payload` in
 6. All mapper-private fields, explicitly encoded by the mapper. This includes
    MMC1 partial serial writes, MMC3/TxSROM A12 filtering and IRQ state, MMC2/MMC4
    latches, MMC5 ExRAM, bank registers, protection, and VRC counters. Every current
-   mapper ID has a codec; mapper 26 shares the VRC6 codec with mapper 24. Expansion
-   audio is not implemented in the current mappers, so no such state exists yet.
+   mapper ID has a codec; mapper 26 shares the VRC6 codec with mapper 24.
+   Expansion sound state is appended after the version 4 DMA fields in version 5.
 7. Version 2 appends the CPU's `irq_pending` and `irq_poll_valid` booleans. The
    preceding field order is unchanged from version 1.
 8. Version 3 appends the PPU's `odd_skip_rendering` boolean. The preceding

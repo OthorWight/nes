@@ -111,11 +111,40 @@ static void irq_inhibit_clears_frame_irq_but_not_dmc(void) {
     assert(s.nes.cpu.irq_lines == (1 << APU_IRQ_SOURCE_DMC));
 }
 
+static void length_reload_and_halt_collisions(void) {
+    for (unsigned empty = 0; empty < 2; ++empty) {
+        test_system_init(&s);
+        APU2A03 *a = &s.nes.apu;
+        a->pulse_enabled[0] = true;
+        a->pulse_length_counter[0] = empty ? 0 : 10;
+        a->frame_cycles = 14912;
+        apu_write_reg(&s.nes, 0x4003, 0x18); // Reload 2 on the half-frame clock.
+        clock_one();
+        assert(a->pulse_length_counter[0] == (empty ? 2 : 9));
+    }
+    test_system_init(&s);
+    s.nes.apu.pulse_length_counter[0] = 10;
+    s.nes.apu.frame_cycles = 14912;
+    apu_write_reg(&s.nes, 0x4000, 0x20);
+    clock_one();
+    assert(s.nes.apu.pulse_length_counter[0] == 9 && s.nes.apu.pulse_halt[0]);
+}
+
+static void stopped_triangle_holds_dac(void) {
+    test_system_init(&s);
+    s.nes.apu.triangle_sequence_idx = 10; // DAC holds 5.
+    clock_cycles(10);
+    assert(s.nes.apu.triangle_sequence_idx == 10);
+    assert(s.nes.apu.mixed_previous == apu_mix_dac(0, 0, 5, 0, 0));
+}
+
 int main(void) {
     RUN_TEST(frame_counter_write_is_delayed_in_both_phases);
     RUN_TEST(channel_enable_controls_length_status);
     RUN_TEST(pulse_and_triangle_use_different_clock_dividers);
     RUN_TEST(all_ntsc_dmc_rates_use_cpu_cycles);
     RUN_TEST(irq_inhibit_clears_frame_irq_but_not_dmc);
+    RUN_TEST(length_reload_and_halt_collisions);
+    RUN_TEST(stopped_triangle_holds_dac);
     return 0;
 }

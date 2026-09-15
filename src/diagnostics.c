@@ -28,6 +28,7 @@ void diagnostics_lines(NES *n) {
 void diagnostics_frame(NES *n, uint64_t cycles, double elapsed, double work_ms, double queue_ms) {
     NESDiagnostics *d = n->diagnostics;
     if (!d) return;
+    d->cpu_hz = nes_region_cpu_hz(n->apu.region);
     DiagnosticFrame *f = &d->frames[d->frame_head];
     memset(f, 0, sizeof(*f));
     f->frame = d->frame++; f->cycles = cycles;
@@ -54,7 +55,7 @@ DiagnosticSummary diagnostics_summary(const NESDiagnostics *d) {
         previous = f->image_crc;
         s.polls += f->polls[0] + f->polls[1]; s.queue_ms = f->queue_ms;
     }
-    if (elapsed > 0) { s.fps = d->frame_count / elapsed; s.speed = cycles / NES_HOST_CPU_HZ / elapsed * 100; }
+    if (elapsed > 0) { s.fps = d->frame_count / elapsed; s.speed = cycles / (d->cpu_hz ? d->cpu_hz : NES_HOST_CPU_HZ) / elapsed * 100; }
     return s;
 }
 bool diagnostics_write(const NES *n, const char *path, const char *rom, unsigned underruns,
@@ -64,14 +65,14 @@ bool diagnostics_write(const NES *n, const char *path, const char *rom, unsigned
     FILE *f = fopen(path, "w");
     if (!f) return false;
     DiagnosticSummary s = diagnostics_summary(d);
-    fprintf(f, "NES diagnostics 1; build %s %s; NTSC CPU %.0f Hz\nROM %s\n"
+    fprintf(f, "NES diagnostics 1; build %s %s; CPU %.0f Hz\nROM %s\n"
         "identity %08X-%08X-%08X mapper %u submapper %u timing %u zapper %u\n"
         "FPS %.3f speed %.3f%% max_ms %.3f spikes_over_25ms %u queue_ms %.3f device_buffer_ms %.3f\n"
         "observed_queue_empty %u queue_trims %u audio_errors %u trace_enabled %u overwritten_events %" PRIu64 "\n"
         "Queue excludes driver latency. Empty queue is an underrun indicator.\n"
         "Input reads and image changes are diagnostic signals, not proof of game logic progress.\n"
         "Recent frames: frame,cycles,host_ms,work_ms,queue_ms,polls1,polls2,latches,input1,input2,image_crc,aim_x,aim_y,trigger\n",
-        __DATE__, __TIME__, NES_HOST_CPU_HZ, rom, n->cart->rom_identity[0], n->cart->rom_identity[1],
+        __DATE__, __TIME__, (double)nes_region_cpu_hz(n->apu.region), rom, n->cart->rom_identity[0], n->cart->rom_identity[1],
         n->cart->rom_identity[2], n->cart->mapper_id, n->cart->info.submapper, n->cart->info.timing,
         n->zapper_enabled, s.fps, s.speed, s.max_ms, s.spikes, s.queue_ms, device_ms,
         underruns, trims, errors, d->tracing, d->overwritten);

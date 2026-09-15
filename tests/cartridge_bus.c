@@ -44,7 +44,7 @@ static void open_bus_and_partial_reads(void) {
 }
 static void all_mapper_rom_ram_boundaries(void) {
     puts("  all mapper IDs protect ROM, write CHR RAM and float absent PRG RAM");
-    static const unsigned ids[] = {0,1,2,3,4,5,7,9,10,11,19,23,24,26,34,64,66,69,71,78,118,206,227};
+    static const unsigned ids[] = {0,1,2,3,4,5,7,9,10,11,19,23,24,26,34,64,66,69,71,78,85,118,206,227};
     char path[512]; fixture_path(path, "banks.nes");
     for (unsigned j = 0; j < sizeof(ids)/sizeof(ids[0]); ++j) {
         fixture_rom(path, ids[j], false, false, 0);

@@ -1,7 +1,8 @@
 # Pacing, input and diagnostic captures
 
 Gameplay uses high-resolution fractional deadlines based on the CPU cycles
-actually emulated, at the core's NTSC clock of 1,789,773 Hz. Audio enabled, muted,
+actually emulated, at the selected region's CPU clock: NTSC 1,789,773 Hz,
+PAL 1,662,607 Hz, or Dendy 1,773,448 Hz. Audio enabled, muted,
 and unavailable share this scheduler. A host stall more than 50 ms beyond the
 deadline discards the backlog. Menus, debugger transitions, focus loss, ROM loads
 and state loads rebase time.

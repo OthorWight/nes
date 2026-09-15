@@ -66,20 +66,21 @@ static void mmc5_ppu_dot(Cartridge *c, uint16_t addr) {
     MMC5Data *d = (MMC5Data*)c->mapper_data;
     int cycle = c->nes->ppu.cycle;
     int scanline = c->nes->ppu.scanline;
+    int prerender = ppu_prerender_line(&c->nes->ppu);
     bool rendering = (c->nes->ppu.ppu_mask & 0x18) != 0;
 
-    if (scanline == 261 && cycle == 1) {
+    if (scanline == prerender && cycle == 1) {
         d->in_frame = false;
         d->scanline = 0;
         d->irq_pending = false;
     }
 
-    if (rendering && (scanline <= 239 || scanline == 261)) {
+    if (rendering && (scanline <= 239 || scanline == prerender)) {
         if (cycle == 0) {
             d->in_frame = true;
         }
         if (cycle == 256) {
-            if (scanline == 261) {
+            if (scanline == prerender) {
                 d->scanline = 0;
             } else {
                 d->scanline++;

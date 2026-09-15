@@ -109,7 +109,7 @@ static void m024_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     VRC6Data *d = (VRC6Data*)c->mapper_data;
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {
-        if (c->prg_ram && c->prg_ram_size > 0) {
+        if (d->ram_enable && c->prg_ram && c->prg_ram_size > 0) {
             c->prg_ram[(addr - 0x6000) % c->prg_ram_size] = val;
         }
         return;
@@ -167,7 +167,7 @@ static void m024_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
                 d->irq_pending = false;
                 c->nes->lines.irq_line = false;
                 cpu_set_irq_line(&c->nes->cpu, 0, false);
-                if (d->irq_ctrl & 0x08) {
+                if (d->irq_ctrl & 0x01) {
                     d->irq_ctrl |= 0x02;
                 } else {
                     d->irq_ctrl &= ~0x02;

@@ -49,14 +49,14 @@ static void m019_clock_m2(Cartridge *c) {
 static uint8_t m019_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
     Namco163Data *d = (Namco163Data*)c->mapper_data;
 
-    if (addr >= 0x4800 && addr <= 0x4FFF) {
+    if (addr >= 0x5000 && addr <= 0x57FF) {
         *handled = true;
         return (uint8_t)(d->irq_counter & 0xFF);
     }
 
-    if (addr >= 0x5000 && addr <= 0x57FF) {
+    if (addr >= 0x5800 && addr <= 0x5FFF) {
         *handled = true;
-        return (uint8_t)((d->irq_counter >> 8) & 0x7F);
+        return (uint8_t)((d->irq_counter >> 8) | (d->irq_enabled ? 0x80 : 0));
     }
 
     if (addr >= 0x6000 && addr <= 0x7FFF) {

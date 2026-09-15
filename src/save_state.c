@@ -169,7 +169,9 @@ static bool valid_machine(const NES *n) {
     const PPU2C02 *p = &n->ppu;
     const APU2A03 *a = &n->apu;
     if ((unsigned)n->cpu.model > CPU_MODEL_CMOS_65C02 || n->controller_strobe > 1 ||
-        p->scanline < 0 || p->scanline > 261 || p->cycle < 0 || p->cycle > 340 ||
+        p->region > NES_DENDY || p->region != a->region || n->region_override > NES_REGION_AUTO ||
+        n->clock.ppu_divider >= 5 ||
+        p->scanline < 0 || p->scanline > ppu_prerender_line(p) || p->cycle < 0 || p->cycle > 340 ||
         p->x > 7 || p->w > 1 || p->v > 0x7FFF || p->t > 0x7FFF ||
         p->bus_address > 0x3FFF || p->scanline_sprite_count < 0 || p->scanline_sprite_count > 8 ||
         p->overflow_cycle < -1 || p->overflow_cycle > 340 ||
@@ -229,6 +231,23 @@ static void payload(NES *n, StateIO *io, unsigned version) {
         n->oam_dma_page = 0;
         n->dmc_dma_pending = false;
         n->dmc_dma_cycle = 0;
+    }
+    if (version >= 5) {
+        n->region_override = state_u8(io, n->region_override);
+        n->ppu.region = state_u8(io, n->ppu.region);
+        apu_state_extension(&n->apu, io);
+        expansion_audio_state(&n->expansion, io);
+    } else if (io->reading) {
+        // Older states only supported NTSC. Never inherit live audio history.
+        n->region_override = NES_REGION_AUTO;
+        n->ppu.region = NES_NTSC;
+        n->clock.ppu_divider = 0;
+        memset(&n->apu.length_pending, 0, sizeof(n->apu) - offsetof(APU2A03, length_pending));
+        n->apu.frame_next_mode = n->apu.frame_mode;
+        static const uint16_t noise_periods[] = {4,8,16,32,64,96,128,160,202,254,380,508,762,1016,2034,4068};
+        for (unsigned i = 0; i < 16; ++i)
+            if (n->apu.noise_timer_reload == noise_periods[i]) n->apu.noise_rate = (uint8_t)i;
+        expansion_audio_reset(n);
     }
     if (!valid_machine(n)) io->ok = false;
 }

@@ -14,6 +14,7 @@
 * **Up / Backspace** goes to the parent folder; **Home** goes to your home folder. At a Windows drive root, Up lists drives.
 * **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
 * **Emulation > Audio** provides mute and volume controls. **Controller Bindings** edits keyboard/gamepad mappings.
+* **Emulation > Region** selects Auto, NTSC, PAL, or Dendy. Auto uses the ROM header and defaults dual-region images to NTSC. Changing regions resets the game.
 * **View > Nametable Viewer** shows all four live background nametables beside the playable game, with address labels and the current mirroring mode. The grid is `$2000 / $2400` above `$2800 / $2C00`: vertical mirroring gives `A B / A B`, horizontal gives `A A / B B`. It also supports one-screen, four-screen, and mapper-controlled routing. The choice is saved globally and can be used alongside the debug panel. The viewer uses the actual background tile fetches for visible regions, preserving gameplay and status-bar bank/palette splits together. Unfetched tiles use a snapshot near visible scanline 120. Mirrored aliases share the most recently fetched row. Pausing retains that capture; enabling it while paused requires resuming to capture a frame. Sprites remain in the game view. A nametable row reused in multiple raster regions can show only its latest observed appearance.
 * **View > CRT Shader** toggles lightly rounded contour corners, narrow color transitions, gentle scanlines, and a tiny bright-pixel glow. Solid black outlines, pixel centers, and menus stay sharp. Off by default; the choice is saved globally.
 * **File > Save State As / Load State From** provides named-state file browsers; quicksave shortcuts remain available.
@@ -48,13 +49,19 @@ The viewer freezes when paused, works with audio muted, and can stay open with
 the debugger and nametable viewer. Its visibility is saved in global settings.
 ROM changes, resets, and state loads clear the history.
 
+Expansion cartridges add colored pitch traces and up to eight channel meters
+below the standard APU meters. Pitches are nominal oscillator frequencies;
+modulation and wave harmonics can change the perceived note. Expansion noise
+and PCM show levels without inventing a MIDI pitch. Overlapping voices may
+share a pixel in the combined roll.
+
 Pitches come from the emulated timers, rounded to the nearest semitone in the
 roll; they are not MIDI events. Music and sound effects share the same channels.
 Observation runs at 240 Hz in emulated time, so shorter register changes can be
 missed. The observer does not read hardware registers or change playback.
 `Ctrl+F4` toggles recent event tracing; `F4` saves the bounded history to
 `saves/<ROM name>/diagnostics.log`. Audio on, muted, and unavailable share the
-same NTSC frame scheduler. Focus loss pauses the game and clears held inputs.
+same region-aware frame scheduler. Focus loss pauses the game and clears held inputs.
 See [pacing, input and diagnostics](docs/PACING_DIAGNOSTICS.md) for capture details,
 per-ROM preferences, tests and sensor limitations.
 
@@ -87,7 +94,8 @@ A lightweight, robust, and cycle-accurate Nintendo Entertainment System (NES) em
 ### Mapper implementations (iNES and supported NES 2.0 boards)
 
 NES 2.0 parsing includes extended mapper IDs and declared ROM/RAM sizes. Unknown
-submappers, unsupported memory layouts and non-NTSC hardware are reported clearly.
+submappers and unsupported memory layouts are reported clearly. PAL and Dendy
+headers select their system timing in Auto mode.
 See [cartridge support and limits](docs/CARTRIDGES.md) for the supported combinations
 and focused regression coverage.
 *   **Mapper 0 (NROM)**: Simple early titles (e.g., *Super Mario Bros.*, *Donkey Kong*).
@@ -109,6 +117,7 @@ and focused regression coverage.
 *   **Mapper 69 (FME-7)**: Precision IRQ interval timing counters (*Batman Return of the Joker*).
 *   **Mapper 71 (Camerica)**: PRG banking and mirroring control, including Bee 52 compatibility.
 *   **Mapper 78 (Holy Diver)**: PRG/CHR banking and mirroring control.
+*   **Mapper 85 (VRC7)**: PRG/CHR banking, RAM enable, mirroring, IRQ counter, and six FM voices through the MIT-licensed emu2413 core.
 *   **Mapper 118 (TxSROM)**: PRG/CHR banking, mirroring, and IRQ counter.
 *   **Mapper 206 (DxROM)**: Nintendo-style early MMC3 variants.
 *   **Mapper 227 (Karateka)**: Obscure multi-cart configurations.
@@ -172,8 +181,7 @@ F7:BRK | UP/DN:Nav | F10:Menu
 
 ## Missing Features & Roadmap
 
-*   **Expansion Audio**: Emulation for cartridge-based expansion audio synthesis (such as Namco 163, Sunsoft 5B, or Konami VRC6/VRC7 sound chips) is not yet supported.
-*   **NTSC/PAL Select**: Emulation runs at NTSC clock/divider speeds by default; dynamic PAL system toggle options are not yet implemented.
+*   **APU completion**: Standard APU refinements, PAL/Dendy timing, and MMC5, Namco 163, Sunsoft 5B, VRC6/VRC7 audio are implemented in the working tree and await validation. FDS synthesis exists, but disk-image/controller integration is unfinished. See the [APU completion audit](docs/APU_STATUS.md) for remaining work and checks.
 *   **Save State Compression**: States use an explicit, versioned binary format; optional compression remains planned.
 
 ---

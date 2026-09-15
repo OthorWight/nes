@@ -35,15 +35,18 @@ typedef struct {
 #include "ppu2c02.h"
 #include "apu2a03.h"
 #include "cartridge.h"
+#include "expansion_audio.h"
 
 struct NES {
     CPU6502    cpu;
     PPU2C02    ppu;
     APU2A03    apu;
+    ExpansionAudio expansion;
     Cartridge *cart;
 
     NES_Clock  clock;
     NES_Lines  lines;
+    uint8_t    region_override; // NES_REGION_AUTO selects the cartridge header.
 
     bool       oam_dma_pending;
     uint8_t    oam_dma_page;
@@ -78,6 +81,7 @@ void    nes_ppu_bus_set_address(NES *nes, uint16_t addr);
 
 void    nes_init(NES *nes);
 void    nes_reset(NES *nes);
+void    nes_set_region(NES *nes, unsigned region);
 void    nes_clock_tick(NES *nes);
 void    nes_request_dmc_dma(NES *nes, bool load);
 // Call once per completed frame; this detects a suspected polling hang.

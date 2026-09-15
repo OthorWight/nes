@@ -4,7 +4,10 @@ void frame_scheduler_reset(FrameScheduler *s, double now) {
     s->deadline = now;
 }
 double frame_scheduler_advance(FrameScheduler *s, double now, uint64_t cycles) {
-    double duration = (double)cycles / NES_HOST_CPU_HZ;
+    return frame_scheduler_advance_rate(s, now, cycles, NES_HOST_CPU_HZ);
+}
+double frame_scheduler_advance_rate(FrameScheduler *s, double now, uint64_t cycles, double cpu_hz) {
+    double duration = (double)cycles / cpu_hz;
     s->deadline += duration;
     // Keep fractional deadlines; discard accumulated debt after a host stall.
     if (now - s->deadline > 0.050) s->deadline = now;
