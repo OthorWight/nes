@@ -38,6 +38,20 @@ If a game repeatedly polls the light gun on a black screen for about three secon
 ### Performance and captures
 
 Press `F2` for a metrics panel beside the game: FPS, emulation speed, frame spikes, audio queue and input diagnostics. Press `F3` for the full debug panel with CPU/PPU/APU, mapper and controller details; these replace the terminal dashboard.
+
+**View > APU Viewer** opens a live piano roll beside the game. Pulse 1 (blue),
+Pulse 2 (orange), and Triangle (green) show roughly 7.7 seconds of pitch history
+over C1–B7, with current note names and frequencies. Noise and DMC have separate
+activity lanes; channel meters show envelope volume, triangle activity, and the
+DMC DAC output level. A dim DMC trace is a held level, not an ongoing sample.
+The viewer freezes when paused, works with audio muted, and can stay open with
+the debugger and nametable viewer. Its visibility is saved in global settings.
+ROM changes, resets, and state loads clear the history.
+
+Pitches come from the emulated timers, rounded to the nearest semitone in the
+roll; they are not MIDI events. Music and sound effects share the same channels.
+Observation runs at 240 Hz in emulated time, so shorter register changes can be
+missed. The observer does not read hardware registers or change playback.
 `Ctrl+F4` toggles recent event tracing; `F4` saves the bounded history to
 `saves/<ROM name>/diagnostics.log`. Audio on, muted, and unavailable share the
 same NTSC frame scheduler. Focus loss pauses the game and clears held inputs.

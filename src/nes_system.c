@@ -12,6 +12,7 @@ void nes_init(NES *nes) {
 void nes_reset(NES *nes) {
     nes->oam_dma_pending = false;
     nes->dmc_dma_pending = false;
+    apu_reset(nes);
     nes_reset_zapper_watchdog(nes);
     cpu_trigger_reset(&nes->cpu);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->reset) {

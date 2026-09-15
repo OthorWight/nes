@@ -16,6 +16,50 @@ static unsigned reported_empty, reported_trims;
 static bool delivered, muted_test, unavailable_test;
 static int pad_id = 42;
 
+/* Deterministic music illustration and portable readback of the real panel
+   drawing code. Restore all emulation/observer state before continuing. */
+static void capture_apu_panel(void) {
+    APU2A03 saved_apu = nes_sys.apu;
+    ApuView saved_view = apu_view;
+    memset(&apu_view, 0, sizeof(apu_view));
+    apu_init(&nes_sys.apu);
+    APU2A03 *a = &nes_sys.apu;
+    static const int melody[] = {60, 64, 67, 72, 71, 67, 64, 62, 65, 69, 72, 77, 76, 72, 67, 64};
+    for (unsigned i = 0; i < APU_VIEW_HISTORY; ++i) {
+        unsigned beat = i / 120;
+        for (unsigned ch = 0; ch < 2; ++ch) {
+            int note = ch ? melody[(beat / 2) % 16] - 12 : melody[beat % 16];
+            double hz = 440 * pow(2, (note - 69) / 12.0);
+            a->pulse_timer_reload[ch] = (uint16_t)lround(1789773 / (16 * hz) - 1);
+            a->pulse_sweep_shift[ch] = 1;
+            a->pulse_length_counter[ch] = i % 120 < 108 ? 10 : 0;
+            a->pulse_constant_volume[ch] = true;
+            a->pulse_volume[ch] = (uint8_t)(15 - (i % 120) / 12);
+            a->pulse_duty[ch] = ch + 1;
+        }
+        double bass_hz = 440 * pow(2, ((beat % 4 < 2 ? 48 : 43) - 69) / 12.0);
+        a->triangle_enabled = true;
+        a->triangle_length_counter = a->triangle_linear_counter = 10;
+        a->triangle_timer_reload = (uint16_t)lround(1789773 / (32 * bass_hz) - 1);
+        a->noise_enabled = true; a->noise_length_counter = i % 60 < 24 ? 10 : 0;
+        a->noise_envelope_decay = (uint8_t)(15 - (i % 60) / 4);
+        a->dmc_value = i % 240 < 45 ? (uint8_t)(100 - i % 45) : 20;
+        a->dmc_silent = i % 240 >= 45;
+        apu_view_sample(&apu_view, a, ((uint64_t)i * 1789773 + 239) / 240);
+    }
+    draw_apu_panel();
+    FILE *f = fopen("apu-piano-roll.ppm", "wb"); assert(f);
+    fprintf(f, "P6\n%d %d\n255\n", HOST_PANEL_WIDTH, HOST_APU_HEIGHT);
+    for (int i = 0; i < HOST_PANEL_WIDTH * HOST_APU_HEIGHT; ++i) {
+        uint32_t pixel = apu_canvas.pixels[i];
+        unsigned char rgb[] = {pixel & 255, (pixel >> 8) & 255, (pixel >> 16) & 255};
+        assert(fwrite(rgb, 1, 3, f) == 3);
+    }
+    assert(!fclose(f));
+    nes_sys.apu = saved_apu;
+    apu_view = saved_view;
+}
+
 
 static void key(HostEvent *e, uint32_t type, HostKey sym) {
     e->type = type; e->key.keysym.sym = sym;
@@ -215,8 +259,33 @@ static bool scripted_poll(HostEvent *e) {
             break;
         case 26:
             assert(!nes_sys.controller_state[0]);
-            /* Leave the viewer enabled while the pacing/audio checks run. */
+            desktop_command(MENU_APU_VIEWER);
+            assert(apu_viewer_enabled && (desktop_state(NULL, MENU_APU_VIEWER) & MENU_CHECKED));
+            apu_viewer_enabled = false; load_emulator_settings();
+            assert(apu_viewer_enabled);
             break;
+        case 27: {
+            HostRect game, debug, nt, apu;
+            host_layout(sapp_width(), sapp_height(), &game, &debug);
+            host_nametable_layout(sapp_width(), sapp_height(), &nt);
+            host_apu_layout(sapp_width(), sapp_height(), &apu);
+            assert(apu.w > 0 && apu.h > 0 && apu_view.count > 0);
+            assert(game.x + game.w <= debug.x && debug.x + debug.w <= nt.x);
+            assert(nt.x + nt.w <= apu.x && apu.x + apu.w <= sapp_width());
+            HostEvent click = {0}; click.type = HOST_MOUSEBUTTONDOWN;
+            click.window_mouse.valid = true;
+            click.window_mouse.x = apu.x + apu.w / 2;
+            click.window_mouse.y = apu.y + apu.h / 2;
+            assert(desktop_event(&click));
+            unsigned count = apu_view.count;
+            paused = true; desktop_present(renderer);
+            assert(apu_view.count == count);
+            paused = false;
+            capture_apu_panel();
+            capture_window("apu-viewer.bmp");
+            /* Both viewers remain open during the audio/pacing checks. */
+            break;
+        }
         default: assert(iteration < capture_iteration); break;
     }
     return 1;

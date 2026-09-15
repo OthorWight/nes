@@ -16,6 +16,8 @@ static int run(const char *path) {
     if (!nes.cart) return 1;
     nes_reset(&nes);
     bool started = false;
+    unsigned reset_frame = 0, resets = 0;
+    bool reset_served = false;
     int result = 1;
     for (unsigned frame = 0; frame < 1800; ++frame) {
         nes.frame_ready = false;
@@ -25,6 +27,20 @@ static int run(const char *path) {
         nes.apu.audio_buffer_idx = 0;
         if (peek(0x6001) != 0xDE || peek(0x6002) != 0xB0 || peek(0x6003) != 0x61) continue;
         uint8_t status = peek(0x6000);
+        if (status == 0x81) {
+            started = true;
+            if (reset_served) continue;
+            if (!reset_frame) reset_frame = frame + 7; // At least 100 ms.
+            if (frame >= reset_frame) {
+                if (++resets > 8) break;
+                nes_reset(&nes);
+                reset_served = true;
+                reset_frame = 0;
+            }
+            continue;
+        }
+        reset_frame = 0;
+        reset_served = false;
         if (status == 0x80) started = true;
         if (started && status < 0x80) {
             printf("%s: result %u\n", path, status);

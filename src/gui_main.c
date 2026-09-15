@@ -20,6 +20,7 @@
 #include "diagnostics.h"
 #include "frontend_runtime.h"
 #include "nametable_view.h"
+#include "apu_view.h"
 #include "rom_preferences.h"
 
 NES nes_sys;
@@ -42,6 +43,8 @@ static bool fullscreen = false;
 static bool crt_enabled = false;
 static bool nametable_viewer_enabled = false;
 static NametableView nametable_view;
+static bool apu_viewer_enabled;
+static ApuView apu_view;
 static int master_volume = 100;
 static bool performance_visible = false;
 static bool focused = true;
@@ -345,7 +348,7 @@ static void save_emulator_settings(void) {
     }
     uint8_t data[128];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 7);
+    state_u32(&io, 8);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -357,6 +360,7 @@ static void save_emulator_settings(void) {
     state_i32(&io, performance_visible ? 1 : 0);
     state_i32(&io, crt_enabled ? 1 : 0);
     state_i32(&io, nametable_viewer_enabled ? 1 : 0);
+    state_i32(&io, apu_viewer_enabled ? 1 : 0);
     if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
@@ -364,6 +368,7 @@ static void load_emulator_settings(void) {
     zapper_enabled = false;
     crt_enabled = false;
     nametable_viewer_enabled = false;
+    apu_viewer_enabled = false;
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -371,7 +376,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 7) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 8) {
         fclose(f);
         return;
     }
@@ -412,6 +417,10 @@ static void load_emulator_settings(void) {
     if (version >= 7) {
         int temp_nametables = 0;
         if (fread(&temp_nametables, sizeof(temp_nametables), 1, f) == 1) nametable_viewer_enabled = temp_nametables == 1;
+    }
+    if (version >= 8) {
+        int temp_apu = 0;
+        if (fread(&temp_apu, sizeof(temp_apu), 1, f) == 1) apu_viewer_enabled = temp_apu == 1;
     }
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
@@ -648,6 +657,7 @@ static void load_emulator_state(const char *dir, const char *filename) {
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
         nametable_view.valid = false;
+        memset(&apu_view, 0, sizeof(apu_view));
         nes_sys.zapper_enabled = zapper_enabled;
         clear_host_input();
         runtime_reset_pending = true;
@@ -664,6 +674,7 @@ static HostCanvas canvas;
 static HostCanvas *renderer = &canvas;
 static HostCanvas debug_canvas;
 static HostCanvas nametable_canvas;
+static HostCanvas apu_canvas;
 
 static void panel_line(int *y, uint32_t color, const char *format, ...) {
     char text[128];
@@ -773,6 +784,7 @@ static bool frontend_load_rom(const char *name) {
 
     debugger_active = false;
     nametable_view.valid = false;
+    memset(&apu_view, 0, sizeof(apu_view));
     nes_init(&nes_sys);
     bool trace_enabled = diagnostics.tracing;
     memset(&diagnostics, 0, sizeof(diagnostics));
@@ -893,6 +905,7 @@ static const MenuItem view_items[] = {
     SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
     ITEM("CRT Shader", NULL, MENU_CRT),
     ITEM("Nametable Viewer", NULL, MENU_NAMETABLES),
+    ITEM("APU Viewer", NULL, MENU_APU_VIEWER),
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
 };
 static const MenuItem debug_items[] = {
@@ -928,6 +941,7 @@ static unsigned desktop_state(void *context, MenuCommand command) {
         case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
         case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
         case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
+        case MENU_APU_VIEWER: return apu_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_NAMETABLES: return nametable_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_CRT: return crt_enabled ? MENU_CHECKED : 0;
         case MENU_DEBUG_PANEL: return debug_panel_enabled ? MENU_CHECKED : 0;
@@ -966,6 +980,7 @@ static void desktop_command(MenuCommand command) {
         case MENU_PAUSE: paused = !paused; break;
         case MENU_RESET:
             nametable_view.valid = false;
+            memset(&apu_view, 0, sizeof(apu_view));
             nes_reset(&nes_sys); nes_clock_tick(&nes_sys);
             debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0;
             clear_view_history(debugger_view_pc); break;
@@ -980,6 +995,10 @@ static void desktop_command(MenuCommand command) {
         case MENU_FULLSCREEN:
             preferences_inherit = false; fullscreen = !fullscreen; apply_display(); save_emulator_settings(); break;
         case MENU_DEBUG_PANEL: debug_panel_enabled = !debug_panel_enabled; save_emulator_settings(); break;
+        case MENU_APU_VIEWER:
+            apu_viewer_enabled = !apu_viewer_enabled;
+            memset(&apu_view, 0, sizeof(apu_view));
+            save_emulator_settings(); break;
         case MENU_NAMETABLES:
             nametable_viewer_enabled = !nametable_viewer_enabled;
             nametable_view.valid = false; save_emulator_settings(); break;
@@ -1153,8 +1172,99 @@ static void draw_nametable_panel(void) {
     draw_string(&nametable_canvas, "$2800", 8, 276, 0xFFFFFF);
     draw_string(&nametable_canvas, "$2C00", 264, 276, 0xFFFFFF);
 }
+static void apu_rect(int x, int y, int w, int h, uint32_t color) {
+    host_color(&apu_canvas, (color >> 16) & 255, (color >> 8) & 255, color & 255, 255);
+    host_fill_rect(&apu_canvas, &(HostRect){x, y, w, h});
+}
+static uint32_t apu_level_color(uint32_t color, unsigned level, unsigned maximum) {
+    unsigned brightness = 80 + 175 * level / maximum;
+    return (((((color >> 16) & 255) * brightness / 255) << 16) |
+            ((((color >> 8) & 255) * brightness / 255) << 8) |
+            ((color & 255) * brightness / 255));
+}
+static void draw_apu_panel(void) {
+    static const uint32_t colors[5] = {0x59D8FF, 0xFFAF61, 0x9BE876, 0xD49AFF, 0xFF7799};
+    static const char *names[5] = {"Pulse 1", "Pulse 2", "Triangle", "Noise", "DMC DAC"};
+    static const char *notes[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    host_set_apu_panel(apu_viewer_enabled ? &apu_canvas : NULL);
+    if (!apu_viewer_enabled) return;
+    apu_canvas.width = HOST_PANEL_WIDTH; apu_canvas.height = HOST_PANEL_HEIGHT;
+    host_color(&apu_canvas, 15, 20, 35, 255); host_clear(&apu_canvas);
+    draw_string(&apu_canvas, "APU / PIANO ROLL", 12, 10, 0xFFFFFF);
+    draw_string(&apu_canvas, !nes_sys.cart ? "Open a ROM to view audio" :
+        (paused || debugger_active || desktop_menu.active || !focused || help_page || file_browser.active)
+        ? "PAUSED - history frozen" : audio_muted ? "LIVE - audio muted" : "LIVE - notes and sound effects", 12, 28, 0x90A6BD);
+    ApuViewSample current;
+    apu_view_snapshot(&nes_sys.apu, &current);
+    for (unsigned ch = 0; ch < 3; ++ch) {
+        char label[32];
+        int note = (int)lroundf(current.note[ch]);
+        if (current.active[ch] && note >= 0 && note <= 127)
+            snprintf(label, sizeof(label), "%s %s%d %.0fHz", ch == 0 ? "P1" : ch == 1 ? "P2" : "TRI",
+                notes[note % 12], note / 12 - 1, current.hz[ch]);
+        else snprintf(label, sizeof(label), "%s --", names[ch]);
+        draw_string(&apu_canvas, label, 12 + (int)ch * 164, 52, colors[ch]);
+    }
+    // C1..B7; each channel has its own pixel within a semitone row so
+    // simultaneous unisons stay visible. One column represents 1/60 second.
+    for (int note = 24; note <= 107; ++note) {
+        int pitch = note % 12, y = 80 + (107 - note) * 3;
+        bool black = pitch == 1 || pitch == 3 || pitch == 6 || pitch == 8 || pitch == 10;
+        apu_rect(44, y, 460, 3, black ? 0x141C2C : 0x1C283B);
+        apu_rect(12, y, black ? 20 : 28, 3, black ? 0x243145 : 0x708198);
+        if (!pitch) apu_rect(44, y + 2, 460, 1, 0x34465C);
+    }
+    for (int note = 24; note <= 107; note += 12) {
+        int y = 80 + (107 - note) * 3;
+        char label[8]; snprintf(label, sizeof(label), "C%d", note / 12 - 1);
+        apu_rect(12, y - 5, 28, 8, 0x243145);
+        draw_string(&apu_canvas, label, 13, y - 5, 0xFFFFFF);
+    }
+    for (int seconds = 0; seconds <= 7; ++seconds) {
+        int x = 503 - seconds * 60;
+        apu_rect(x, 80, 1, 252, 0x34465C);
+        char label[8]; snprintf(label, sizeof(label), "-%ds", seconds);
+        draw_string(&apu_canvas, seconds ? label : "NOW", x - 20, 338, 0x90A6BD);
+    }
+    draw_string(&apu_canvas, "NOI", 12, 357, colors[3]);
+    draw_string(&apu_canvas, "DMC", 12, 381, colors[4]);
+    apu_rect(44, 354, 460, 16, 0x1C283B);
+    apu_rect(44, 378, 460, 16, 0x1C283B);
+    for (unsigned age = 0; age < apu_view.count; ++age) {
+        const ApuViewSample *s = apu_view_age(&apu_view, age);
+        int x = 503 - (int)(age / 4);
+        for (unsigned ch = 0; ch < 3; ++ch) {
+            int note = (int)lroundf(s->note[ch]);
+            if (s->active[ch] && note >= 24 && note <= 107)
+                apu_rect(x, 80 + (107 - note) * 3 + (int)ch, 1, 1,
+                    apu_level_color(colors[ch], s->level[ch], 15));
+        }
+        if (s->active[3]) apu_rect(x, 369 - s->level[3], 1, s->level[3], colors[3]);
+        int height = (s->level[4] * 15 + 126) / 127;
+        if (height) apu_rect(x, 393 - height, 1, height,
+            s->active[4] ? colors[4] : apu_level_color(colors[4], 0, 127));
+    }
+    for (unsigned ch = 0; ch < 5; ++ch) {
+        int y = 409 + (int)ch * 19;
+        unsigned level = (ch == 4 || current.active[ch]) ? current.level[ch] : 0;
+        unsigned maximum = ch == 4 ? 127 : 15;
+        draw_string(&apu_canvas, names[ch], 12, y, colors[ch]);
+        apu_rect(92, y, 120, 8, 0x28374D);
+        apu_rect(92, y, (int)(120 * level / maximum), 8, colors[ch]);
+        char text[40];
+        if (ch < 2) {
+            static const char *duty[] = {"12.5%", "25%", "50%", "75%"};
+            snprintf(text, sizeof(text), "%2u/15  duty %s", level, duty[current.duty[ch] & 3]);
+        } else if (ch == 2) snprintf(text, sizeof(text), "%s (fixed volume)", current.active[ch] ? "Playing" : "Idle");
+        else if (ch == 3) snprintf(text, sizeof(text), "%2u/15  %s", level, nes_sys.apu.noise_mode ? "Short noise" : "Long noise");
+        else snprintf(text, sizeof(text), "%3u/127 %s", level, current.active[ch] ? "Sample playing" : "Held DAC level");
+        draw_string(&apu_canvas, text, 224, y, 0xD9E3F0);
+    }
+    draw_string(&apu_canvas, "Timer pitches / C1-B7 / ~7.7 seconds", 12, 512, 0x90A6BD);
+}
 static void desktop_present(HostCanvas *game) {
     draw_nametable_panel();
+    draw_apu_panel();
     if (nes_sys.cart && paused) {
         /* Use game pixels so the OSD grows with the picture, unlike desktop text. */
         HostRect badge = {96, 108, 64, 24};
@@ -1186,7 +1296,10 @@ static bool desktop_event(const HostEvent *event) {
             if (!browser_mode) frontend_load_rom(path);
             else {
                 NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
-                if (browser_mode != 2 && result == NES_STATE_OK) nametable_view.valid = false;
+                if (browser_mode != 2 && result == NES_STATE_OK) {
+                    nametable_view.valid = false;
+                    memset(&apu_view, 0, sizeof(apu_view));
+                }
                 show_notification(result == NES_STATE_OK ? (browser_mode == 2 ? "STATE SAVED" : "STATE LOADED") : nes_state_message(result));
                 clear_host_input(); runtime_reset_pending = true;
                 nes_sys.zapper_enabled = zapper_enabled;
@@ -1265,6 +1378,8 @@ static bool desktop_event(const HostEvent *event) {
         if (host_point_in_rect(&point, &panel)) return true;
         host_nametable_layout(sapp_width(), sapp_height(), &panel);
         if (host_point_in_rect(&point, &panel)) return true;
+        host_apu_layout(sapp_width(), sapp_height(), &panel);
+        if (host_point_in_rect(&point, &panel)) return true;
     }
     return consumed;
 }
@@ -1327,6 +1442,7 @@ static void app_frame(void) {
                     debugger_log_instruction(&nes_sys.cpu);
                 }
                 nes_clock_tick(&nes_sys);
+                if (apu_viewer_enabled) apu_view_sample(&apu_view, &nes_sys.apu, nes_sys.cpu.cycle_count);
                 if (nametable_viewer_enabled && !nametable_view.sampled)
                     nametable_view_sample(&nametable_view, &nes_sys);
             }

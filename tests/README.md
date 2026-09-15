@@ -32,6 +32,7 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 | `ppu_pixels.c` | Transparency and background priority, first-opaque-sprite ordering, horizontal flips and bounds, sprite-zero hit clipping/right edge/persistence, forced-blank palette selection and mask changes |
 | `ppu_sprite_overflow.c` | DMA-loaded hidden sprites at Y=240..255 across both sprite heights and rendering enables; eight/nine-sprite threshold, vertical range boundaries, Y=239 evaluation and status-read persistence |
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
+| `apu_view.c` | Timer-derived A4 pitches, pulse sweep/length/volume gates, triangle linear-counter gate, noise envelope level, buffered DMC playback versus held DAC, read-only snapshots, paused history, ring wrap, rewind and gaps |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM first pre-render clock and exact split dots with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
 | `cartridge_loading.c` | iNES/NES 2.0 metadata, extended IDs and sizes, invalid/unsupported/truncated images, ROM padding, absent/small RAM, trainers, CHR NVRAM, mapper 78 header/submapper wiring and reset |
@@ -51,6 +52,10 @@ scanlines, rounded contour corners, solid black thin outlines and preserved midt
 sharp overlays/sidebar, and restoring unfiltered colors. Menu checks
 verify that the CRT toggle is checked correctly and survives settings reloads.
 Captures remain under `build/tests/`.
+Sokol checks also cover the APU viewer toggle and saved preference, simultaneous
+game/debug/nametable/APU layout, panel mouse ownership, and frozen history while
+paused. Both viewers stay open during pacing checks. `apu-piano-roll.ppm` is a
+portable capture of the panel rendered from a deterministic synthetic melody.
 See [Sokol checks and limits](../docs/SOKOL.md). The Zapper characterization probe
 reports the existing sensor discrepancy without treating it as an accuracy pass.
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus

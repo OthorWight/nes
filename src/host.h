@@ -79,6 +79,7 @@ typedef struct HostPoint { int x, y; } HostPoint;
 #define HOST_PANEL_WIDTH 512
 #define HOST_PANEL_HEIGHT 640
 #define HOST_NAMETABLE_HEIGHT 528
+#define HOST_APU_HEIGHT 528
 typedef struct HostCanvas {
     uint32_t pixels[HOST_PANEL_WIDTH * HOST_PANEL_HEIGHT], frame[256 * 240];
     int width, height; /* zero selects the 256x240 game canvas */
@@ -107,6 +108,8 @@ void host_to_logical(HostCanvas *canvas, int x, int y, float *lx, float *ly);
 void host_viewport(int width, int height, HostRect *rect);
 void host_set_debug_panel(HostCanvas *panel);
 void host_set_nametable_panel(HostCanvas *panel);
+void host_set_apu_panel(HostCanvas *panel);
+void host_apu_layout(int width, int height, HostRect *rect);
 void host_nametable_layout(int width, int height, HostRect *rect);
 void host_set_chrome(void (*draw)(void), const uint8_t font[95][8]);
 void host_ui_rect(HostRect rect, uint32_t color);

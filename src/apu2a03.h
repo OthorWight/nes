@@ -95,9 +95,13 @@ typedef struct {
 
     // CPU / 2 Divider Toggle
     bool     clock_toggle;
+    uint8_t  length_pending, halt_pending;
+    uint8_t  length_previous[4];
+    bool     halt_previous[4];
 } APU2A03;
 
 void    apu_init(APU2A03 *apu);
+void    apu_reset(NES *nes);
 void    apu_write_reg(NES *nes, uint16_t address, uint8_t data);
 uint8_t apu_read_reg(NES *nes, uint16_t address);
 void    apu_step(APU2A03 *apu, NES *nes);
