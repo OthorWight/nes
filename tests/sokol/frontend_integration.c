@@ -21,6 +21,13 @@ static int pad_id = 42;
 static void capture_apu_panel(void) {
     APU2A03 saved_apu = nes_sys.apu;
     ApuView saved_view = apu_view;
+    ExpansionAudio saved_expansion = nes_sys.expansion;
+    uint16_t saved_mapper = nes_sys.cart->mapper_id;
+    uint64_t saved_cycle = nes_sys.cpu.cycle_count;
+    // Capture the worst-case layout: all eight N163 voices must fit inside
+    // the actual cropped texture, alongside the five standard channels.
+    nes_sys.cart->mapper_id = 19;
+    memset(&nes_sys.expansion, 0, sizeof(nes_sys.expansion));
     memset(&apu_view, 0, sizeof(apu_view));
     apu_init(&nes_sys.apu);
     APU2A03 *a = &nes_sys.apu;
@@ -45,7 +52,18 @@ static void capture_apu_panel(void) {
         a->noise_envelope_decay = (uint8_t)(15 - (i % 60) / 4);
         a->dmc_value = i % 240 < 45 ? (uint8_t)(100 - i % 45) : 20;
         a->dmc_silent = i % 240 >= 45;
-        apu_view_sample(&apu_view, a, ((uint64_t)i * 1789773 + 239) / 240);
+        for (unsigned ch = 0; ch < 8; ++ch) {
+            unsigned base = 0x78 - ch * 8;
+            double hz = 440 * pow(2, (melody[beat % 16] - 12 + (int)ch * 2 - 69) / 12.0);
+            uint32_t frequency = (uint32_t)lround(hz * 15 * 8 * 65536 * 32 / 1789773);
+            uint8_t *ram = nes_sys.expansion.n163.ram;
+            ram[base] = (uint8_t)frequency;
+            ram[base + 2] = (uint8_t)(frequency >> 8);
+            ram[base + 4] = 0xE0 | ((frequency >> 16) & 3);
+            ram[base + 7] = (ch ? 0 : 0x70) | (15 - ch);
+        }
+        nes_sys.cpu.cycle_count = ((uint64_t)i * 1789773 + 239) / 240;
+        apu_view_sample_nes(&apu_view, &nes_sys);
     }
     draw_apu_panel();
     FILE *f = fopen("apu-piano-roll.ppm", "wb"); assert(f);
@@ -57,6 +75,9 @@ static void capture_apu_panel(void) {
     }
     assert(!fclose(f));
     nes_sys.apu = saved_apu;
+    nes_sys.expansion = saved_expansion;
+    nes_sys.cart->mapper_id = saved_mapper;
+    nes_sys.cpu.cycle_count = saved_cycle;
     apu_view = saved_view;
 }
 
@@ -277,6 +298,17 @@ static bool scripted_poll(HostEvent *e) {
             click.window_mouse.x = apu.x + apu.w / 2;
             click.window_mouse.y = apu.y + apu.h / 2;
             assert(desktop_event(&click));
+            click.button.button = HOST_BUTTON_LEFT;
+            click.window_mouse.x = apu.x + (APU_VIEW_NAME_X + 16) * apu.w / HOST_PANEL_WIDTH;
+            click.window_mouse.y = apu.y + (APU_VIEW_ROWS_Y + 4) * apu.h / HOST_APU_HEIGHT;
+            uint16_t muted_before = nes_sys.audio_muted_channels;
+            uint8_t controller_before = nes_sys.controller_state[0];
+            bool trigger_before = nes_sys.zapper_trigger;
+            assert(desktop_event(&click));
+            assert(nes_sys.audio_muted_channels == (muted_before ^ 1));
+            assert(nes_sys.controller_state[0] == controller_before && nes_sys.zapper_trigger == trigger_before);
+            assert(desktop_event(&click));
+            assert(nes_sys.audio_muted_channels == muted_before);
             unsigned count = apu_view.count;
             paused = true; desktop_present(renderer);
             assert(apu_view.count == count);

@@ -50,7 +50,18 @@ the debugger and nametable viewer. Its visibility is saved in global settings.
 ROM changes, resets, and state loads clear the history.
 
 Expansion cartridges add colored pitch traces and up to eight channel meters
-below the standard APU meters. Pitches are nominal oscillator frequencies;
+beside the standard APU meters, below the roll. All channels fit in the panel;
+notes and numbers use fixed columns, with numeric values right-aligned.
+Both lists use Level / Note / Hz. Click a channel name to mute or re-enable
+that voice; a gray name means muted. Meters and history continue showing the
+game's channel activity. The switches affect mixing only, including expansion
+audio; timers, envelopes, sample DMA and interrupts keep running. Switches
+survive reset and state loading in the current session; loading a ROM or power
+cycling starts with every voice audible. They are not written into save states.
+Debug metrics and the status bar also keep changing values in fixed fields.
+Below the channel lists, the viewer shows pulse duty cycles, noise mode, DMC
+loop mode and bit rate, the DMC DAC level, and bytes remaining for sample DMA.
+Pitches are nominal oscillator frequencies;
 modulation and wave harmonics can change the perceived note. Expansion noise
 and PCM show levels without inventing a MIDI pitch. Overlapping voices may
 share a pixel in the combined roll.

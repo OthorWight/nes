@@ -3,6 +3,9 @@
 #include "apu2a03.h"
 
 enum { APU_VIEW_CHANNELS = 5, APU_VIEW_HISTORY = 1840, APU_VIEW_EXPANSION_CHANNELS = 8 };
+enum { APU_VIEW_ROWS_Y = 416, APU_VIEW_ROW_HEIGHT = 12,
+       APU_VIEW_NAME_X = 12, APU_VIEW_NAME_CELLS = 8,
+       APU_VIEW_EXP_NAME_X = 268, APU_VIEW_EXP_NAME_CELLS = 6 };
 typedef struct {
     float note[3]; /* MIDI pitch numbers, including fractional semitones. */
     float hz[3];
@@ -26,4 +29,6 @@ void apu_view_snapshot_nes(const NES *nes, ApuViewSample *sample);
 void apu_view_sample(ApuView *view, const APU2A03 *apu, uint64_t cpu_cycle);
 void apu_view_sample_nes(ApuView *view, const NES *nes);
 const ApuViewSample *apu_view_age(const ApuView *view, unsigned age);
+/* Panel-space hit test. Returns the host mixer bit, or -1 outside a name. */
+int apu_view_channel_at(unsigned expansion_count, int x, int y);
 #endif

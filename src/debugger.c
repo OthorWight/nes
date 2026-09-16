@@ -85,8 +85,6 @@ void debugger_shutdown(void) {
     process_log_buffer(true);
 }
 
-extern void draw_string(HostCanvas *renderer, const char *str, int x, int y, uint32_t color);
-
 static const char* op_names[256] = {
     "BRK", "ORA", "JAM", "SLO", "NOP", "ORA", "ASL", "SLO", "PHP", "ORA", "ASL", "ANC", "NOP", "ORA", "ASL", "SLO",
     "BPL", "ORA", "JAM", "SLO", "NOP", "ORA", "ASL", "SLO", "CLC", "ORA", "NOP", "SLO", "NOP", "ORA", "ASL", "SLO",
@@ -311,7 +309,7 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
              cpu->program_counter, cpu->accumulator, cpu->index_x, cpu->index_y, cpu->stack_pointer);
     draw_string(renderer, buf, 8, 35, 0xFFFFFF);
 
-    snprintf(buf, sizeof(buf), "P:%02X  [%c%c-%c%c%c%c%c]  CYC:%lld", 
+    snprintf(buf, sizeof(buf), "P:%02X  [%c%c-%c%c%c%c%c]  CYC:%20llu", 
              cpu->status_flags,
              (cpu->status_flags & FLAG_NEGATIVE) ? 'N' : '.',
              (cpu->status_flags & FLAG_OVERFLOW_V) ? 'V' : '.',
@@ -320,7 +318,7 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
              (cpu->status_flags & FLAG_INTERRUPT_DISABLE) ? 'I' : '.',
              (cpu->status_flags & FLAG_ZERO) ? 'Z' : '.',
              (cpu->status_flags & FLAG_CARRY) ? 'C' : '.',
-             (long long)cpu->cycle_count);
+             (unsigned long long)cpu->cycle_count);
     draw_string(renderer, buf, 8, 48, 0x00FFFF);
 
     draw_string(renderer, "--------------------------------", 0, 60, 0x444444);
@@ -344,16 +342,15 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
         
         if (i == debugger_selected_line) {
             color = 0x00FFFF;
-            char select_buf[150];
-            snprintf(select_buf, sizeof(select_buf), "%s *", buf);
-            draw_string(renderer, select_buf, 8, 70 + i * 11, color);
+            draw_text_field(renderer, buf, 8, 70 + i * 11, 60, false, color);
+            draw_string(renderer, "*", 496, 70 + i * 11, color);
         } else {
             if (dis_pc == cpu->program_counter) {
                 color = 0xFFFF00;
             } else if (breakpoints[dis_pc]) {
                 color = 0xFF00FF;
             }
-            draw_string(renderer, buf, 8, 70 + i * 11, color);
+            draw_text_field(renderer, buf, 8, 70 + i * 11, 60, false, color);
         }
         
         uint8_t op = test_bus_peek(dis_pc);

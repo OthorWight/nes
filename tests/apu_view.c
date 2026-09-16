@@ -86,6 +86,16 @@ static void expansion_snapshot_is_read_only(void) {
 }
 
 int main(void) {
+    for (int row = 0; row < 8; ++row) {
+        int y = APU_VIEW_ROWS_Y + row * APU_VIEW_ROW_HEIGHT + 4;
+        assert(apu_view_channel_at(8, APU_VIEW_NAME_X + 4, y) == (row < 5 ? row : -1));
+        assert(apu_view_channel_at(8, APU_VIEW_EXP_NAME_X + 4, y) == 5 + row);
+        assert(apu_view_channel_at(0, APU_VIEW_EXP_NAME_X + 4, y) == -1);
+        assert(apu_view_channel_at(8, 84, y) == -1); // Standard level meter.
+        assert(apu_view_channel_at(8, 364, y) == -1); // Expansion note field.
+    }
+    assert(apu_view_channel_at(8, 12, 400) == -1); // Heading.
+    assert(apu_view_channel_at(8, 268, 516) == -1); // Footer.
     RUN_TEST(pitches_and_channel_gates);
     RUN_TEST(emulated_time_history_and_isolation);
     RUN_TEST(expansion_snapshot_is_read_only);

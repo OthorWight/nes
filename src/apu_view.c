@@ -3,6 +3,17 @@
 #include <math.h>
 #include <string.h>
 
+int apu_view_channel_at(unsigned expansion_count, int x, int y) {
+    if (y < APU_VIEW_ROWS_Y - 2) return -1;
+    unsigned row = (unsigned)(y - (APU_VIEW_ROWS_Y - 2)) / APU_VIEW_ROW_HEIGHT;
+    if (x >= APU_VIEW_NAME_X && x < APU_VIEW_NAME_X + APU_VIEW_NAME_CELLS * 8 && row < APU_VIEW_CHANNELS)
+        return (int)row;
+    if (x >= APU_VIEW_EXP_NAME_X && x < APU_VIEW_EXP_NAME_X + APU_VIEW_EXP_NAME_CELLS * 8 &&
+        row < expansion_count && row < APU_VIEW_EXPANSION_CHANNELS)
+        return NES_AUDIO_EXPANSION_SHIFT + (int)row;
+    return -1;
+}
+
 void apu_view_snapshot(const APU2A03 *a, ApuViewSample *s) {
     memset(s, 0, sizeof(*s));
     for (unsigned ch = 0; ch < 2; ++ch) {

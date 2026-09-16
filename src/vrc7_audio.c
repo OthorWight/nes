@@ -57,6 +57,16 @@ float vrc7_audio_clock(Vrc7Audio *a, unsigned hz) {
     return a->output * (0.4f / 4096);
 }
 
+float vrc7_audio_sample(const Vrc7Audio *a, unsigned muted) {
+    if (!a->initialized || a->disabled) return 0;
+    // Do not use OPLL_setMask for isolation: upstream skips operator output
+    // calculations for masked voices, altering feedback when they return.
+    int output = 0;
+    for (unsigned ch = 0; ch < 6; ++ch)
+        if (!(muted & (1u << ch))) output += a->core.ch_out[ch];
+    return output * (0.4f / 4096);
+}
+
 void vrc7_audio_state(Vrc7Audio *a, StateIO *io) {
     a->initialized = state_bool(io, a->initialized);
     a->disabled = state_bool(io, a->disabled);

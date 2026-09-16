@@ -80,6 +80,8 @@ typedef struct HostPoint { int x, y; } HostPoint;
 #define HOST_PANEL_HEIGHT 640
 #define HOST_NAMETABLE_HEIGHT 528
 #define HOST_APU_HEIGHT 528
+/* The APU panel uses a 512x528 crop of the shared panel texture. Keep its
+   complete layout, including expansion meters and footer, inside this crop. */
 typedef struct HostCanvas {
     uint32_t pixels[HOST_PANEL_WIDTH * HOST_PANEL_HEIGHT], frame[256 * 240];
     int width, height; /* zero selects the 256x240 game canvas */
@@ -126,6 +128,11 @@ void host_fill_rect(HostCanvas *canvas, const HostRect *rect);
 void host_draw_rect(HostCanvas *canvas, const HostRect *rect);
 void host_draw_points(HostCanvas *canvas, const HostPoint *points, int count);
 void host_draw_frame(HostCanvas *canvas, const uint32_t *argb, const HostRect *crop);
+/* Frontend bitmap text: eight pixels per cell. Fixed fields never move their
+   neighbors; overflowing numbers display #, overflowing labels end with >. */
+void draw_string(HostCanvas *canvas, const char *text, int x, int y, uint32_t color);
+void draw_text_field(HostCanvas *canvas, const char *text, int x, int y,
+                     unsigned cells, bool right, uint32_t color);
 void host_present(HostCanvas *canvas);
 bool host_audio_valid(void);
 double host_audio_latency_ms(void);

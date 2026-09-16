@@ -612,6 +612,25 @@ void draw_string(HostCanvas *renderer, const char *str, int x, int y, uint32_t c
     }
 }
 
+static void format_text_field(char field[65], const char *text, unsigned cells, bool right) {
+    if (cells > 64) cells = 64;
+    if (!cells) { field[0] = '\0'; return; }
+    size_t length = strlen(text);
+    memset(field, ' ', cells);
+    if (length > cells) {
+        if (right) memset(field, '#', cells);
+        else { memcpy(field, text, cells); field[cells - 1] = '>'; }
+    } else memcpy(field + (right ? cells - length : 0), text, length);
+    field[cells] = '\0';
+}
+
+void draw_text_field(HostCanvas *canvas, const char *text, int x, int y,
+                     unsigned cells, bool right, uint32_t color) {
+    char field[65];
+    format_text_field(field, text, cells, right);
+    draw_string(canvas, field, x, y, color);
+}
+
 static void draw_notification(HostCanvas *renderer) {
     if (notification_timer > 0) {
         notification_timer--;
@@ -691,8 +710,22 @@ static void panel_line(int *y, uint32_t color, const char *format, ...) {
     va_start(args, format);
     vsnprintf(text, sizeof(text), format, args);
     va_end(args);
-    draw_string(&debug_canvas, text, 8, *y, color);
+    draw_text_field(&debug_canvas, text, 8, *y, 62, false, color);
     *y += 12;
+}
+
+static void panel_metric(int y, unsigned column, unsigned cells, const char *label,
+                         const char *format, ...) {
+    char value[96];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(value, sizeof(value), format, args);
+    va_end(args);
+    unsigned label_cells = (unsigned)strlen(label) + 1;
+    if (label_cells >= cells) return;
+    draw_text_field(&debug_canvas, label, 8 + (int)column * 8, y, label_cells, false, 0xFFFFFF);
+    draw_text_field(&debug_canvas, value, 8 + (int)(column + label_cells) * 8, y,
+                    cells - label_cells, true, 0xFFFFFF);
 }
 
 static void draw_debug_panel(void) {
@@ -717,22 +750,30 @@ static void draw_debug_panel(void) {
     DiagnosticSummary s = diagnostics_summary(&diagnostics);
     panel_line(&y, 0x78C8FF, "PERFORMANCE / AUDIO / INPUT");
     panel_line(&y, 0xFFFFFF, "ROM: %.56s", nes_sys.cart ? loaded_rom_name : "[None]");
-    panel_line(&y, 0xFFFFFF, "%s %s  FPS %.2f  SPEED %.2f%%", playing ? "RUNNING" : "PAUSED",
-        nes_region_name(nes_sys.apu.region), playing ? s.fps : 0, playing ? s.speed : 0);
-    panel_line(&y, 0xFFFFFF, "CPU %.4f MHz  HOST LOAD %.1f%%", playing ? nes_region_cpu_hz(nes_sys.apu.region) / 1000000.0 * s.speed / 100 : 0,
-        playing && debug_total_ticks ? 100.0 * debug_emu_ticks / debug_total_ticks : 0);
-    panel_line(&y, 0xFFFFFF, "FRAME MAX %.2f ms  SPIKES %u", s.max_ms, s.spikes);
-    panel_line(&y, 0xFFFFFF, "AUDIO %s  QUEUE %u B  DEVICE %.1f ms",
-        !audio_device ? "UNAVAILABLE" : audio_muted ? "MUTED" : "ON", host_audio_queued_bytes(), audio_device_ms);
-    panel_line(&y, 0xFFFFFF, "EMPTY %u  TRIMS %u  ERRORS %u", audio_monitor.underruns, audio_monitor.trims, audio_monitor.errors);
-    panel_line(&y, 0xFFFFFF, "INPUT READS %u  CHANGES %u  TRACE %s", s.polls, s.changed, diagnostics.tracing ? "ON" : "OFF");
+    draw_text_field(&debug_canvas, playing ? "RUNNING" : "PAUSED", 8, y, 7, false, 0xFFFFFF);
+    draw_text_field(&debug_canvas, nes_region_name(nes_sys.apu.region), 72, y, 5, false, 0xFFFFFF);
+    panel_metric(y, 14, 20, "FPS", "%.2f", playing ? s.fps : 0);
+    panel_metric(y, 36, 26, "SPEED", "%.2f%%", playing ? s.speed : 0); y += 12;
+    panel_metric(y, 0, 26, "CPU", "%.4f MHz", playing ? nes_region_cpu_hz(nes_sys.apu.region) / 1000000.0 * s.speed / 100 : 0);
+    panel_metric(y, 28, 34, "HOST LOAD", "%.1f%%", playing && debug_total_ticks ? 100.0 * debug_emu_ticks / debug_total_ticks : 0); y += 12;
+    panel_metric(y, 0, 28, "FRAME MAX", "%.2f ms", s.max_ms);
+    panel_metric(y, 30, 32, "SPIKES", "%u", s.spikes); y += 12;
+    panel_metric(y, 0, 19, "AUDIO", "%s", !audio_device ? "UNAVAILABLE" : audio_muted ? "MUTED" : "ON");
+    panel_metric(y, 21, 21, "QUEUE", "%u B", host_audio_queued_bytes());
+    panel_metric(y, 44, 18, "DEV", "%.1f ms", audio_device_ms); y += 12;
+    panel_metric(y, 0, 20, "EMPTY", "%u", audio_monitor.underruns);
+    panel_metric(y, 21, 20, "TRIMS", "%u", audio_monitor.trims);
+    panel_metric(y, 42, 20, "ERRORS", "%u", audio_monitor.errors); y += 12;
+    panel_metric(y, 0, 22, "READS", "%u", s.polls);
+    panel_metric(y, 24, 21, "CHANGES", "%u", s.changed);
+    panel_metric(y, 47, 15, "TRACE", "%s", diagnostics.tracing ? "ON" : "OFF"); y += 12;
     if (full) {
         y += 8;
         panel_line(&y, 0x78C8FF, "INTERRUPTS / PPU");
         panel_line(&y, 0xFFFFFF, "IRQ %02X [MAPPER:%d FRAME:%d DMC:%d] NMI %d/%d",
             nes_sys.cpu.irq_lines, !!(nes_sys.cpu.irq_lines & 1), !!(nes_sys.cpu.irq_lines & 2),
             !!(nes_sys.cpu.irq_lines & 4), nes_sys.cpu.nmi_line, nes_sys.cpu.nmi_edge);
-        panel_line(&y, 0xFFFFFF, "SCANLINE %d  DOT %d  STATUS %02X  %s FRAME",
+        panel_line(&y, 0xFFFFFF, "SCANLINE %3d  DOT %3d  STATUS %02X  %-4s FRAME",
             nes_sys.ppu.scanline, nes_sys.ppu.cycle, nes_sys.ppu.ppu_status, nes_sys.ppu.odd_frame ? "ODD" : "EVEN");
         panel_line(&y, 0xFFFFFF, "CTRL %02X MASK %02X  SCROLL V:%04X T:%04X",
             nes_sys.ppu.ppu_ctrl, nes_sys.ppu.ppu_mask, nes_sys.ppu.v, nes_sys.ppu.t);
@@ -743,11 +784,11 @@ static void draw_debug_panel(void) {
         panel_line(&y, 0xFFFFFF, "ENABLED P1:%d P2:%d TRI:%d NOISE:%d DMC:%d",
             nes_sys.apu.pulse_enabled[0], nes_sys.apu.pulse_enabled[1], nes_sys.apu.triangle_enabled,
             nes_sys.apu.noise_enabled, nes_sys.apu.dmc_enabled);
-        panel_line(&y, 0xFFFFFF, "LENGTHS P1:%d P2:%d TRI:%d NOISE:%d",
+        panel_line(&y, 0xFFFFFF, "LENGTHS P1:%3u P2:%3u TRI:%3u NOISE:%3u",
             nes_sys.apu.pulse_length_counter[0], nes_sys.apu.pulse_length_counter[1],
             nes_sys.apu.triangle_length_counter, nes_sys.apu.noise_length_counter);
         panel_line(&y, 0xFFFFFF, "SEQUENCER %d-STEP  FRAME IRQ %d", nes_sys.apu.frame_mode ? 5 : 4, nes_sys.apu.frame_irq_active);
-        panel_line(&y, 0xFFFFFF, "DMC SAMPLE %04X CURRENT %04X LEFT %d EMPTY %d",
+        panel_line(&y, 0xFFFFFF, "DMC SAMPLE %04X CURRENT %04X LEFT %4u EMPTY %d",
             nes_sys.apu.dmc_sample_addr, nes_sys.apu.dmc_current_addr,
             nes_sys.apu.dmc_bytes_remaining, nes_sys.apu.dmc_buffer_empty);
         y += 8;
@@ -759,9 +800,9 @@ static void draw_debug_panel(void) {
             case MIRROR_ONE_SCREEN_LOW: mirror = "1-Screen Low"; break;
             case MIRROR_ONE_SCREEN_HIGH: mirror = "1-Screen High"; break;
         }
-        panel_line(&y, 0x78C8FF, "MAPPER %d  MIRROR %s", nes_sys.cart ? nes_sys.cart->mapper_id : -1, mirror);
+        panel_line(&y, 0x78C8FF, "MAPPER %4d  MIRROR %-13s", nes_sys.cart ? nes_sys.cart->mapper_id : -1, mirror);
         panel_line(&y, 0xFFFFFF, "P1 %02X [A B SELECT START UP DOWN LEFT RIGHT]", nes_sys.controller_state[0]);
-        panel_line(&y, 0xFFFFFF, "PORT 2 %s  AIM %d,%d  TRIGGER %d LIGHT %d", nes_sys.zapper_enabled ? "ZAPPER" : "PAD",
+        panel_line(&y, 0xFFFFFF, "PORT 2 %-6s  AIM %4d,%4d  TRIGGER %d LIGHT %d", nes_sys.zapper_enabled ? "ZAPPER" : "PAD",
             nes_sys.zapper_x, nes_sys.zapper_y, nes_sys.zapper_trigger, nes_sys.zapper_light);
     }
     draw_string(&debug_canvas, "F3:Debug panel  F2:Metrics  F4:Capture", 8, 612, 0x78C8FF);
@@ -1102,25 +1143,30 @@ static void desktop_draw(void) {
     DiagnosticSummary summary = diagnostics_summary(&diagnostics);
     bool playing = nes_sys.cart && !paused &&
         !debugger_active && !desktop_menu.active && !help_page && !file_browser.active && focused;
-    char text[128], mapper[24];
-    if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "Mapper %u", nes_sys.cart->mapper_id);
-    else snprintf(mapper, sizeof(mapper), "No ROM");
+    char text[128], mapper[65], fps[65], speed[65], audio[65], value[64];
+    bool compact = w < 360, wide = w >= 576;
+    snprintf(value, sizeof(value), compact ? "%.0f" : wide ? "%.2f" : "%.1f", playing ? summary.fps : 0);
+    format_text_field(fps, value, compact ? 3 : wide ? 6 : 5, true);
+    snprintf(value, sizeof(value), "%.0f", playing ? summary.speed : 0);
+    format_text_field(speed, value, compact ? 3 : wide ? 5 : 4, true);
+    if (nes_sys.cart) snprintf(value, sizeof(value), wide ? "Mapper %4u" : "M%4u", nes_sys.cart->mapper_id);
+    else snprintf(value, sizeof(value), "No ROM");
+    format_text_field(mapper, value, wide ? 11 : 5, false);
     const char *audio_status = !audio_device ? "N/A" : audio_muted || !master_volume ? "Muted" :
         !playing ? "Paused" : audio_monitor.errors ? "Error" : "OK";
-    if (w < 360) {
-        if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "M%u", nes_sys.cart->mapper_id);
-        snprintf(text, sizeof(text), "%.0fFPS|%.0f%%|%s|%s|P2:%s",
-            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
-            audio_status, zapper_enabled ? "Gun" : "Pad");
-    } else if (w < 480) {
-        if (nes_sys.cart) snprintf(mapper, sizeof(mapper), "M%u", nes_sys.cart->mapper_id);
-        snprintf(text, sizeof(text), "%.1fFPS|%.0f%%|%s|Audio %s|P2:%s",
-            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
-            audio_status, zapper_enabled ? "Zapper" : "Controller");
+    if (compact) {
+        snprintf(value, sizeof(value), "%.3s", audio_status);
+        format_text_field(audio, value, 3, false);
+        snprintf(text, sizeof(text), "%.3sFPS|%.3s%%|%.5s|%.3s|P2:%s",
+            fps, speed, mapper, audio, zapper_enabled ? "Gun" : "Pad");
+    } else if (!wide) {
+        format_text_field(audio, audio_status, 6, false);
+        snprintf(text, sizeof(text), "%.5sFPS|%.4s%%|%.5s|Audio %.6s|P2:%s",
+            fps, speed, mapper, audio, zapper_enabled ? "Gun" : "Pad");
     } else {
-        snprintf(text, sizeof(text), "%.2f FPS | %.0f%% | %s | Audio %s | Port 2: %s",
-            playing ? summary.fps : 0, playing ? summary.speed : 0, mapper,
-            audio_status, zapper_enabled ? "Zapper" : "Controller");
+        format_text_field(audio, audio_status, 6, false);
+        snprintf(text, sizeof(text), "%.6s FPS | %.5s%% | %.11s | Audio %.6s | Port 2: %-10s",
+            fps, speed, mapper, audio, zapper_enabled ? "Zapper" : "Controller");
     }
     if (!nes_sys.cart && notification_timer > 0) {
         snprintf(text, sizeof(text), "%s", notification_text); --notification_timer;
@@ -1218,7 +1264,7 @@ static void draw_apu_panel(void) {
     static const char *notes[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     host_set_apu_panel(apu_viewer_enabled ? &apu_canvas : NULL);
     if (!apu_viewer_enabled) return;
-    apu_canvas.width = HOST_PANEL_WIDTH; apu_canvas.height = HOST_PANEL_HEIGHT;
+    apu_canvas.width = HOST_PANEL_WIDTH; apu_canvas.height = HOST_APU_HEIGHT;
     host_color(&apu_canvas, 15, 20, 35, 255); host_clear(&apu_canvas);
     draw_string(&apu_canvas, "APU / PIANO ROLL", 12, 10, 0xFFFFFF);
     draw_string(&apu_canvas, !nes_sys.cart ? "Open a ROM to view audio" :
@@ -1226,15 +1272,13 @@ static void draw_apu_panel(void) {
         ? "PAUSED - history frozen" : audio_muted ? "LIVE - audio muted" : "LIVE - notes and sound effects", 12, 28, 0x90A6BD);
     ApuViewSample current;
     apu_view_snapshot_nes(&nes_sys, &current);
-    for (unsigned ch = 0; ch < 3; ++ch) {
-        char label[32];
-        int note = (int)lroundf(current.note[ch]);
-        if (current.active[ch] && note >= 0 && note <= 127)
-            snprintf(label, sizeof(label), "%s %s%d %.0fHz", ch == 0 ? "P1" : ch == 1 ? "P2" : "TRI",
-                notes[note % 12], note / 12 - 1, current.hz[ch]);
-        else snprintf(label, sizeof(label), "%s --", names[ch]);
-        draw_string(&apu_canvas, label, 12 + (int)ch * 164, 52, colors[ch]);
-    }
+    unsigned mapper = nes_sys.cart ? nes_sys.cart->mapper_id : 0;
+    const char *chip = mapper == 5 ? "MMC5" : mapper == 19 ? "N163" : mapper == 20 ? "FDS" :
+        mapper == 69 ? "5B" : mapper == 85 ? "VRC7" : mapper == 24 || mapper == 26 ? "VRC6" : "None";
+    char info[64];
+    snprintf(info, sizeof(info), "%-5s / Expansion: %-4s / 44.1 kHz", nes_region_name(nes_sys.apu.region), chip);
+    draw_string(&apu_canvas, info, 12, 50, 0x90A6BD);
+    draw_string(&apu_canvas, "Click a channel name to mute / unmute", 12, 64, 0x90A6BD);
     // C1..B7; each channel has its own pixel within a semitone row so
     // simultaneous unisons stay visible. One column represents 1/60 second.
     for (int note = 24; note <= 107; ++note) {
@@ -1280,43 +1324,65 @@ static void draw_apu_panel(void) {
         if (height) apu_rect(x, 393 - height, 1, height,
             s->active[4] ? colors[4] : apu_level_color(colors[4], 0, 127));
     }
+    // Two fixed columns share the space under the roll. Eight expansion rows
+    // end at y=508, inside the host's 528-pixel texture crop at every scale.
+    draw_string(&apu_canvas, "APU / LEVEL / NOTE / Hz", 12, 400, 0x90A6BD);
+    apu_rect(258, 400, 1, 108, 0x34465C);
     for (unsigned ch = 0; ch < 5; ++ch) {
-        int y = 409 + (int)ch * 19;
+        int y = APU_VIEW_ROWS_Y + (int)ch * APU_VIEW_ROW_HEIGHT;
         unsigned level = (ch == 4 || current.active[ch]) ? current.level[ch] : 0;
         unsigned maximum = ch == 4 ? 127 : 15;
-        draw_string(&apu_canvas, names[ch], 12, y, colors[ch]);
-        apu_rect(92, y, 120, 8, 0x28374D);
-        apu_rect(92, y, (int)(120 * level / maximum), 8, colors[ch]);
-        char text[40];
-        if (ch < 2) {
-            static const char *duty[] = {"12.5%", "25%", "50%", "75%"};
-            snprintf(text, sizeof(text), "%2u/15  duty %s", level, duty[current.duty[ch] & 3]);
-        } else if (ch == 2) snprintf(text, sizeof(text), "%s (fixed volume)", current.active[ch] ? "Playing" : "Idle");
-        else if (ch == 3) snprintf(text, sizeof(text), "%2u/15  %s", level, nes_sys.apu.noise_mode ? "Short noise" : "Long noise");
-        else snprintf(text, sizeof(text), "%3u/127 %s", level, current.active[ch] ? "Sample playing" : "Held DAC level");
-        draw_string(&apu_canvas, text, 224, y, 0xD9E3F0);
-    }
-    if (current.expansion_count) {
-        unsigned mapper = nes_sys.cart->mapper_id;
-        const char *chip = mapper == 5 ? "MMC5" : mapper == 19 ? "N163" : mapper == 20 ? "FDS" :
-            mapper == 69 ? "5B" : mapper == 85 ? "VRC7" : "VRC6";
-        draw_string(&apu_canvas, "EXPANSION / LEVEL / NOMINAL PITCH", 12, 508, 0x90A6BD);
-        for (unsigned ch = 0; ch < current.expansion_count; ++ch) {
-            int y = 524 + (int)ch * 12;
-            char label[48];
-            snprintf(label, sizeof(label), "%s %u", chip, ch + 1);
-            draw_string(&apu_canvas, label, 12, y, expansion_colors[ch]);
-            unsigned level = current.expansion_active[ch] ? current.expansion_level[ch] : 0;
-            apu_rect(92, y, 120, 8, 0x28374D);
-            apu_rect(92, y, (int)(120 * level / 255), 8, expansion_colors[ch]);
-            int note = (int)lroundf(current.expansion_note[ch]);
-            if (level && note >= 0 && note <= 127)
-                snprintf(label, sizeof(label), "%s%d %.1fHz", notes[note % 12], note / 12 - 1, current.expansion_hz[ch]);
-            else snprintf(label, sizeof(label), "%s", level ? "Noise / held DAC" : "Idle");
-            draw_string(&apu_canvas, label, 224, y, 0xD9E3F0);
+        bool muted = (nes_sys.audio_muted_channels & (1u << ch)) != 0;
+        draw_text_field(&apu_canvas, names[ch], APU_VIEW_NAME_X, y, APU_VIEW_NAME_CELLS,
+            false, muted ? 0x737B89 : colors[ch]);
+        apu_rect(84, y, 32, 8, 0x28374D);
+        apu_rect(84, y, (int)(32 * level / maximum), 8, colors[ch]);
+        char pitch[16] = "--", frequency[32] = "--";
+        if (ch < 3 && current.active[ch]) {
+            int note = (int)lroundf(current.note[ch]);
+            if (note >= 0 && note <= 127) {
+                snprintf(pitch, sizeof(pitch), "%s%d", notes[note % 12], note / 12 - 1);
+                snprintf(frequency, sizeof(frequency), "%.1f", current.hz[ch]);
+            }
         }
+        draw_text_field(&apu_canvas, pitch, 124, y, 4, false, colors[ch]);
+        draw_text_field(&apu_canvas, frequency, 164, y, 8, true, 0xD9E3F0);
+        draw_string(&apu_canvas, "Hz", 236, y, 0x90A6BD);
     }
-    draw_string(&apu_canvas, "Timer pitches / C1-B7 / ~7.7 seconds", 12, 628, 0x90A6BD);
+    static const char *duty[] = {"12.5%", "25%", "50%", "75%"};
+    snprintf(info, sizeof(info), "Duty P1:%5s P2:%5s",
+        duty[current.duty[0] & 3], duty[current.duty[1] & 3]);
+    draw_string(&apu_canvas, info, 12, 484, 0x90A6BD);
+    snprintf(info, sizeof(info), "Noise:%-5s DMC:%-4s",
+        nes_sys.apu.noise_mode ? "Short" : "Long", nes_sys.apu.dmc_loop ? "Loop" : "Once");
+    draw_string(&apu_canvas, info, 12, 500, 0x90A6BD);
+    draw_string(&apu_canvas, "EXP / LEVEL / NOTE / Hz", 268, 400, 0x90A6BD);
+    if (current.expansion_count) {
+        for (unsigned ch = 0; ch < current.expansion_count; ++ch) {
+            int y = APU_VIEW_ROWS_Y + (int)ch * APU_VIEW_ROW_HEIGHT;
+            char label[48], pitch[16] = "--", frequency[32] = "--";
+            snprintf(label, sizeof(label), "%s %u", chip, ch + 1);
+            bool muted = (nes_sys.audio_muted_channels & (1u << (NES_AUDIO_EXPANSION_SHIFT + ch))) != 0;
+            draw_text_field(&apu_canvas, label, APU_VIEW_EXP_NAME_X, y, APU_VIEW_EXP_NAME_CELLS,
+                false, muted ? 0x737B89 : expansion_colors[ch]);
+            unsigned level = current.expansion_active[ch] ? current.expansion_level[ch] : 0;
+            apu_rect(324, y, 32, 8, 0x28374D);
+            apu_rect(324, y, (int)(32 * level / 255), 8, expansion_colors[ch]);
+            int note = (int)lroundf(current.expansion_note[ch]);
+            if (level && note >= 0 && note <= 127) {
+                snprintf(pitch, sizeof(pitch), "%s%d", notes[note % 12], note / 12 - 1);
+                snprintf(frequency, sizeof(frequency), "%.1f", current.expansion_hz[ch]);
+            }
+            draw_text_field(&apu_canvas, pitch, 364, y, 4, false, expansion_colors[ch]);
+            draw_text_field(&apu_canvas, frequency, 404, y, 9, true, 0xD9E3F0);
+            draw_string(&apu_canvas, "Hz", 484, y, 0x90A6BD);
+        }
+    } else draw_string(&apu_canvas, "No expansion audio", 268, 416, 0x90A6BD);
+    double dmc_bit_rate = nes_sys.apu.dmc_timer_reload
+        ? (double)nes_region_cpu_hz(nes_sys.apu.region) / nes_sys.apu.dmc_timer_reload : 0;
+    snprintf(info, sizeof(info), "DMC bit rate:%5.0f Hz  DAC:%3u  Bytes:%4u",
+        dmc_bit_rate, (unsigned)nes_sys.apu.dmc_value, (unsigned)nes_sys.apu.dmc_bytes_remaining);
+    draw_string(&apu_canvas, info, 12, 516, 0x90A6BD);
 }
 static void desktop_present(HostCanvas *game) {
     draw_nametable_panel();
@@ -1436,7 +1502,18 @@ static bool desktop_event(const HostEvent *event) {
         host_nametable_layout(sapp_width(), sapp_height(), &panel);
         if (host_point_in_rect(&point, &panel)) return true;
         host_apu_layout(sapp_width(), sapp_height(), &panel);
-        if (host_point_in_rect(&point, &panel)) return true;
+        if (host_point_in_rect(&point, &panel)) {
+            if (nes_sys.cart && apu_viewer_enabled && event->type == HOST_MOUSEBUTTONDOWN &&
+                event->button.button == HOST_BUTTON_LEFT && panel.w > 0 && panel.h > 0) {
+                int x = (point.x - panel.x) * HOST_PANEL_WIDTH / panel.w;
+                int y = (point.y - panel.y) * HOST_APU_HEIGHT / panel.h;
+                ApuViewSample current;
+                apu_view_snapshot_nes(&nes_sys, &current);
+                int channel = apu_view_channel_at(current.expansion_count, x, y);
+                if (channel >= 0) nes_sys.audio_muted_channels ^= (uint16_t)(1u << channel);
+            }
+            return true;
+        }
     }
     return consumed;
 }

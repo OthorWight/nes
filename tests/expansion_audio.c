@@ -29,6 +29,28 @@ static void replay_audio(void) {
         changed |= a != previous; previous = a;
     }
     assert(changed);
+    // Host channel switches must not freeze waveform phase, envelopes or FM
+    // feedback. After muting/unmuting, hardware state exactly matches a copy
+    // that remained audible throughout.
+    for (unsigned i = 0; i < 10000; ++i) {
+        unsigned muted = i % 257 == 0 ? 0 : i & 1 ? 0xFF : 1u << ((i / 2) & 7);
+        s.nes.audio_muted_channels = (uint16_t)(muted << NES_AUDIO_EXPANSION_SHIFT);
+        float audible = expansion_audio_clock(&restored.nes);
+        float isolated = expansion_audio_clock(&s.nes);
+        assert(isfinite(isolated));
+        if (!muted) assert(isolated == audible);
+        if (muted == 0xFF) assert(isolated == 0);
+    }
+    uint8_t *reference = malloc(count.pos); assert(reference);
+    out = (StateIO){bytes, count.pos, 0, false, true};
+    StateIO ref_out = {reference, count.pos, 0, false, true};
+    expansion_audio_state(&s.nes.expansion, &out);
+    expansion_audio_state(&restored.nes.expansion, &ref_out);
+    assert(out.ok && ref_out.ok && out.pos == ref_out.pos);
+    assert(!memcmp(bytes, reference, out.pos));
+    s.nes.audio_muted_channels = 0;
+    assert(expansion_audio_clock(&s.nes) == expansion_audio_clock(&restored.nes));
+    free(reference);
     free(bytes);
 }
 static void vrc6_pulses_saw_and_address_swap(void) {

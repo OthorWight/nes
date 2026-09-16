@@ -11,5 +11,6 @@ typedef struct {
 } Vrc7Audio;
 void vrc7_audio_write(Vrc7Audio *a, bool data, uint8_t value, unsigned cpu_hz);
 float vrc7_audio_clock(Vrc7Audio *a, unsigned cpu_hz);
+float vrc7_audio_sample(const Vrc7Audio *a, unsigned muted);
 void vrc7_audio_state(Vrc7Audio *a, StateIO *io);
 #endif

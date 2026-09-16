@@ -9,6 +9,7 @@ typedef struct NES NES;
 typedef struct Cartridge Cartridge;
 typedef struct NESDiagnostics NESDiagnostics;
 typedef struct NametableView NametableView;
+enum { NES_AUDIO_EXPANSION_SHIFT = 5 };
 
 typedef struct {
     bool irq_line;      // Low-active wire-OR line (Cartridge + APU)
@@ -71,6 +72,9 @@ struct NES {
     bool       frame_ready;
     NESDiagnostics *diagnostics; // Host observation only; excluded from save states.
     NametableView *nametable_view; // Optional background-fetch observer; not saved.
+    // Host mixer switches: P1/P2/triangle/noise/DMC, then expansion voices in
+    // viewer order. Excluded from save states; never change hardware enables.
+    uint16_t audio_muted_channels;
 };
 
 uint8_t nes_cpu_bus_read(NES *nes, uint16_t addr);

@@ -20,7 +20,7 @@ void expansion_audio_reset(NES *n) {
     cpu_set_irq_line(&n->cpu, MMC5_AUDIO_IRQ, false);
 }
 
-static float vrc6_clock(Vrc6Audio *a) {
+static float vrc6_clock(Vrc6Audio *a, unsigned muted) {
     if (!(a->control & 1)) for (unsigned ch = 0; ch < 3; ++ch) {
         if (!(a->regs[ch][2] & 0x80)) continue;
         unsigned period = a->regs[ch][1] | ((a->regs[ch][2] & 15) << 8);
@@ -37,13 +37,13 @@ static float vrc6_clock(Vrc6Audio *a) {
     }
     unsigned output = 0;
     for (unsigned ch = 0; ch < 2; ++ch)
-        if ((a->regs[ch][2] & 0x80) && ((a->regs[ch][0] & 0x80) || a->phase[ch] <= ((a->regs[ch][0] >> 4) & 7)))
+        if (!(muted & (1u << ch)) && (a->regs[ch][2] & 0x80) && ((a->regs[ch][0] & 0x80) || a->phase[ch] <= ((a->regs[ch][0] >> 4) & 7)))
             output += a->regs[ch][0] & 15;
-    if (a->regs[2][2] & 0x80) output += a->accumulator >> 3;
+    if (!(muted & 4) && (a->regs[2][2] & 0x80)) output += a->accumulator >> 3;
     return output * (0.5f / 61);
 }
 
-static float n163_clock(N163Audio *a) {
+static float n163_clock(N163Audio *a, unsigned muted) {
     if (a->disabled) return 0;
     if (++a->divider == 15) {
         a->divider = 0;
@@ -62,7 +62,11 @@ static float n163_clock(N163Audio *a) {
         a->output = (int16_t)(((int)sample - 8) * (a->ram[base + 7] & 15));
         a->channel = a->channel == first ? 7 : a->channel - 1;
     }
-    return a->output * (0.4f / 120);
+    // channel points at the NEXT multiplexed voice. Keep every time slot,
+    // including muted voices, so isolation does not change pitch or phase.
+    unsigned first = 7 - ((a->ram[0x7F] >> 4) & 7);
+    unsigned last = a->channel == 7 ? first : a->channel + 1u;
+    return muted & (1u << (7 - last)) ? 0 : a->output * (0.4f / 120);
 }
 
 static void s5b_envelope(S5bAudio *a) {
@@ -80,7 +84,7 @@ static void s5b_envelope(S5bAudio *a) {
         a->envelope = a->direction > 0 ? 0 : 15;
     }
 }
-static float s5b_clock(S5bAudio *a) {
+static float s5b_clock(S5bAudio *a, unsigned muted) {
     if (++a->divider == 8) {
         a->divider = 0;
         for (unsigned ch = 0; ch < 3; ++ch) {
@@ -107,12 +111,12 @@ static float s5b_clock(S5bAudio *a) {
         bool tone = (a->regs[7] & (1u << ch)) || a->tone[ch];
         bool noise = (a->regs[7] & (8u << ch)) || (a->noise & 1);
         unsigned volume = (a->regs[8 + ch] & 16) ? (unsigned)a->envelope : a->regs[8 + ch] & 15;
-        if (tone && noise) output += ay_volume[volume & 15];
+        if (!(muted & (1u << ch)) && tone && noise) output += ay_volume[volume & 15];
     }
     return output * (0.4f / 3);
 }
 
-static float mmc5_clock(Mmc5Audio *a) {
+static float mmc5_clock(Mmc5Audio *a, unsigned muted) {
     if (++a->frame >= 7457) {
         a->frame = 0; a->half = !a->half;
         for (unsigned ch = 0; ch < 2; ++ch) {
@@ -135,10 +139,10 @@ static float mmc5_clock(Mmc5Audio *a) {
             if (a->timer[ch]) --a->timer[ch];
             else { a->timer[ch] = period; a->phase[ch] = (a->phase[ch] + 1) & 7; }
         }
-        if (a->length[ch] && (duty[a->regs[ch][0] >> 6] & (1u << a->phase[ch])))
+        if (!(muted & (1u << ch)) && a->length[ch] && (duty[a->regs[ch][0] >> 6] & (1u << a->phase[ch])))
             output += a->regs[ch][0] & 16 ? a->regs[ch][0] & 15 : a->envelope[ch];
     }
-    return output * (0.35f / 30) + a->pcm * (0.25f / 255);
+    return output * (0.35f / 30) + (muted & 4 ? 0 : a->pcm * (0.25f / 255));
 }
 
 static float fds_clock(FdsAudio *a) {
@@ -186,13 +190,19 @@ static float fds_clock(FdsAudio *a) {
 
 float expansion_audio_clock(NES *n) {
     if (!n->cart) return 0;
+    unsigned muted = n->audio_muted_channels >> NES_AUDIO_EXPANSION_SHIFT;
     switch (n->cart->mapper_id) {
-        case 5: return mmc5_clock(&n->expansion.mmc5);
-        case 19: return n163_clock(&n->expansion.n163);
-        case 20: return fds_clock(&n->expansion.fds);
-        case 24: case 26: return vrc6_clock(&n->expansion.vrc6);
-        case 69: return s5b_clock(&n->expansion.s5b);
-        case 85: return vrc7_audio_clock(&n->expansion.vrc7, nes_region_cpu_hz(n->apu.region));
+        case 5: return mmc5_clock(&n->expansion.mmc5, muted);
+        case 19: return n163_clock(&n->expansion.n163, muted);
+        case 20: {
+            float sample = fds_clock(&n->expansion.fds);
+            return muted & 1 ? 0 : sample;
+        }
+        case 24: case 26: return vrc6_clock(&n->expansion.vrc6, muted);
+        case 69: return s5b_clock(&n->expansion.s5b, muted);
+        case 85:
+            (void)vrc7_audio_clock(&n->expansion.vrc7, nes_region_cpu_hz(n->apu.region));
+            return vrc7_audio_sample(&n->expansion.vrc7, muted);
         default: return 0;
     }
 }

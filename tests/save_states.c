@@ -361,6 +361,12 @@ static void pal_midframe_replay(void) {
     equal_machine(a, b);
     for (unsigned i = 0; i < 3000; ++i) { inputs_and_step(a, i); inputs_and_step(b, i); }
     equal_machine(a, b);
+    // Viewer switches belong to the current host session, not the save file.
+    b->audio_muted_channels = 1 | (1u << NES_AUDIO_EXPANSION_SHIFT);
+    assert(nes_state_decode(b, save, size) == NES_STATE_OK);
+    assert(b->audio_muted_channels == (1 | (1u << NES_AUDIO_EXPANSION_SHIFT)));
+    nes_reset(b);
+    assert(b->audio_muted_channels == (1 | (1u << NES_AUDIO_EXPANSION_SHIFT)));
     free(save); fixture_free(a); fixture_free(b); assert(remove(rom) == 0);
 }
 

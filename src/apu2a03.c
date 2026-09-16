@@ -486,7 +486,7 @@ static void apu_step_timers(APU2A03 *apu) {
     }
 }
 
-static float apu_mix_audio_output(APU2A03 *apu) {
+static float apu_mix_audio_output(APU2A03 *apu, uint16_t muted) {
     float ch_out[2] = {0.0f, 0.0f};
     float tri_out = 0.0f;
     float noise_out = 0.0f;
@@ -511,8 +511,9 @@ static float apu_mix_audio_output(APU2A03 *apu) {
             : (float)apu->noise_envelope_decay;
     }
 
-    return apu_mix_dac((unsigned)ch_out[0], (unsigned)ch_out[1], (unsigned)tri_out,
-        (unsigned)noise_out, (unsigned)dmc_out);
+    return apu_mix_dac(muted & 1 ? 0 : (unsigned)ch_out[0],
+        muted & 2 ? 0 : (unsigned)ch_out[1], muted & 4 ? 0 : (unsigned)tri_out,
+        muted & 8 ? 0 : (unsigned)noise_out, muted & 16 ? 0 : (unsigned)dmc_out);
 }
 
 void apu_step(APU2A03 *apu, NES *nes) {
@@ -540,5 +541,5 @@ void apu_step(APU2A03 *apu, NES *nes) {
     apu_step_dmc(apu, nes);
     apu_step_timers(apu);
 
-    apu_audio_clock(apu, apu_mix_audio_output(apu) + expansion_audio_clock(nes));
+    apu_audio_clock(apu, apu_mix_audio_output(apu, nes->audio_muted_channels) + expansion_audio_clock(nes));
 }

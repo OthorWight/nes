@@ -1,7 +1,7 @@
 # APU completion audit
 
 Status: **all 26 core test suites passed; full feature completion and hardware
-accuracy validation remain pending**. Updated on 2026-09-15 from user-provided
+accuracy validation remain pending**. Updated on 2026-09-16 from user-provided
 test output. The assistant did not run builds, tests, emulators, or downloads;
 the repository's `AGENTS.md` preserves that code-only preference.
 
@@ -10,6 +10,14 @@ including standard APU timing, expansion synthesis/replay, PAL timing,
 expansion-viewer snapshot isolation, mapper 85 save-state replay and the revised
 CPU/APU reset test. GUI and test-ROM validation remain pending. These synthetic
 checks do not establish complete hardware accuracy or FDS game support.
+
+2026-09-16: Added host-only per-channel mute switches for standard and expansion
+audio, clickable gray channel names, and matching Level / Note / Hz lists.
+The user reports all core tests passed after the mute/isolation changes and
+signedness fixes, including mixer isolation and save-state preference retention.
+The optional frontend click-routing suite has not been confirmed as run.
+The subsequent footer change (duty, noise mode and DMC details) awaits a visual
+check; it does not change synthesis or channel controls.
 
 ## Implemented in source
 

@@ -138,6 +138,42 @@ static void stopped_triangle_holds_dac(void) {
     assert(s.nes.apu.mixed_previous == apu_mix_dac(0, 0, 5, 0, 0));
 }
 
+static void channel_mutes_only_change_the_mix(void) {
+    static TestSystem reference;
+    for (unsigned mute = 0; mute < 32; ++mute) {
+        test_system_init(&s); test_system_init(&reference);
+        APU2A03 *a = &s.nes.apu;
+        for (unsigned ch = 0; ch < 2; ++ch) {
+            a->pulse_enabled[ch] = a->pulse_constant_volume[ch] = true;
+            a->pulse_length_counter[ch] = 10;
+            a->pulse_duty[ch] = 3; a->pulse_sequence_idx[ch] = 3;
+            a->pulse_timer[ch] = a->pulse_timer_reload[ch] = 100;
+            a->pulse_volume[ch] = ch ? 7 : 11;
+        }
+        a->triangle_sequence_idx = 10; a->triangle_timer = 100; // Held DAC = 5.
+        a->noise_enabled = a->noise_constant_volume = true;
+        a->noise_length_counter = 10; a->noise_shift_reg = 2;
+        a->noise_timer = 100; a->noise_volume = 3;
+        a->dmc_value = 64; a->dmc_timer = 100;
+        reference.nes.apu = *a;
+        s.nes.audio_muted_channels = (uint16_t)mute;
+        apu_step(a, &s.nes); apu_step(&reference.nes.apu, &reference.nes);
+        float expected = apu_mix_dac(mute & 1 ? 0 : 11, mute & 2 ? 0 : 7,
+            mute & 4 ? 0 : 5, mute & 8 ? 0 : 3, mute & 16 ? 0 : 64);
+        assert(a->mixed_previous == expected);
+        for (unsigned i = 0; i < 1000; ++i) {
+            apu_step(a, &s.nes); apu_step(&reference.nes.apu, &reference.nes);
+        }
+        assert(!memcmp(a, &reference.nes.apu, offsetof(APU2A03, audio_accumulator)));
+        assert(a->clock_toggle == reference.nes.apu.clock_toggle);
+        assert(!memcmp(&a->length_pending, &reference.nes.apu.length_pending,
+            offsetof(APU2A03, sample_impulses) - offsetof(APU2A03, length_pending)));
+        s.nes.audio_muted_channels = 0;
+        apu_step(a, &s.nes); apu_step(&reference.nes.apu, &reference.nes);
+        assert(a->mixed_previous == reference.nes.apu.mixed_previous);
+    }
+}
+
 int main(void) {
     RUN_TEST(frame_counter_write_is_delayed_in_both_phases);
     RUN_TEST(channel_enable_controls_length_status);
@@ -146,5 +182,6 @@ int main(void) {
     RUN_TEST(irq_inhibit_clears_frame_irq_but_not_dmc);
     RUN_TEST(length_reload_and_halt_collisions);
     RUN_TEST(stopped_triangle_holds_dac);
+    RUN_TEST(channel_mutes_only_change_the_mix);
     return 0;
 }
