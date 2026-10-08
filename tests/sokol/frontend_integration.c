@@ -105,6 +105,110 @@ static void display_and_preferences(void) {
     assert(!rom_override && !zapper_enabled && window_scale == 2);
 
 }
+
+static void rom_history_persistence(void) {
+    char original[BROWSER_PATH], folder[BROWSER_PATH], paths[5][BROWSER_PATH], normalized[BROWSER_PATH];
+    snprintf(original, sizeof(original), "%s", recent_roms[0]);
+    assert(absolute_rom_path("rom folder", folder));
+    assert(!MKDIR(folder));
+    FILE *f = fopen(original, "rb"); assert(f);
+    uint8_t image[16 + 32768];
+    assert(fread(image, 1, sizeof(image), f) == sizeof(image));
+    assert(!fclose(f));
+    for (unsigned i = 0; i < 5; ++i) {
+        int length = snprintf(paths[i], sizeof(paths[i]), "%s/game%u.nes", folder, i);
+        assert(length > 0 && length < BROWSER_PATH);
+        assert(absolute_rom_path(paths[i], normalized));
+        snprintf(paths[i], sizeof(paths[i]), "%s", normalized);
+        f = fopen(paths[i], "wb"); assert(f);
+        assert(fwrite(image, 1, sizeof(image), f) == sizeof(image));
+        assert(!fclose(f));
+        assert(frontend_load_rom(paths[i]));
+    }
+    assert(recent_count == 4 && !strcmp(recent_roms[0], paths[4]));
+    assert(!strcmp(recent_roms[3], paths[1]));
+    assert(frontend_load_rom(paths[2]));
+    assert(recent_count == 4 && !strcmp(recent_roms[0], paths[2]));
+    assert(!strcmp(recent_roms[1], paths[4]) && !strcmp(recent_roms[2], paths[3]));
+
+    /* Clear session state, then restore it solely from the saved file. */
+    memset(recent_roms, 0, sizeof(recent_roms)); recent_count = 0;
+    last_rom_directory[0] = 0;
+    memset(&file_browser, 0, sizeof(file_browser));
+    load_emulator_settings(); apply_rom_preferences();
+    assert(recent_count == 4 && !strcmp(recent_roms[0], paths[2]));
+    assert(!strcmp(recent_roms[3], paths[1]) && !strcmp(recent_labels[0], "game2.nes"));
+    assert(!(desktop_state(NULL, MENU_RECENT_4) & MENU_DISABLED));
+    desktop_command(MENU_RECENT_2);
+    assert(nes_sys.cart && !strcmp(loaded_rom_path, recent_roms[0]));
+    assert(!strcmp(recent_labels[0], "game4.nes"));
+
+    /* The state browser must not change the saved ROM folder. */
+    desktop_command(MENU_SAVE_AS);
+    HostEvent escape = {.type = HOST_KEYDOWN, .key.keysym.sym = HOST_KEY_ESCAPE};
+    assert(desktop_event(&escape));
+    desktop_command(MENU_OPEN);
+    assert(absolute_rom_path(file_browser.path, normalized));
+    assert(!strcmp(normalized, folder));
+    /* Navigating and cancelling also remembers the new ROM folder. */
+    assert(file_browser_scan(&file_browser, save_state_dir));
+    assert(desktop_event(&escape));
+    assert(absolute_rom_path(save_state_dir, normalized));
+    load_emulator_settings(); apply_rom_preferences();
+    assert(!strcmp(last_rom_directory, normalized));
+    desktop_command(MENU_OPEN);
+    assert(absolute_rom_path(file_browser.path, normalized));
+    assert(!strcmp(last_rom_directory, normalized));
+    assert(desktop_event(&escape));
+
+    /* A failed ROM load must not enter history. */
+    char missing[BROWSER_PATH];
+    assert(absolute_rom_path("missing-history-rom.nes", missing));
+    assert(!frontend_load_rom(missing));
+    load_emulator_settings();
+    assert(recent_count == 4 && !strcmp(recent_roms[0], paths[4]));
+
+    char settings[1024]; get_settings_filepath(settings, sizeof(settings));
+    f = fopen(settings, "r+b"); assert(f);
+    assert(!fseek(f, -1, SEEK_END));
+    int byte = fgetc(f); assert(byte != EOF);
+    assert(!fseek(f, -1, SEEK_END));
+    assert(fputc(byte ^ 1, f) != EOF); assert(!fclose(f));
+    load_emulator_settings();
+    assert(!recent_count && !*last_rom_directory);
+    assert(!strcmp(recent_labels[0], "(Empty)"));
+
+    uint8_t legacy[128];
+    f = fopen(settings, "rb"); assert(f);
+    assert(fread(legacy, 1, sizeof(legacy), f) == sizeof(legacy)); assert(!fclose(f));
+    /* A truncated version 10 history is also discarded. */
+    assert(state_atomic_write(settings, legacy, sizeof(legacy)));
+    load_emulator_settings();
+    assert(!recent_count && !*last_rom_directory);
+
+    /* Version 9 keeps its preferences and starts with empty history. */
+    legacy[0] = 9;
+    int volume = master_volume;
+    assert(state_atomic_write(settings, legacy, sizeof(legacy)));
+    load_emulator_settings();
+    assert(master_volume == volume && !recent_count && !*last_rom_directory);
+
+    /* An unavailable saved directory falls back to a usable browser. */
+    for (unsigned i = 0; i < 5; ++i) assert(!remove(paths[i]));
+#ifdef _WIN32
+    assert(!_rmdir(folder));
+#else
+    assert(!rmdir(folder));
+#endif
+    snprintf(last_rom_directory, sizeof(last_rom_directory), "%s", folder);
+    save_emulator_settings(); load_emulator_settings();
+    desktop_command(MENU_OPEN);
+    assert(file_browser.active && !*file_browser.error);
+    assert(desktop_event(&escape));
+    assert(frontend_load_rom(original));
+    assert(recent_count == 1 && !strcmp(recent_labels[0], "fixture.nes"));
+}
+
 static bool scripted_poll(HostEvent *e) {
     if (delivered) { delivered = false; ++iteration; return 0; }
     delivered = true; host_zero(*e);
@@ -225,6 +329,7 @@ static bool scripted_poll(HostEvent *e) {
             desktop_command(MENU_POWER); assert(nes_sys.cart && nes_sys.wram[20] == 0);
             assert(recent_count == 1 && !strcmp(loaded_rom_name, "fixture.nes"));
             desktop_command(MENU_RECENT_1); assert(nes_sys.cart && recent_count == 1);
+            rom_history_persistence();
             break;
         case 17: key(e, HOST_KEYDOWN, HOST_KEY_LEFT); break;
         case 18:

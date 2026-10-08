@@ -146,8 +146,11 @@ not enlarge them. The UI renders directly through Sokol with a small atlas made
 from the existing font.
 
 File > Open ROM opens a custom in-window file browser with folder traversal,
-location entry, ROM filtering, scrolling, and cancellation. Recent ROMs remembers
-four successful loads for the current session. Save State / Load State use the
+location entry, ROM filtering, scrolling, and cancellation. The last ROM folder
+and four most recent successful loads are saved in `saves/settings.bin` beside
+the emulator and restored on restart. Browsing save states keeps the ROM folder
+unchanged; an unavailable ROM folder falls back to the current working directory.
+Save State / Load State use the
 existing rolling quicksave slot; Save State As / Load State From browse named
 state files. The former game-sized menu system has been removed.
 Help > Controls / Shortcuts displays navigation and debugger shortcuts; Enter

@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#else
+#include <unistd.h>
 #endif
 #include <inttypes.h>
 #include <math.h>
@@ -53,12 +55,14 @@ static MenuBar desktop_menu;
 static bool paused;
 static int help_page;
 static char recent_roms[4][BROWSER_PATH];
+static char last_rom_directory[BROWSER_PATH];
 static char loaded_rom_path[BROWSER_PATH];
 static FileBrowser file_browser;
 static int browser_mode; /* 0 ROM, 1 load state, 2 save state */
 static int control_selection;
 static char recent_labels[4][29] = {"(Empty)", "(Empty)", "(Empty)", "(Empty)"};
 static int recent_count;
+static void update_recent_labels(void);
 static FrameScheduler frame_scheduler;
 static AudioQueueMonitor audio_monitor;
 static AudioResampler audio_resampler;
@@ -347,9 +351,9 @@ static void save_emulator_settings(void) {
             show_notification("ROM SETTINGS SAVE FAILED");
         else rom_override = !preferences_inherit;
     }
-    uint8_t data[128];
+    uint8_t data[128 + 5 * BROWSER_PATH + 8];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 9);
+    state_u32(&io, 10);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -363,10 +367,39 @@ static void save_emulator_settings(void) {
     state_i32(&io, nametable_viewer_enabled ? 1 : 0);
     state_i32(&io, apu_viewer_enabled ? 1 : 0);
     state_i32(&io, region_setting);
+    size_t history_start = io.pos;
+    state_u32(&io, (uint32_t)recent_count);
+    state_bytes(&io, (uint8_t *)last_rom_directory, sizeof(last_rom_directory));
+    state_bytes(&io, (uint8_t *)recent_roms, sizeof(recent_roms));
+    state_u32(&io, state_crc32(data + history_start, io.pos - history_start));
     if (!io.ok || !state_atomic_write(filepath, data, io.pos)) show_notification("GLOBAL SETTINGS SAVE FAILED");
 }
 
+static void load_rom_history(FILE *f) {
+    uint8_t data[5 * BROWSER_PATH + 8];
+    if (fread(data, 1, sizeof(data), f) != sizeof(data) || fgetc(f) != EOF || ferror(f)) return;
+    StateIO io = {data, sizeof(data), 0, true, true};
+    unsigned count = state_u32(&io, 0);
+    char directory[BROWSER_PATH], roms[4][BROWSER_PATH];
+    state_bytes(&io, (uint8_t *)directory, sizeof(directory));
+    state_bytes(&io, (uint8_t *)roms, sizeof(roms));
+    uint32_t crc = state_u32(&io, 0);
+    if (!io.ok || count > 4 || crc != state_crc32(data, sizeof(data) - 4) ||
+        !memchr(directory, 0, sizeof(directory))) return;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!memchr(roms[i], 0, sizeof(roms[i])) || (i < count && !roms[i][0])) return;
+    }
+    memcpy(last_rom_directory, directory, sizeof(directory));
+    memcpy(recent_roms, roms, sizeof(roms));
+    recent_count = (int)count;
+    update_recent_labels();
+}
+
 static void load_emulator_settings(void) {
+    last_rom_directory[0] = 0;
+    memset(recent_roms, 0, sizeof(recent_roms));
+    recent_count = 0;
+    update_recent_labels();
     zapper_enabled = false;
     crt_enabled = false;
     nametable_viewer_enabled = false;
@@ -379,7 +412,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 9) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 10) {
         fclose(f);
         return;
     }
@@ -430,6 +463,7 @@ static void load_emulator_settings(void) {
         if (fread(&value, sizeof(value), 1, f) == 1 && value >= NES_NTSC && value <= NES_REGION_AUTO)
             region_setting = value;
     }
+    if (version >= 10) load_rom_history(f);
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
     global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
@@ -812,6 +846,38 @@ static bool running = true, cursor_visible = true, was_playing;
 static uint32_t last_mouse_activity;
 static const uint32_t cursor_idle_ms = 2000;
 
+/* Store absolute paths so restarting from another working directory works. */
+static bool absolute_rom_path(const char *name, char path[BROWSER_PATH]) {
+#ifdef _WIN32
+    return _fullpath(path, name, BROWSER_PATH) != NULL;
+#else
+    if (*name == '/') {
+        if (strlen(name) >= BROWSER_PATH) return false;
+        memcpy(path, name, strlen(name) + 1);
+        return true;
+    }
+    char directory[BROWSER_PATH];
+    if (!getcwd(directory, sizeof(directory))) return false;
+    int length = snprintf(path, BROWSER_PATH, "%s/%s", directory, name);
+    return length >= 0 && length < BROWSER_PATH;
+#endif
+}
+
+static void update_recent_labels(void) {
+    for (int i = 0; i < 4; ++i) {
+        const char *name = i < recent_count ? recent_roms[i] : "(Empty)";
+        for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') name = p + 1;
+        snprintf(recent_labels[i], sizeof(recent_labels[i]), "%.28s", name);
+    }
+}
+
+static void remember_rom_directory(const char *path) {
+    char directory[BROWSER_PATH];
+    if (!*path || !absolute_rom_path(path, directory) || !strcmp(directory, last_rom_directory)) return;
+    memcpy(last_rom_directory, directory, strlen(directory) + 1);
+    save_emulator_settings();
+}
+
 static void remember_rom(const char *name) {
     int index = 0;
     while (index < recent_count && strcmp(recent_roms[index], name)) ++index;
@@ -819,13 +885,27 @@ static void remember_rom(const char *name) {
     if (index > 3) index = 3;
     for (int i = index; i > 0; --i) memcpy(recent_roms[i], recent_roms[i - 1], sizeof(recent_roms[i]));
     snprintf(recent_roms[0], sizeof(recent_roms[0]), "%s", name);
-    for (int i = 0; i < recent_count; ++i) {
-        const char *name = recent_roms[i];
-        for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') name = p + 1;
-        snprintf(recent_labels[i], sizeof(recent_labels[i]), "%.28s", name);
+    update_recent_labels();
+    char directory[BROWSER_PATH];
+    snprintf(directory, sizeof(directory), "%s", name);
+    char *slash = strrchr(directory, '/');
+#ifdef _WIN32
+    char *backslash = strrchr(directory, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+    if (slash) {
+        if (slash == directory || (slash == directory + 2 && directory[1] == ':')) slash[1] = 0;
+        else *slash = 0;
+        snprintf(last_rom_directory, sizeof(last_rom_directory), "%s", directory);
     }
+    save_emulator_settings();
 }
 static bool frontend_load_rom(const char *name) {
+    char rom_path[BROWSER_PATH];
+    if (!absolute_rom_path(name, rom_path)) {
+        show_notification("ROM PATH TOO LONG OR UNAVAILABLE");
+        return false;
+    }
     if (nes_sys.cart) {
         if (!save_battery_ram()) return false;
         cartridge_free(nes_sys.cart);
@@ -845,13 +925,14 @@ static bool frontend_load_rom(const char *name) {
     apply_rom_preferences();
 
     char rom_error[128];
-    Cartridge *cart = cartridge_load_ex(&nes_sys, name, rom_error, sizeof(rom_error));
+    Cartridge *cart = cartridge_load_ex(&nes_sys, rom_path, rom_error, sizeof(rom_error));
     if (!cart && strcmp(rom_error, "Cannot open ROM") == 0) {
         char *base_path = host_base_path();
         if (base_path) {
-            char full_path[1024];
-            snprintf(full_path, sizeof(full_path), "%s%s", base_path, name);
-            cart = cartridge_load_ex(&nes_sys, full_path, rom_error, sizeof(rom_error));
+            char full_path[BROWSER_PATH];
+            int length = snprintf(full_path, sizeof(full_path), "%s%s", base_path, name);
+            if (length >= 0 && length < BROWSER_PATH && absolute_rom_path(full_path, rom_path))
+                cart = cartridge_load_ex(&nes_sys, rom_path, rom_error, sizeof(rom_error));
             free(base_path);
         }
     }
@@ -863,7 +944,7 @@ static bool frontend_load_rom(const char *name) {
     }
 
     if (cart) {
-        snprintf(loaded_rom_path, sizeof(loaded_rom_path), "%s", name);
+        snprintf(loaded_rom_path, sizeof(loaded_rom_path), "%s", rom_path);
         const char *basename = name;
         for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') basename = p + 1;
         nes_sys.cart = cart;
@@ -911,7 +992,7 @@ static bool frontend_load_rom(const char *name) {
         }
         paused = false;
         runtime_reset_pending = true;
-        remember_rom(name);
+        remember_rom(rom_path);
     }
     return nes_sys.cart != NULL;
 }
@@ -1026,7 +1107,10 @@ static void desktop_command(MenuCommand command) {
     switch (command) {
         case MENU_OPEN:
             browser_mode = 0;
-            file_browser_open(&file_browser, *file_browser.path ? file_browser.path : NULL, "Open ROM", ".nes", false); break;
+            if (!file_browser_open(&file_browser, *last_rom_directory ? last_rom_directory : NULL, "Open ROM", ".nes", false))
+                file_browser_open(&file_browser, NULL, "Open ROM", ".nes", false);
+            remember_rom_directory(file_browser.path);
+            break;
         case MENU_SAVE_AS: case MENU_LOAD_FROM:
             browser_mode = command == MENU_SAVE_AS ? 2 : 1;
             file_browser_open(&file_browser, save_state_dir, browser_mode == 2 ? "Save State As" : "Load State", ".state", browser_mode == 2); break;
@@ -1414,7 +1498,9 @@ static bool desktop_event(const HostEvent *event) {
         }
         file_browser_resize(&file_browser, w, h);
         char path[BROWSER_PATH];
-        if (file_browser_event(&file_browser, &input, host_time(), path)) {
+        bool selected = file_browser_event(&file_browser, &input, host_time(), path);
+        if (!browser_mode) remember_rom_directory(file_browser.path);
+        if (selected) {
             if (!browser_mode) frontend_load_rom(path);
             else {
                 NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);

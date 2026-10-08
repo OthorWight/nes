@@ -76,7 +76,11 @@ save/load commands. Alt activates menus; F10 steps the debugger.
 The optional `powershell -File tests/sokol/run.ps1` (Windows/GCC) or
 `bash tests/sokol/run.sh` runs the Sokol frontend with scripted input and real
 platform graphics/audio. It checks menus, focus/disconnect/debugger transitions,
-per-ROM defaults, save/load and audio/muted/unavailable pacing. The nametable viewer stays open during pacing checks; tests verify its saved toggle, controller input, simultaneous panel layout, and game-only mouse aiming. Windows also
+per-ROM defaults, save/load and audio/muted/unavailable pacing. ROM-history checks
+cover settings reload, recent-list ordering and deduplication, failed loads,
+ROM/state browser folder separation, navigation followed by cancellation,
+unavailable-folder fallback, corrupt history, and migration from version 9.
+The nametable viewer stays open during pacing checks; tests verify its saved toggle, controller input, simultaneous panel layout, and game-only mouse aiming. Windows also
 checks the D3D11 render target, including CRT shader edge blending, shallow
 scanlines, rounded contour corners, solid black thin outlines and preserved midtones,
 sharp overlays/sidebar, and restoring unfiltered colors. Menu checks
