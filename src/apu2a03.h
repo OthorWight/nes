@@ -80,6 +80,7 @@ typedef struct {
     uint8_t  dmc_buffer;
     bool     dmc_buffer_empty;
     bool     dmc_silent;
+    uint8_t  dmc_buffer_delay;
 
     // Frame Counter Sequencer
     bool     frame_mode;
@@ -119,6 +120,6 @@ void    apu_state_extension(APU2A03 *apu, StateIO *io);
 void    apu_write_reg(NES *nes, uint16_t address, uint8_t data);
 uint8_t apu_read_reg(NES *nes, uint16_t address);
 void    apu_step(APU2A03 *apu, NES *nes);
-void    apu_dmc_dma_complete(APU2A03 *apu, NES *nes);
+void    apu_dmc_dma_complete(APU2A03 *apu, NES *nes, uint8_t value);
 
 #endif

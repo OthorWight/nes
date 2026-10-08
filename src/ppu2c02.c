@@ -4,15 +4,16 @@
 #include "nametable_view.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 /* Cycle-level OAM evaluation supplies the rendering-time $2004 bus and the
    2C02 diagonal sprite-overflow behavior. */
 
-static inline bool bee52_ppu_rendering_enabled(const PPU2C02 *p) {
+static inline bool ppu_rendering_enabled(const PPU2C02 *p) {
     return (p->ppu_mask & 0x18u) != 0;
 }
 
-static inline bool bee52_sprite_y_in_range(const PPU2C02 *p, uint8_t y) {
+static inline bool sprite_y_in_range(const PPU2C02 *p, uint8_t y) {
     /* Evaluation on scanline N prepares sprites for N+1.  OAM Y stores
        top-1, so N-Y is the sprite row for the next scanline. Keep the
        subtraction signed: hidden sprites at Y=$F0-$FF must not wrap
@@ -22,108 +23,120 @@ static inline bool bee52_sprite_y_in_range(const PPU2C02 *p, uint8_t y) {
     return row >= 0 && row < height;
 }
 
-static void bee52_ppu_oam_eval_tick(PPU2C02 *p) {
-    const int sl = p->scanline;
-    const int cy = p->cycle;
+static void ppu_oam_advance(PPU2C02 *p, unsigned amount, bool align) {
+    unsigned next = p->oam_addr + amount;
+    if (align) next &= ~3u;
+    p->oam_addr = (uint8_t)next;
+    p->oam_eval.n = p->oam_addr >> 2;
+    p->oam_eval.m = p->oam_addr & 3;
+    if (next >= 256) p->oam_eval.done = true;
+}
 
-    if (!bee52_ppu_rendering_enabled(p) || sl < 0 || sl >= 240) {
-        return;
-    }
-
-    if (cy == 1) {
-        p->oam_eval.n = 0;
-        p->oam_eval.m = 0;
-        p->oam_eval.secondary_index = 0;
-        p->oam_eval.done = false;
-        p->oam_eval.bus = 0xFFu;
-        memset(p->oam_eval.secondary, 0xFF, sizeof(p->oam_eval.secondary));
-    }
-
-    if (cy >= 1 && cy <= 64) {
-        p->oam_eval.bus = 0xFFu;
-        return;
-    }
-
-    if (cy >= 65 && cy <= 256) {
-        if (cy == 65) {
-            p->oam_eval.n = 0;
-            p->oam_eval.m = 0;
-            p->oam_eval.secondary_index = 0;
-            p->oam_eval.done = false;
-        }
-
-        if (p->oam_eval.done || p->oam_eval.n >= 64u) {
-            p->oam_eval.bus = 0xFFu;
-            p->oam_eval.done = true;
-            return;
-        }
-
-        if (cy & 1) {
-            unsigned index = ((unsigned)p->oam_eval.n << 2) | p->oam_eval.m;
-            p->oam_eval.bus = p->oam_ram[index & 0xFFu];
-            return;
-        }
-
-        if (p->oam_eval.secondary_index < 32u) {
-            if (p->oam_eval.m == 0u) {
-                if (bee52_sprite_y_in_range(p, p->oam_eval.bus)) {
-                    p->oam_eval.secondary[p->oam_eval.secondary_index++] = p->oam_eval.bus;
-                    p->oam_eval.m = 1u;
-                } else {
-                    p->oam_eval.n++;
-                }
-            } else {
-                p->oam_eval.secondary[p->oam_eval.secondary_index++] = p->oam_eval.bus;
-                p->oam_eval.m++;
-                if (p->oam_eval.m >= 4u) {
-                    p->oam_eval.m = 0u;
-                    p->oam_eval.n++;
-                }
-            }
-        } else {
-            /* Real 2C02 overflow evaluation increments N and, only when the
-               currently tested byte is in range, increments M too.  This is
-               the diagonal overflow bug and can test tile/attribute/X bytes
-               as Y values. */
-            if (bee52_sprite_y_in_range(p, p->oam_eval.bus)) {
-                p->ppu_status |= 0x20u;
-                p->oam_eval.m = (uint8_t)((p->oam_eval.m + 1u) & 3u);
-            }
-            p->oam_eval.n++;
-        }
-
-        if (p->oam_eval.n >= 64u) {
-            p->oam_eval.done = true;
-        }
-        return;
-    }
-
-    if (cy >= 257 && cy <= 320) {
-        unsigned phase = (unsigned)(cy - 257);
-        unsigned sprite = phase >> 3;
-        unsigned byte = (phase >> 1) & 3u;
-        unsigned index = (sprite << 2) | byte;
-        p->oam_eval.bus = p->oam_eval.secondary[index & 31u];
-        p->oam_addr = 0;
-        return;
-    }
-
-    if (cy >= 321 && cy <= 340) {
-        p->oam_eval.bus = p->oam_ram[0];
-        p->oam_addr = 0;
+static void ppu_secondary_advance(PPUOAMEvalState *e) {
+    if (!e->increment_frozen && ++e->secondary_index == 32) {
+        e->secondary_index = 0;
+        e->increment_frozen = true;
+        e->secondary_full = true;
     }
 }
 
-static uint8_t bee52_ppu_oamdata_read(PPU2C02 *p) {
+static void ppu_oam_eval_tick(PPU2C02 *p) {
+    int cy = p->cycle;
+    PPUOAMEvalState *e = &p->oam_eval;
+    bool was_full = e->secondary_full;
+    if (!ppu_rendering_enabled(p)) return;
+    bool visible = p->scanline >= 0 && p->scanline < 240;
+    bool prerender = p->scanline == ppu_prerender_line(p);
+    if (!visible && !prerender) return;
+    if (cy == 63 || cy == 255 || cy == 339) e->increment_frozen = false;
+    if (visible && cy >= 1 && cy <= 64) {
+        if (cy == 1) {
+            e->secondary_index = 0;
+            e->secondary_full = false;
+            e->sprite_zero = false;
+        }
+        e->secondary_index = (uint8_t)((cy - 1) / 2);
+        e->bus = 0xFF;
+        if (!(cy & 1)) {
+            e->secondary[e->secondary_index & 31] = 0xFF;
+        }
+    } else if (visible && cy >= 65 && cy <= 256) {
+        if (cy == 65) {
+            e->secondary_index = 0;
+            e->secondary_full = false;
+            e->done = false;
+            e->copy_remaining = 0;
+            e->sprite_zero = false;
+        }
+        if (cy & 1) {
+            e->bus = p->oam_ram[p->oam_addr];
+        } else if (e->done) {
+            ppu_oam_advance(p, 4, true);
+            e->bus = e->secondary[e->secondary_index & 31];
+        } else if (!e->secondary_full) {
+            e->secondary[e->secondary_index & 31] = e->bus;
+            if (e->copy_remaining) {
+                ppu_secondary_advance(e);
+                ppu_oam_advance(p, 1, e->copy_remaining == 1 &&
+                    !sprite_y_in_range(p, e->bus));
+                --e->copy_remaining;
+            } else if (sprite_y_in_range(p, e->bus)) {
+                if (cy == 66) e->sprite_zero = true;
+                ppu_secondary_advance(e);
+                ppu_oam_advance(p, 1, false);
+                e->copy_remaining = 3;
+            } else {
+                ppu_oam_advance(p, 4, true);
+            }
+        } else if (e->copy_remaining) {
+            ppu_oam_advance(p, 1, e->copy_remaining == 1);
+            if (--e->copy_remaining == 0) e->done = true;
+        } else if (sprite_y_in_range(p, e->bus)) {
+            p->ppu_status |= 0x20;
+            ppu_oam_advance(p, 1, false);
+            e->copy_remaining = 3;
+        } else {
+            /* Failed comparisons increment both counters without carrying
+               the low two bits, producing the diagonal overflow scan. */
+            unsigned next = (p->oam_addr & 0xFC) + 4;
+            p->oam_addr = (uint8_t)(next | ((p->oam_addr + 1) & 3));
+            if (next >= 256) e->done = true;
+        }
+        if (!(cy & 1) && was_full)
+            e->bus = e->secondary[e->secondary_index & 31];
+    } else if (cy >= 257 && cy <= 320) {
+        if (cy == 257) {
+            e->secondary_index = 0;
+            p->scanline_sprite_count = 8;
+        }
+        unsigned phase = (unsigned)(cy - 257) & 7;
+        unsigned sprite = (unsigned)(cy - 257) >> 3;
+        e->bus = e->secondary[e->secondary_index & 31];
+        ScanlineSprite *spr = &p->scanline_sprites[sprite];
+        if (phase == 0) p->sprite_fetch_y = e->bus;
+        if (phase == 1) p->sprite_fetch_tile = e->bus;
+        if (phase == 2) spr->attributes = e->bus;
+        if (phase == 3) {
+            spr->x = e->bus;
+            spr->sprite_index = sprite == 0 && e->sprite_zero ? 0 : 1;
+        }
+        if (phase < 3 || phase == 7) ppu_secondary_advance(e);
+        p->oam_addr = 0;
+    } else if (cy >= 321 && cy <= 340) {
+        e->bus = e->secondary[e->secondary_index & 31];
+    }
+}
+
+static uint8_t ppu_oamdata_read(PPU2C02 *p) {
     const int sl = p->scanline;
     const int cy = p->cycle;
-    if (bee52_ppu_rendering_enabled(p) && sl >= 0 && sl < 240 && cy >= 1 && cy <= 340) {
+    if (ppu_rendering_enabled(p) && (sl < 240 || sl == ppu_prerender_line(p)) && cy >= 0 && cy <= 340) {
         return p->oam_eval.bus;
     }
     return p->oam_ram[p->oam_addr];
 }
 
-static inline void bee52_ppu_increment_x(PPU2C02 *p) {
+static inline void ppu_increment_x(PPU2C02 *p) {
     if ((p->v & 0x001Fu) == 31u) {
         p->v &= (uint16_t)~0x001Fu;
         p->v ^= 0x0400u;
@@ -132,7 +145,7 @@ static inline void bee52_ppu_increment_x(PPU2C02 *p) {
     }
 }
 
-static inline void bee52_ppu_increment_y(PPU2C02 *p) {
+static inline void ppu_increment_y(PPU2C02 *p) {
     if ((p->v & 0x7000u) != 0x7000u) {
         p->v += 0x1000u;
     } else {
@@ -151,11 +164,11 @@ static inline void bee52_ppu_increment_y(PPU2C02 *p) {
     }
 }
 
-static void bee52_ppu_increment_after_2007(PPU2C02 *p) {
+static void ppu_increment_after_2007(PPU2C02 *p) {
     const int sl = p->scanline;
-    if (bee52_ppu_rendering_enabled(p) && ((sl >= 0 && sl < 240) || sl == ppu_prerender_line(p) || sl == -1)) {
-        bee52_ppu_increment_x(p);
-        bee52_ppu_increment_y(p);
+    if (ppu_rendering_enabled(p) && ((sl >= 0 && sl < 240) || sl == ppu_prerender_line(p) || sl == -1)) {
+        ppu_increment_x(p);
+        ppu_increment_y(p);
     } else {
         p->v = (uint16_t)((p->v + ((p->ppu_ctrl & 0x04u) ? 32u : 1u)) & 0x7FFFu);
     }
@@ -298,35 +311,6 @@ static void ppu_increment_scroll_y(PPU2C02 *ppu) {
     }
 }
 
-static void ppu_evaluate_sprites(NES *nes, int target_scanline) {
-    PPU2C02 *ppu = &nes->ppu;
-    (void)nes;
-    ppu->scanline_sprite_count = 0;
-    if (target_scanline < 0) return;
-    bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
-    if (!rendering_enabled) return;
-    int sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
-
-    for (int i = 0; i < 64; i++) {
-        int sprite_y = (int)ppu->oam_ram[i * 4] + 1;
-        if (target_scanline >= sprite_y && target_scanline < sprite_y + sprite_height) {
-            if (ppu->scanline_sprite_count < 8) {
-                uint8_t attr     = ppu->oam_ram[i * 4 + 2];
-                uint8_t sprite_x = ppu->oam_ram[i * 4 + 3];
-
-                ScanlineSprite *spr = &ppu->scanline_sprites[ppu->scanline_sprite_count++];
-                spr->x = sprite_x;
-                spr->attributes = attr;
-                spr->sprite_index = (uint8_t)i;
-                spr->low_byte = 0;
-                spr->high_byte = 0;
-            } else {
-                break;
-            }
-        }
-    }
-}
-
 void ppu_init(PPU2C02 *ppu) {
     memset(&ppu->oam_eval, 0, sizeof(ppu->oam_eval));
     ppu->oam_eval.bus = 0xFF;
@@ -364,6 +348,14 @@ void ppu_init(PPU2C02 *ppu) {
     ppu->odd_skip_rendering = false;
     ppu->open_bus_value = 0;
     ppu->overflow_cycle = -1;
+    ppu->sprite_counter_active = 0;
+    ppu->sprite_fetch_y = ppu->sprite_fetch_tile = 0;
+    ppu->mask_delay = ppu->mask_pending = 0;
+    ppu->address_delay = ppu->data_read_pipeline = 0;
+    ppu->address_pending = ppu->fetch_address = 0;
+    ppu->address_latch = ppu->bus_data = ppu->fetch_kind = 0;
+    ppu->corruption_pending = false;
+    ppu->corruption_seed = 0;
     memset(ppu->open_bus_decay_cycles, 0, sizeof(ppu->open_bus_decay_cycles));
 }
 
@@ -404,7 +396,17 @@ void ppu_palette_write(PPU2C02 *ppu, uint16_t addr, uint8_t data) {
     ppu->palette_ram[addr] = data & 0x3F;
 }
 
-uint8_t ppu_read_reg(NES *nes, uint16_t address) {
+/* OAM's data pins are sampled at the trailing portion of M2. Evaluate
+   that next dot without advancing the rendering engine or mapper pins. */
+static uint8_t ppu_sample_oam(const PPU2C02 *p, bool overflow) {
+    PPU2C02 sample;
+    memcpy(&sample, p, offsetof(PPU2C02, screen_buffer));
+    if (sample.mask_delay && --sample.mask_delay == 0) sample.ppu_mask = sample.mask_pending;
+    ppu_oam_eval_tick(&sample);
+    return overflow ? sample.ppu_status & 0x20 : ppu_oamdata_read(&sample);
+}
+
+static uint8_t ppu_read_register(NES *nes, uint16_t address, bool timed) {
     PPU2C02 *ppu = &nes->ppu;
     ppu_update_open_bus_decay(ppu, nes->cpu.cycle_count);
     uint8_t data = ppu->open_bus_value;
@@ -412,6 +414,11 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
     switch (address & 0x2007) {
         case 0x2002: {
             uint8_t status = ppu->ppu_status;
+            if (timed) status = (status & ~0x20) | ppu_sample_oam(ppu, true);
+            /* Vblank is latched at M2 rise; the sprite flags remain visible
+               until M2 falls almost two PPU dots later. */
+            if (timed && ppu->scanline == SCANLINE_PRERENDER && ppu->cycle <= 1)
+                status &= (uint8_t)~0x60;
             // cycle is the next dot to execute: 1 is just before the set
             // edge; 2 and 3 are on/just after it. Only the pre-edge read
             // returns clear. All three reads suppress the pending NMI.
@@ -430,8 +437,9 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
             break;
         }
         case 0x2004:
-            data = bee52_ppu_oamdata_read(ppu);
-            if ((ppu->oam_addr & 0x03) == 0x02) {
+            data = timed ? ppu_sample_oam(ppu, false) : ppu_oamdata_read(ppu);
+            if (!((ppu->ppu_mask & 0x18) && ppu->scanline < 240) &&
+                (ppu->oam_addr & 0x03) == 0x02) {
                 data &= 0xE3;
             }
             ppu_refresh_open_bus(ppu, nes->cpu.cycle_count, data, 0xFF);
@@ -440,8 +448,20 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
             uint16_t vram_addr = (uint16_t)(ppu->v & 0x3FFF);
             uint8_t returned_data = ppu->buffered_data;
 
+            if (timed) {
+                if (vram_addr >= 0x3F00) {
+                    returned_data = (ppu_palette_read(ppu, vram_addr) &
+                        ((ppu->ppu_mask & 1) ? 0x30 : 0x3F)) | (ppu->open_bus_value & 0xC0);
+                }
+                ppu_refresh_open_bus(ppu, nes->cpu.cycle_count, returned_data,
+                    vram_addr >= 0x3F00 ? 0x3F : 0xFF);
+                ppu->data_read_pipeline |= 1;
+                data = returned_data;
+                break;
+            }
             if (vram_addr >= 0x3F00) {
-                returned_data = (ppu_palette_read(ppu, vram_addr) & 0x3F) | (ppu->open_bus_value & 0xC0);
+                uint8_t palette_mask = (ppu->ppu_mask & 1) ? 0x30 : 0x3F;
+                returned_data = (ppu_palette_read(ppu, vram_addr) & palette_mask) | (ppu->open_bus_value & 0xC0);
                 ppu->buffered_data = nes_ppu_bus_read(nes, (vram_addr & 0x0FFF) | 0x2000);
                 ppu_refresh_open_bus(ppu, nes->cpu.cycle_count, returned_data, 0x3F);
             } else {
@@ -449,7 +469,7 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
                 ppu_refresh_open_bus(ppu, nes->cpu.cycle_count, returned_data, 0xFF);
             }
 
-            bee52_ppu_increment_after_2007(ppu);
+            ppu_increment_after_2007(ppu);
             nes_ppu_bus_read(nes, ppu->v & 0x3FFF);
             data = returned_data;
             break;
@@ -458,7 +478,14 @@ uint8_t ppu_read_reg(NES *nes, uint16_t address) {
     return data;
 }
 
-void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
+uint8_t ppu_read_reg(NES *nes, uint16_t address) {
+    return ppu_read_register(nes, address, false);
+}
+uint8_t ppu_read_reg_timed(NES *nes, uint16_t address) {
+    return ppu_read_register(nes, address, true);
+}
+
+static void ppu_write_register(NES *nes, uint16_t address, uint8_t data, bool timed) {
     PPU2C02 *ppu = &nes->ppu;
     ppu_update_open_bus_decay(ppu, nes->cpu.cycle_count);
     ppu_refresh_open_bus(ppu, nes->cpu.cycle_count, data, 0xFF);
@@ -478,7 +505,10 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
             ppu_update_nmi(ppu, nes);
             break;
         case 0x2001:
-            ppu->ppu_mask = data;
+            if (timed) {
+                ppu->mask_pending = data;
+                ppu->mask_delay = 3;
+            } else ppu->ppu_mask = data;
             break;
         case 0x2003:
             ppu->oam_addr = data;
@@ -491,6 +521,8 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
                     data &= 0xE3;
                 }
                 ppu->oam_ram[ppu->oam_addr++] = data;
+            } else {
+                ppu->oam_addr = (uint8_t)((ppu->oam_addr + 4) & 0xFC);
             }
             break;
         }
@@ -510,22 +542,34 @@ void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
                 ppu->w = 1;
             } else {
                 ppu->t = (uint16_t)((ppu->t & 0xFF00) | data);
-                ppu->v = ppu->t;
                 ppu->w = 0;
-                nes_ppu_bus_read(nes, ppu->v & 0x3FFF);
+                if (timed) {
+                    ppu->address_pending = ppu->t;
+                    ppu->address_delay = 3;
+                } else {
+                    ppu->v = ppu->t;
+                    nes_ppu_bus_read(nes, ppu->v & 0x3FFF);
+                }
             }
             break;
         case 0x2007:
             nes_ppu_bus_write(nes, ppu->v & 0x3FFF, data);
-            bee52_ppu_increment_after_2007(ppu);
+            ppu_increment_after_2007(ppu);
             nes_ppu_bus_read(nes, ppu->v & 0x3FFF);
             break;
     }
 }
 
+void ppu_write_reg(NES *nes, uint16_t address, uint8_t data) {
+    ppu_write_register(nes, address, data, false);
+}
+void ppu_write_reg_timed(NES *nes, uint16_t address, uint8_t data) {
+    ppu_write_register(nes, address, data, true);
+}
+
 static void ppu_step_shifters(PPU2C02 *ppu) {
     ppu->bg_shifter_pattern_low  <<= 1;
-    ppu->bg_shifter_pattern_high <<= 1;
+    ppu->bg_shifter_pattern_high = (uint16_t)((ppu->bg_shifter_pattern_high << 1) | 1);
     ppu->bg_shifter_attrib_low   <<= 1;
     ppu->bg_shifter_attrib_high  <<= 1;
 }
@@ -539,7 +583,7 @@ static void ppu_load_bg_shifters(PPU2C02 *ppu) {
 
 // Called only for visible dots. Resolve the first opaque sprite directly into
 // the background pixel, keeping sprite priority and sprite-zero timing per dot.
-static void ppu_render_pixel(PPU2C02 *ppu, int pixel_x) {
+static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
     const uint8_t mask = ppu->ppu_mask;
     uint8_t palette_idx = 0;
 
@@ -549,9 +593,7 @@ static void ppu_render_pixel(PPU2C02 *ppu, int pixel_x) {
             palette_idx = vram_addr & 0x1F;
             if ((palette_idx & 0x13) == 0x10) palette_idx &= 0x0F;
         }
-        ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] =
-            NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
-        return;
+        return NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
     }
 
     uint8_t bg_color = 0;
@@ -569,9 +611,8 @@ static void ppu_render_pixel(PPU2C02 *ppu, int pixel_x) {
     if ((mask & 0x10) && (pixel_x >= 8 || (mask & 0x04))) {
         for (int s = 0; s < ppu->scanline_sprite_count; ++s) {
             const ScanlineSprite *spr = &ppu->scanline_sprites[s];
-            unsigned col = (unsigned)(pixel_x - spr->x);
-            if (col >= 8) continue;
-            unsigned shift = (spr->attributes & 0x40) ? col : 7 - col;
+            if ((ppu->sprite_counter_active & (1u << s)) && spr->x) continue;
+            unsigned shift = (spr->attributes & 0x40) ? 0 : 7;
             uint8_t color = ((spr->low_byte >> shift) & 1) |
                             (((spr->high_byte >> shift) & 1) << 1);
             if (!color) continue;
@@ -586,24 +627,145 @@ static void ppu_render_pixel(PPU2C02 *ppu, int pixel_x) {
         }
     }
 
-    ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + pixel_x] =
-        NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+    return NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+}
+
+/* The external address latch and multiplexed data pins are shared by
+   rendering fetches and the CPU's delayed PPUDATA read sequencer. */
+static void ppu_fetch_tick(NES *nes, bool rendering) {
+    PPU2C02 *p = &nes->ppu;
+    unsigned dot = (unsigned)p->cycle;
+    bool cadence = rendering && dot >= 1 && dot <= 340;
+    bool ale = cadence && (dot & 1);
+    bool read = cadence && !(dot & 1);
+    unsigned phase = (dot - 1) & 7;
+    uint16_t address = p->fetch_address;
+    unsigned kind = p->fetch_kind;
+    bool sprite = dot >= 257 && dot <= 320;
+    if (cadence) {
+        if (dot >= 337 || phase < (sprite ? 4u : 2u)) {
+            address = 0x2000 | (p->v & 0x0FFF);
+            kind = 1;
+        } else if (!sprite && phase < 4) {
+            address = 0x23C0 | (p->v & 0x0C00) | ((p->v >> 4) & 0x38) | ((p->v >> 2) & 7);
+            kind = 2;
+        } else {
+            kind = sprite ? (phase < 6 ? 5u : 6u) : (phase < 6 ? 3u : 4u);
+            if (ale) {
+                if (sprite) {
+                    ScanlineSprite *spr = &p->scanline_sprites[(dot - 257) >> 3];
+                    int height = (p->ppu_ctrl & 0x20) ? 16 : 8;
+                    int row = ((p->scanline & 255) - p->sprite_fetch_y) & (height - 1);
+                    if (spr->attributes & 0x80) row ^= height - 1;
+                    unsigned tile = p->sprite_fetch_tile;
+                    address = height == 8 ? ((p->ppu_ctrl & 8) ? 0x1000 : 0) | (tile << 4) | row :
+                        ((tile & 1) << 12) | ((tile & 0xFE) << 4) | ((row & 8) << 1) | (row & 7);
+                } else {
+                    address = ((p->ppu_ctrl & 0x10) ? 0x1000 : 0) |
+                        (p->bg_next_tile_id << 4) | ppu_get_fine_y(p->v);
+                }
+                if (phase >= 6) address |= 8;
+            }
+        }
+    }
+    bool cpu_ale = (p->data_read_pipeline & 8) != 0;
+    bool cpu_read = (p->data_read_pipeline & 32) != 0;
+    if (!cadence) {
+        if (cpu_ale || cpu_read) address = p->v & 0x3FFF;
+        else if (!ppu_rendering_enabled(p))
+            nes_ppu_bus_set_address(nes, (p->v & 0x3F00) | p->address_latch);
+    }
+    if (ale || cpu_ale) {
+        if (cpu_read) p->address_latch = p->bus_data;
+        else p->address_latch = address & 255;
+        p->fetch_address = address;
+        p->fetch_kind = (uint8_t)kind;
+        nes_ppu_bus_set_address(nes, (address & 0x3F00) | p->address_latch);
+    }
+    if (read || cpu_read) {
+        uint16_t actual = (address & 0x3F00) | p->address_latch;
+        if (actual >= 0x3F00) actual &= 0x2FFF;
+        p->bus_data = nes_ppu_bus_read(nes, actual);
+        if (cpu_read) p->buffered_data = p->bus_data;
+        if (read) {
+            switch (kind) {
+                case 1: p->bg_next_tile_id = p->bus_data; break;
+                case 2: {
+                    unsigned shift = ((p->v >> 4) & 4) | (p->v & 2);
+                    p->bg_next_tile_attrib = (p->bus_data >> shift) & 3;
+                    break;
+                }
+                case 3: p->bg_next_tile_lsb = p->bus_data; break;
+                case 4:
+                    p->bg_next_tile_msb = p->bus_data;
+                    if (nes->nametable_view && (p->ppu_mask & 0x08) &&
+                        (p->scanline != ppu_prerender_line(p) || p->cycle >= 321) &&
+                        (p->scanline != 239 || p->cycle <= 256)) {
+                        uint32_t pixels[8];
+                        for (unsigned col = 0; col < 8; ++col) {
+                            unsigned shift = 7 - col;
+                            unsigned color = ((p->bg_next_tile_lsb >> shift) & 1) |
+                                (((p->bg_next_tile_msb >> shift) & 1) << 1);
+                            unsigned index = color ? p->bg_next_tile_attrib * 4 + color : 0;
+                            pixels[col] = NES_PALETTE[p->palette_ram[index] & 0x3F];
+                        }
+                        nametable_view_record(nes->nametable_view, p->v, pixels);
+                    }
+                    break;
+                case 5: case 6: {
+                    if (!sprite) break;
+                    ScanlineSprite *spr = &p->scanline_sprites[(dot - 257) >> 3];
+                    int row = (p->scanline & 255) - p->sprite_fetch_y;
+                    uint8_t value = row >= 0 && row < ((p->ppu_ctrl & 0x20) ? 16 : 8) ? p->bus_data : 0;
+                    if (kind == 5) spr->low_byte = value; else spr->high_byte = value;
+                    break;
+                }
+            }
+        }
+    }
+    if (cpu_read) ppu_increment_after_2007(p);
+    p->data_read_pipeline = (p->data_read_pipeline << 1) & 63;
 }
 
 void ppu_step(NES *nes) {
     PPU2C02 *ppu = &nes->ppu;
+    if (ppu->mask_delay && --ppu->mask_delay == 0) {
+        bool was_rendering = (ppu->ppu_mask & 0x18) != 0;
+        ppu->ppu_mask = ppu->mask_pending;
+        if (was_rendering && !(ppu->ppu_mask & 0x18) &&
+            (ppu->scanline < 240 || ppu->scanline == SCANLINE_PRERENDER)) {
+            unsigned seed = ppu->oam_eval.secondary_index;
+            if (ppu->cycle >= 65 && ppu->cycle <= 256) seed = (seed + 3) & ~3u;
+            ppu->corruption_seed = seed & 31;
+            ppu->corruption_pending = true;
+        }
+    }
     const bool rendering_enabled = (ppu->ppu_mask & 0x18) != 0;
     const bool rendering_scanline = (ppu->scanline < SCANLINE_VISIBLE_MAX ||
                                      ppu->scanline == SCANLINE_PRERENDER);
+
+    if (rendering_enabled && rendering_scanline && ppu->corruption_pending) {
+        unsigned seed = ppu->corruption_seed;
+        memmove(ppu->oam_ram + seed * 8, ppu->oam_ram, 8);
+        ppu->oam_eval.secondary[seed] = ppu->oam_eval.secondary[0];
+        ppu->corruption_pending = false;
+    }
 
     // Rendering enable takes time to reach the odd-frame skip circuit.
     // Sample it one dot before the final pre-render fetch/skip decision.
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 338)
         ppu->odd_skip_rendering = rendering_enabled;
 
+    if (ppu->address_delay && --ppu->address_delay == 0) {
+        ppu->v = ppu->address_pending;
+        if (!rendering_enabled || !rendering_scanline)
+            nes_ppu_bus_set_address(nes, ppu->v & 0x3FFF);
+    }
+
     /* Update the internal OAM evaluation bus and sprite-overflow timing for
        the current PPU dot before CPU-visible register reads can occur. */
-    bee52_ppu_oam_eval_tick(ppu);
+    ppu_oam_eval_tick(ppu);
+    ppu_fetch_tick(nes, rendering_enabled && rendering_scanline);
 
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 1) {
         ppu->ppu_status &= (uint8_t)~0xE0;
@@ -621,68 +783,14 @@ void ppu_step(NES *nes) {
     }
 
     if (rendering_enabled && rendering_scanline) {
-        // Dot 0 is idle: keep the previous address until the next real fetch.
-        if (ppu->cycle == 1) {
-            ppu->bg_next_tile_id = nes_ppu_bus_read(nes, 0x2000 | (ppu->v & 0x0FFF));
+        if (ppu->cycle == 339) {
+            ppu->sprite_counter_active = 0;
+            for (int i = 0; i < ppu->scanline_sprite_count; ++i)
+                if (ppu->scanline_sprites[i].x) ppu->sprite_counter_active |= 1u << i;
         }
-
-        if ((ppu->cycle >= 2 && ppu->cycle <= 257) ||
-            (ppu->cycle >= 321 && ppu->cycle <= 337)) {
-            ppu_step_shifters(ppu);
-
-            switch ((ppu->cycle - 1) & 7) {
-                case 0: {
-                    ppu_load_bg_shifters(ppu);
-                    uint16_t nt_addr = 0x2000 | (ppu->v & 0x0FFF);
-                    ppu->bg_next_tile_id = nes_ppu_bus_read(nes, nt_addr);
-                    break;
-                }
-                case 2: {
-                    uint16_t attr_addr = 0x23C0 | (ppu->v & 0x0C00) |
-                                         ((ppu->v >> 4) & 0x38) |
-                                         ((ppu->v >> 2) & 0x07);
-                    uint8_t attr_byte = nes_ppu_bus_read(nes, attr_addr);
-                    uint8_t shift = (uint8_t)(((ppu->v >> 4) & 4) |
-                                              (ppu->v & 2));
-                    ppu->bg_next_tile_attrib = (attr_byte >> shift) & 0x03;
-                    break;
-                }
-                case 4: {
-                    uint8_t fine_y = ppu_get_fine_y(ppu->v);
-                    uint16_t table = (ppu->ppu_ctrl & 0x10) ? 0x1000 : 0x0000;
-                    uint16_t pattern_addr = table |
-                        ((uint16_t)ppu->bg_next_tile_id << 4) | fine_y;
-                    ppu->bg_next_tile_lsb = nes_ppu_bus_read(nes, pattern_addr);
-                    break;
-                }
-                case 6: {
-                    uint8_t fine_y = ppu_get_fine_y(ppu->v);
-                    uint16_t table = (ppu->ppu_ctrl & 0x10) ? 0x1000 : 0x0000;
-                    uint16_t pattern_addr = table |
-                        ((uint16_t)ppu->bg_next_tile_id << 4) | fine_y;
-                    ppu->bg_next_tile_msb = nes_ppu_bus_read(nes,
-                                                             pattern_addr + 8);
-                    if (nes->nametable_view && (ppu->ppu_mask & 0x08) &&
-                        (ppu->scanline != SCANLINE_PRERENDER || ppu->cycle >= 321) &&
-                        (ppu->scanline != 239 || ppu->cycle <= 256)) {
-                        uint32_t pixels[8];
-                        for (unsigned col = 0; col < 8; ++col) {
-                            unsigned shift = 7 - col;
-                            unsigned color = ((ppu->bg_next_tile_lsb >> shift) & 1) |
-                                (((ppu->bg_next_tile_msb >> shift) & 1) << 1);
-                            unsigned index = color ? ppu->bg_next_tile_attrib * 4 + color : 0;
-                            pixels[col] = NES_PALETTE[ppu->palette_ram[index] & 0x3F];
-                        }
-                        nametable_view_record(nes->nametable_view, ppu->v, pixels);
-                    }
-                    break;
-                }
-                case 7:
-                    ppu_increment_scroll_x(ppu);
-                    break;
-                default:
-                    break;
-            }
+        if ((ppu->cycle >= 1 && ppu->cycle <= 256) ||
+            (ppu->cycle >= 321 && ppu->cycle <= 336)) {
+            if ((ppu->cycle & 7) == 0) ppu_increment_scroll_x(ppu);
         }
 
         if (ppu->cycle == 256) {
@@ -690,17 +798,10 @@ void ppu_step(NES *nes) {
         }
 
         if (ppu->cycle == 257) {
-            ppu_load_bg_shifters(ppu);
             ppu->v = (ppu->v & 0xFBE0) | (ppu->t & 0x041F);
             ppu->oam_addr = 0;
 
-            if (ppu->scanline == SCANLINE_PRERENDER) {
-                ppu_evaluate_sprites(nes, 0);
-            } else if (ppu->scanline < SCANLINE_VISIBLE_MAX) {
-                ppu_evaluate_sprites(nes, ppu->scanline + 1);
-            } else {
-                ppu->scanline_sprite_count = 0;
-            }
+
         }
 
         if (ppu->scanline == SCANLINE_PRERENDER &&
@@ -708,81 +809,35 @@ void ppu_step(NES *nes) {
             ppu->v = (ppu->v & 0x841F) | (ppu->t & 0x7BE0);
         }
 
-        /* The first dummy nametable fetch was issued at dot 337. */
-        if (ppu->cycle == 339) {
-            uint16_t nt_addr = 0x2000 | (ppu->v & 0x0FFF);
-            ppu->bg_next_tile_id = nes_ppu_bus_read(nes, nt_addr);
-        }
+    }
 
-        if (ppu->cycle >= 257 && ppu->cycle <= 320) {
-            int offset_cycle = ppu->cycle - 257;
-            int spr_idx = offset_cycle / 8;
-            int step = offset_cycle & 7;
-
-            if (step == 4 || step == 6) {
-                int target_scanline = (ppu->scanline == SCANLINE_PRERENDER)
-                    ? 0 : (ppu->scanline + 1);
-                int sprite_height = (ppu->ppu_ctrl & 0x20) ? 16 : 8;
-                uint16_t pattern_addr;
-
-                if (spr_idx < ppu->scanline_sprite_count) {
-                    ScanlineSprite *spr = &ppu->scanline_sprites[spr_idx];
-                    uint8_t tile_id = ppu->oam_ram[spr->sprite_index * 4 + 1];
-                    int sprite_y = (int)ppu->oam_ram[spr->sprite_index * 4] + 1;
-                    int row = target_scanline - sprite_y;
-                    if (spr->attributes & 0x80) {
-                        row = (sprite_height - 1) - row;
-                    }
-
-                    if (sprite_height == 8) {
-                        uint16_t table = (ppu->ppu_ctrl & 0x08)
-                            ? 0x1000 : 0x0000;
-                        pattern_addr = table | ((uint16_t)tile_id << 4) |
-                                       (uint16_t)(row & 7);
-                    } else {
-                        uint16_t table = (tile_id & 1) ? 0x1000 : 0x0000;
-                        uint8_t actual_tile = tile_id & 0xFE;
-                        if (row >= 8) {
-                            actual_tile++;
-                            row -= 8;
-                        }
-                        pattern_addr = table |
-                            ((uint16_t)actual_tile << 4) |
-                            (uint16_t)(row & 7);
-                    }
-
-                    if (step == 4) {
-                        spr->low_byte = nes_ppu_bus_read(nes, pattern_addr);
-                    } else {
-                        spr->high_byte = nes_ppu_bus_read(nes,
-                                                          pattern_addr + 8);
-                    }
+    if (ppu->scanline < SCANLINE_VISIBLE_MAX &&
+        ppu->cycle >= 1 && ppu->cycle <= 256) {
+        ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + ppu->cycle - 1] =
+            ppu_compose_pixel(ppu, ppu->cycle - 1);
+        for (int i = 0; i < ppu->scanline_sprite_count; ++i) {
+            ScanlineSprite *spr = &ppu->scanline_sprites[i];
+            if (ppu->sprite_counter_active & (1u << i)) {
+                if (spr->x && --spr->x == 0) ppu->sprite_counter_active &= ~(1u << i);
+            } else if (rendering_enabled) {
+                if (spr->attributes & 0x40) {
+                    spr->low_byte >>= 1; spr->high_byte >>= 1;
                 } else {
-                    /* Empty secondary-OAM slots contain tile $FF.  In 8x16
-                       mode bit 0 of that tile selects pattern table $1000,
-                       so the discarded dummy fetch is from $1FE0-$1FFF.
-                       MMC3 boards depend on this A12-high fetch to clock the
-                       scanline counter when fewer than eight sprites are on
-                       the line. */
-                    uint16_t table = (sprite_height == 8)
-                        ? ((ppu->ppu_ctrl & 0x08) ? 0x1000 : 0x0000)
-                        : 0x1000;
-                    uint16_t tile = (sprite_height == 8) ? 0xFF : 0xFE;
-                    pattern_addr = table | (tile << 4);
-                    (void)nes_ppu_bus_read(nes,
-                        (step == 4) ? pattern_addr : (pattern_addr + 8));
+                    spr->low_byte <<= 1; spr->high_byte <<= 1;
                 }
             }
         }
     }
 
-    if (ppu->scanline < SCANLINE_VISIBLE_MAX &&
-        ppu->cycle >= 1 && ppu->cycle <= 256) {
-        ppu_render_pixel(ppu, ppu->cycle - 1);
-    }
-
     // Observe this dot's address after the fetch drives the bus, not the
     // preceding dot's address. MMC3's A12 edge must reach the CPU this cycle.
+    if (rendering_enabled && rendering_scanline &&
+        ((ppu->cycle >= 1 && ppu->cycle <= 256) ||
+         (ppu->cycle >= 321 && ppu->cycle <= 336))) {
+        ppu_step_shifters(ppu);
+        if ((ppu->cycle & 7) == 0) ppu_load_bg_shifters(ppu);
+    }
+
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->ppu_dot) {
         nes->cart->vtable->ppu_dot(nes->cart, ppu->bus_address);
     }

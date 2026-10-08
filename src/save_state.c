@@ -176,9 +176,12 @@ static bool valid_machine(const NES *n) {
         p->bus_address > 0x3FFF || p->scanline_sprite_count < 0 || p->scanline_sprite_count > 8 ||
         p->overflow_cycle < -1 || p->overflow_cycle > 340 ||
         p->oam_eval.n > 64 || p->oam_eval.m > 3 || p->oam_eval.secondary_index > 32 ||
+        p->oam_eval.copy_remaining > 3 || p->mask_delay > 3 || p->address_delay > 3 ||
+        p->data_read_pipeline > 63 || p->address_pending > 0x7FFF || p->fetch_address > 0x3FFF ||
+        p->fetch_kind > 6 || p->corruption_seed > 31 ||
         p->bg_palette_index > 31 || p->bg_next_tile_attrib > 3 ||
         a->triangle_sequence_idx > 31 || a->dmc_bits_remaining > 8 || a->dmc_rate > 15 ||
-        a->dmc_value > 127 || a->frame_counter_reset_delay > 4 ||
+        a->dmc_buffer_delay > 3 || a->dmc_value > 127 || a->frame_counter_reset_delay > 4 ||
         a->audio_buffer_idx > 4096 || a->audio_accumulator < 0 || a->audio_accumulator >= 1 ||
         (unsigned)n->cart->mirroring > MIRROR_ONE_SCREEN_HIGH) return false;
     for (unsigned i = 0; i < 2; ++i) {
@@ -186,6 +189,84 @@ static bool valid_machine(const NES *n) {
             return false;
     }
     return true;
+}
+
+/* Version 6 appends the bus sequencers, so older file layouts stay intact. */
+static void timing_fields(NES *n, StateIO *io) {
+#define FIELD(type, field) n->field = state_##type(io, n->field)
+    FIELD(u64, dmc_enable_cycle);
+    FIELD(u64, dmc_disable_cycle);
+    FIELD(u64, dmc_last_fetch_cycle);
+    FIELD(bool, dmc_dma_active);
+    FIELD(bool, dmc_dma_abort);
+    FIELD(u16, dma_resume_controller);
+    FIELD(bool, frame_irq_clear_pending);
+    FIELD(bool, controller_read_active);
+    FIELD(u16, controller_read_address);
+    FIELD(u8, controller_read_value);
+    FIELD(u8, apu.dmc_buffer_delay);
+    FIELD(u8, ppu.oam_eval.copy_remaining);
+    FIELD(bool, ppu.oam_eval.sprite_zero);
+    FIELD(bool, ppu.oam_eval.secondary_full);
+    FIELD(bool, ppu.oam_eval.increment_frozen);
+    FIELD(u8, ppu.sprite_fetch_y);
+    FIELD(u8, ppu.sprite_fetch_tile);
+    FIELD(u8, ppu.sprite_counter_active);
+    FIELD(u8, ppu.mask_pending);
+    FIELD(u8, ppu.mask_delay);
+    FIELD(u8, ppu.address_delay);
+    FIELD(u8, ppu.data_read_pipeline);
+    FIELD(u16, ppu.address_pending);
+    FIELD(u16, ppu.fetch_address);
+    FIELD(u8, ppu.address_latch);
+    FIELD(u8, ppu.bus_data);
+    FIELD(u8, ppu.fetch_kind);
+    FIELD(u8, ppu.corruption_seed);
+    FIELD(bool, ppu.corruption_pending);
+#undef FIELD
+}
+
+static void legacy_timing(NES *n) {
+    n->dmc_enable_cycle = n->dmc_disable_cycle = n->dmc_last_fetch_cycle = 0;
+    n->dmc_dma_active = n->dmc_dma_abort = false;
+    n->dma_resume_controller = 0;
+    n->apu.dmc_buffer_delay = 0;
+    n->frame_irq_clear_pending = n->controller_read_active = false;
+    n->controller_read_address = 0;
+    n->controller_read_value = 0;
+    PPU2C02 *p = &n->ppu;
+    p->oam_eval.copy_remaining = 0;
+    p->oam_eval.sprite_zero = false;
+    p->oam_eval.secondary_full = p->oam_eval.secondary_index >= 32;
+    p->oam_eval.secondary_index &= 31;
+    p->oam_eval.increment_frozen = p->oam_eval.secondary_full;
+    p->sprite_fetch_y = p->oam_eval.secondary[0];
+    p->sprite_fetch_tile = p->oam_eval.secondary[1];
+    p->sprite_counter_active = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        ScanlineSprite *spr = &p->scanline_sprites[i];
+        unsigned pixel = p->scanline < 240 && p->cycle <= 256 && p->cycle ? (unsigned)p->cycle - 1 : 0;
+        if (spr->x > pixel) {
+            spr->x -= pixel;
+            p->sprite_counter_active |= 1u << i;
+        } else {
+            unsigned shifted = pixel - spr->x;
+            spr->x = 0;
+            if (shifted >= 8) spr->low_byte = spr->high_byte = 0;
+            else if (spr->attributes & 0x40) {
+                spr->low_byte >>= shifted; spr->high_byte >>= shifted;
+            } else { spr->low_byte <<= shifted; spr->high_byte <<= shifted; }
+        }
+    }
+    p->mask_pending = p->ppu_mask;
+    p->mask_delay = p->address_delay = p->data_read_pipeline = 0;
+    p->address_pending = p->v;
+    p->fetch_address = p->bus_address;
+    p->address_latch = p->bus_address & 255;
+    p->bus_data = p->buffered_data;
+    p->fetch_kind = 0;
+    p->corruption_seed = 0;
+    p->corruption_pending = false;
 }
 
 static void payload(NES *n, StateIO *io, unsigned version) {
@@ -249,6 +330,8 @@ static void payload(NES *n, StateIO *io, unsigned version) {
             if (n->apu.noise_timer_reload == noise_periods[i]) n->apu.noise_rate = (uint8_t)i;
         expansion_audio_reset(n);
     }
+    if (version >= 6) timing_fields(n, io);
+    else if (io->reading) legacy_timing(n);
     if (!valid_machine(n)) io->ok = false;
 }
 

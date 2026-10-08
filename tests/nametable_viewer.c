@@ -152,7 +152,7 @@ static void fetch_tile_row(NES *n, unsigned scanline, unsigned table, unsigned t
     n->ppu.scanline = (int)scanline;
     n->ppu.cycle = 1;
     n->ppu.v = (uint16_t)((table << 10) | (tile_y << 5));
-    for (unsigned dot = 0; dot < 7; ++dot) ppu_step(n);
+    for (unsigned dot = 0; dot < 8; ++dot) ppu_step(n);
 }
 static void observed_hud_rows(const char *path) {
     fixture_rom(path, 4, false, false, 0);

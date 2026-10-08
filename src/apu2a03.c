@@ -58,12 +58,24 @@ static bool is_sweep_muting(APU2A03 *apu, int ch) {
     return (target > 0x07FF);
 }
 
-void apu_dmc_dma_complete(APU2A03 *apu, NES *nes) {
+void apu_dmc_dma_complete(APU2A03 *apu, NES *nes, uint8_t value) {
     if (apu->dmc_bytes_remaining > 0 && nes) {
-        apu->dmc_buffer = nes_cpu_bus_read(nes, apu->dmc_current_addr);
+        apu->dmc_buffer = value;
         apu->dmc_buffer_empty = false;
+        /* The fetched byte crosses into the output unit on subsequent
+           clocks. A fetch beside the final bit can miss that reload. */
+        apu->dmc_buffer_delay = 3;
         apu->dmc_current_addr = (apu->dmc_current_addr + 1) | 0x8000;
         apu->dmc_bytes_remaining--;
+        /* A one-byte, non-looping sample can briefly restart the reader
+           as the output unit empties, then cancel it during its halt. */
+        if (!apu->dmc_loop && apu->dmc_sample_len == 1 &&
+            apu->dmc_bits_remaining == 1 && apu->dmc_timer >= 2 && apu->dmc_timer < 4) {
+            apu->dmc_shift_reg = value;
+            apu->dmc_current_addr = apu->dmc_sample_addr;
+            apu->dmc_bytes_remaining = apu->dmc_sample_len;
+            nes->dmc_disable_cycle = nes->cpu.cycle_count + 4;
+        }
         if (apu->dmc_bytes_remaining == 0) {
             if (apu->dmc_loop) {
                 apu->dmc_current_addr = apu->dmc_sample_addr;
@@ -326,6 +338,8 @@ void apu_write_reg(NES *nes, uint16_t address, uint8_t data) {
             if (apu->dmc_bytes_remaining == 0) {
                 apu->dmc_current_addr = apu->dmc_sample_addr;
                 apu->dmc_bytes_remaining = apu->dmc_sample_len;
+                nes->dmc_enable_cycle = nes->cpu.cycle_count +
+                    ((nes->cpu.cycle_count & 1) ? 3 : 4);
             }
             if (apu->dmc_buffer_empty && apu->dmc_bytes_remaining)
                 nes_request_dmc_dma(nes, true);
@@ -358,7 +372,7 @@ uint8_t apu_read_reg(NES *nes, uint16_t address) {
         if (apu->pulse_length_counter[1] > 0) data |= 0x02;
         if (apu->triangle_length_counter > 0) data |= 0x04;
         if (apu->noise_length_counter > 0)    data |= 0x08;
-        if (apu->dmc_bytes_remaining > 0)     data |= 0x10;
+        if (apu->dmc_bytes_remaining > 0 && !nes->dmc_disable_cycle) data |= 0x10;
         if (apu->frame_irq_active)            data |= 0x40;
         if (apu->dmc_irq_active)              data |= 0x80;
 
@@ -390,9 +404,11 @@ static void apu_step_frame_sequencer(APU2A03 *apu, NES *nes) {
     unsigned q2 = pal ? 24939 : 22371;
     unsigned h2 = apu->frame_mode ? (pal ? 41565 : 37281) : (pal ? 33253 : 29829);
     unsigned cycle = ++apu->frame_cycles;
-    if (!apu->frame_mode && cycle >= h2 - 1 && !apu->frame_irq_inhibit) {
-        apu->frame_irq_active = true;
-        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, true);
+    if (!apu->frame_mode && cycle >= h2 - 1) {
+        /* The status latch pulses for two cycles even when IRQ output is
+           inhibited. On the third cycle the inhibit value wins. */
+        apu->frame_irq_active = cycle <= h2 || !apu->frame_irq_inhibit;
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, !apu->frame_irq_inhibit);
     }
     if (!apu->frame_clock_block) {
         if (cycle == h1 || cycle == h2) {
@@ -419,6 +435,8 @@ static void apu_step_dmc(APU2A03 *apu, NES *nes) {
         nes_request_dmc_dma(nes, false);
     }
 
+    if (apu->dmc_buffer_delay) --apu->dmc_buffer_delay;
+
     /* The table entries are complete CPU-cycle periods. */
     if (apu->dmc_timer == 0) {
         apu->dmc_timer = (apu->dmc_timer_reload > 0)
@@ -442,7 +460,7 @@ static void apu_step_dmc(APU2A03 *apu, NES *nes) {
 
         if (apu->dmc_bits_remaining == 0) {
             apu->dmc_bits_remaining = 8;
-            if (apu->dmc_buffer_empty) {
+            if (apu->dmc_buffer_empty || apu->dmc_buffer_delay) {
                 apu->dmc_silent = true;
             } else {
                 apu->dmc_silent = false;

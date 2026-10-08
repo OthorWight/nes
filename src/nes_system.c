@@ -31,6 +31,11 @@ void nes_reset(NES *nes) {
     nes_set_region(nes, region);
     nes->oam_dma_pending = false;
     nes->dmc_dma_pending = false;
+    nes->controller_read_active = false;
+    nes->frame_irq_clear_pending = false;
+    nes->dmc_enable_cycle = nes->dmc_disable_cycle = nes->dmc_last_fetch_cycle = 0;
+    nes->dmc_dma_active = nes->dmc_dma_abort = false;
+    nes->dma_resume_controller = 0;
     apu_reset(nes);
     expansion_audio_reset(nes);
     nes_reset_zapper_watchdog(nes);
@@ -167,6 +172,24 @@ void nes_check_zapper_stall(NES *nes) {
 }
 
 static inline void nes_step_subsystems(NES *nes) {
+    if (!(nes->cpu.cycle_count & 1) && nes->frame_irq_clear_pending) {
+        nes->frame_irq_clear_pending = false;
+        nes->apu.frame_irq_active = false;
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, false);
+    }
+    /* The controller parallel-load signal is qualified by the APU put phase. */
+    if (nes->controller_strobe && (nes->cpu.cycle_count & 1)) {
+        nes->controller_shift[0] = nes->controller_state[0];
+        nes->controller_shift[1] = nes->controller_state[1];
+    }
+    if (nes->dmc_disable_cycle && nes->cpu.cycle_count >= nes->dmc_disable_cycle) {
+        nes->dmc_disable_cycle = 0;
+        nes->apu.dmc_bytes_remaining = 0;
+        if (nes->dmc_dma_active) nes->dmc_dma_abort = true;
+        else if (nes->dmc_dma_pending && nes->cpu.cycle_count >= nes->dmc_dma_cycle)
+            nes->dmc_dma_abort = true;
+        else nes->dmc_dma_pending = false;
+    }
     bool nmi_before = nes->cpu.nmi_line;
     unsigned dots = 3;
     if (nes->ppu.region == NES_PAL && ++nes->clock.ppu_divider == 5) {
@@ -201,6 +224,10 @@ void nes_request_dmc_dma(NES *nes, bool load) {
     // halts on the second following APU get; reload DMA halts on a put.
     nes->dmc_dma_cycle = load ? cycle + ((cycle & 1) ? 3 : 4)
                               : cycle + ((cycle & 1) ? 0 : 1);
+    if (!load && nes->dmc_dma_cycle <= nes->dmc_last_fetch_cycle + 2)
+        nes->dmc_dma_cycle = nes->dmc_last_fetch_cycle + 3;
+    if (nes->dmc_dma_cycle < nes->dmc_enable_cycle)
+        nes->dmc_dma_cycle = nes->dmc_enable_cycle;
 }
 
 static void dma_clock(NES *nes) {
@@ -208,11 +235,64 @@ static void dma_clock(NES *nes) {
     nes_step_subsystems(nes);
 }
 
+static uint8_t clocked_bus_read(NES *nes, uint16_t address) {
+    bool frame_irq = nes->apu.frame_irq_active;
+    bool controller = address == 0x4016 || address == 0x4017;
+    if (controller && nes->controller_read_active &&
+        nes->controller_read_address == address) {
+        /* NES controller /OE stays asserted on consecutive reads. */
+        uint8_t value = (nes->controller_read_value & 0x1F) | (nes->cpu_open_bus & 0xE0);
+        nes->cpu_open_bus = value;
+        return value;
+    }
+    uint8_t value;
+    if (address >= 0x2000 && address < 0x4000) {
+        value = ppu_read_reg_timed(nes, 0x2000 | (address & 7));
+        nes->cpu_open_bus = value;
+    } else value = nes_cpu_bus_read(nes, address);
+    if (address == 0x4015) {
+        nes->apu.frame_irq_active = frame_irq;
+        cpu_set_irq_line(&nes->cpu, APU_IRQ_SOURCE_FRAME, frame_irq && !nes->apu.frame_irq_inhibit);
+        nes->frame_irq_clear_pending = true;
+    }
+    nes->controller_read_active = controller;
+    nes->controller_read_address = address;
+    nes->controller_read_value = value;
+    return value;
+}
+
+static uint8_t dma_bus_read(NES *nes, uint16_t address, uint16_t cpu_address) {
+    nes->dma_resume_controller = 0;
+    bool internal_enabled = (cpu_address & 0xFFE0) == 0x4000;
+    if (!internal_enabled && address >= 0x4000 && address <= 0x401F) {
+        nes->controller_read_active = false;
+        return nes->cpu_open_bus;
+    }
+    uint16_t internal = 0x4000 | (address & 0x1F);
+    if (internal_enabled && internal == 0x4015) {
+        uint8_t value = clocked_bus_read(nes, internal);
+        uint8_t external = address == internal ? nes->cpu_open_bus : nes_cpu_bus_read(nes, address);
+        value = (value & 0xDF) | (external & 0x20);
+        nes->controller_read_active = false;
+        return value;
+    }
+    if (internal_enabled && (internal == 0x4016 || internal == 0x4017)) {
+        uint8_t value = clocked_bus_read(nes, internal);
+        if (address != internal) {
+            uint8_t external = nes_cpu_bus_read(nes, address);
+            value = (external & 0xE0) | (external & value & 0x1F);
+        }
+        nes->dma_resume_controller = internal;
+        return value;
+    }
+    return clocked_bus_read(nes, address);
+}
+
 static void dma_repeat_read(NES *nes, uint16_t address) {
     // The 2A07 gates controller strobes during DMA. The interrupted read
     // still happens once when the CPU resumes; NTSC retains the extra clocks.
     if (nes->apu.region == NES_PAL && (address == 0x4016 || address == 0x4017)) return;
-    (void)nes_cpu_bus_read(nes, address);
+    (void)clocked_bus_read(nes, address);
 }
 
 // Called only on a CPU read, after its clock has advanced. DMA cannot halt
@@ -223,36 +303,48 @@ static void nes_run_dma(NES *nes, uint16_t cpu_address) {
            (nes->dmc_dma_pending && nes->cpu.cycle_count >= nes->dmc_dma_cycle)) {
         bool oam = nes->oam_dma_pending;
         uint16_t source = (uint16_t)nes->oam_dma_page << 8;
-        uint8_t start = nes->ppu.oam_addr;
         unsigned index = 0;
         uint8_t value = 0;
         bool have_value = false;
         unsigned dmc_phase = (nes->dmc_dma_pending &&
             nes->cpu.cycle_count >= nes->dmc_dma_cycle) ? 1 : 0;
         nes->oam_dma_pending = false;
+        nes->dmc_dma_active = dmc_phase != 0;
         dma_repeat_read(nes, cpu_address);
         while (oam || dmc_phase) {
             dma_clock(nes);
             bool get = !(nes->cpu.cycle_count & 1);
             bool bus_used = false;
+            if (nes->dmc_dma_abort && dmc_phase == 1) {
+                nes->dmc_dma_abort = nes->dmc_dma_active = nes->dmc_dma_pending = false;
+                dmc_phase = 0;
+                if (!oam) {
+                    dma_repeat_read(nes, cpu_address);
+                    return;
+                }
+            }
             if (dmc_phase == 1) {
                 dmc_phase = 2; // Dummy cycle; OAM can still transfer.
             } else if (dmc_phase == 2 && get) {
-                apu_dmc_dma_complete(&nes->apu, nes);
-                nes->dmc_dma_pending = false;
+                uint8_t sample = dma_bus_read(nes, nes->apu.dmc_current_addr, cpu_address);
+                apu_dmc_dma_complete(&nes->apu, nes, sample);
+                nes->dmc_dma_pending = nes->dmc_dma_active = nes->dmc_dma_abort = false;
+                nes->dmc_last_fetch_cycle = nes->cpu.cycle_count;
                 dmc_phase = 0;
                 bus_used = true;
             } else if (!dmc_phase && nes->dmc_dma_pending &&
                        nes->cpu.cycle_count >= nes->dmc_dma_cycle) {
+                nes->dmc_dma_active = true;
                 dmc_phase = 1; // DMC halt overlaps the already halted CPU.
             }
             if (oam && !bus_used) {
                 if (get && !have_value) {
-                    value = nes_cpu_bus_read(nes, source + index);
+                    value = dma_bus_read(nes, source + index, cpu_address);
                     have_value = true;
                     bus_used = true;
                 } else if (!get && have_value) {
-                    nes->ppu.oam_ram[(start + index) & 255] = value;
+                    nes_cpu_bus_write(nes, 0x2004, value);
+                    nes->controller_read_active = false;
                     have_value = false;
                     bus_used = true;
                     if (++index == 256) oam = false;
@@ -407,13 +499,48 @@ static void nes_cpu_cycle_tick_wrapper(void *context) {
 
 static uint8_t nes_cpu_bus_read_wrapper(void *context, uint16_t addr) {
     NES *nes = (NES*)context;
+    uint8_t internal_bus = nes->cpu.open_bus;
     nes_run_dma(nes, addr);
-    return nes_cpu_bus_read(nes, addr); 
+    uint16_t resume = nes->dma_resume_controller;
+    nes->dma_resume_controller = 0;
+    uint8_t value = clocked_bus_read(nes, addr);
+    if (resume && (addr & 0xFFE0) == 0x4000 && addr != 0x4015 &&
+        addr != 0x4016 && addr != 0x4017)
+        value = clocked_bus_read(nes, resume);
+    if (addr == 0x4015) value = (value & 0xDF) | (internal_bus & 0x20);
+    return value;
 }
 
 static void nes_cpu_bus_write_wrapper(void *context, uint16_t addr, uint8_t data) {
     NES *nes = (NES*)context;
-    nes_cpu_bus_write(nes, addr, data);
+    uint8_t shift[2] = { nes->controller_shift[0], nes->controller_shift[1] };
+    uint16_t remaining = nes->apu.dmc_bytes_remaining;
+    bool pending = nes->dmc_dma_pending;
+    if (addr == 0x4015 && (data & 0x10)) nes->dmc_disable_cycle = 0;
+    if (addr >= 0x2000 && addr < 0x4000) {
+        nes->cpu_open_bus = data;
+        if (nes->diagnostics) diagnostics_event(nes, DIAG_PPU_WRITE, 0x2000 | (addr & 7), data);
+        ppu_write_reg_timed(nes, 0x2000 | (addr & 7), data);
+        if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
+    } else nes_cpu_bus_write(nes, addr, data);
+    if (addr == 0x4015 && !(data & 0x10)) {
+        nes->apu.dmc_bytes_remaining = remaining;
+        nes->dmc_dma_pending = pending;
+        if (!nes->dmc_disable_cycle) nes->dmc_disable_cycle = nes->cpu.cycle_count +
+            ((nes->cpu.cycle_count & 1) ? 3 : 4);
+    }
+    if (nes->dmc_dma_abort) {
+        nes->dmc_dma_pending = nes->dmc_dma_abort = false;
+    }
+    /* A new CPU address releases any internal decode retained by DMA. */
+    nes->dma_resume_controller = 0;
+    nes->controller_read_active = false;
+    /* Clocked writes use the phase-qualified load above. Direct bus writes
+       remain useful for fixtures that set up a controller latch. */
+    if (addr == 0x4016) {
+        nes->controller_shift[0] = shift[0];
+        nes->controller_shift[1] = shift[1];
+    }
 }
 
 void nes_clock_tick(NES *nes) {

@@ -53,6 +53,12 @@ struct NES {
     uint8_t    oam_dma_page;
     bool       dmc_dma_pending;
     uint64_t   dmc_dma_cycle;
+    uint64_t   dmc_enable_cycle;
+    uint64_t   dmc_disable_cycle;
+    uint64_t   dmc_last_fetch_cycle;
+    bool       dmc_dma_active, dmc_dma_abort;
+    uint16_t   dma_resume_controller;
+    bool       frame_irq_clear_pending;
 
     uint8_t    wram[2048];
     uint8_t    ciram[4096]; // Includes the extra 2 KiB used by four-screen boards.
@@ -61,6 +67,9 @@ struct NES {
     uint8_t    controller_state[2];
     uint8_t    controller_shift[2];
     uint8_t    controller_strobe;
+    bool       controller_read_active;
+    uint16_t   controller_read_address;
+    uint8_t    controller_read_value;
 
     bool       zapper_enabled;
     bool       zapper_trigger;

@@ -19,7 +19,9 @@ static void oam_dma_copies_and_clocks_both_alignments(void) {
         assert(s.nes.cpu.program_counter == 0x8004);
         assert(s.nes.ppu.oam_addr == 0xE0);
         for (unsigned i = 0; i < 256; i++) {
-            assert(s.nes.ppu.oam_ram[(0xE0 + i) & 255] == (uint8_t)(i ^ 0xA5));
+            uint8_t expected = (uint8_t)(i ^ 0xA5);
+            if ((i & 3) == 2) expected &= 0xE3;
+            assert(s.nes.ppu.oam_ram[(0xE0 + i) & 255] == expected);
         }
         test_step(&s, 2); // CPU resumes at the next instruction.
         assert(s.nes.cpu.program_counter == 0x8005);

@@ -143,7 +143,7 @@ static void all_mapper_replay(void) {
         setup(a);
         uint8_t *save; size_t size;
         assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
-        assert(!memcmp(save, "NESSTATE\5\0\0\0", 12));
+        assert(!memcmp(save, "NESSTATE\6\0\0\0", 12));
         assert(nes_state_decode(b, save, size) == NES_STATE_OK);
         equal_machine(a, b);
         for (unsigned i = 0; i < 24000; ++i) {
@@ -189,7 +189,7 @@ static void corrupt_and_wrong_states(void) {
     setup(n);
     uint8_t *good; size_t size;
     assert(nes_state_encode(n, &good, &size) == NES_STATE_OK);
-    size_t v3_end = size - version5_size(n) - 11; // Version 4 DMA fields.
+    size_t v3_end = size - 54 - version5_size(n) - 11; // Version 4 DMA fields.
     uint8_t *bad = malloc(size + 1); assert(bad);
     memcpy(bad, good, size);
     const size_t cuts[] = {0,1,4,8,31,32,100,1000};
@@ -233,6 +233,35 @@ static void corrupt_and_wrong_states(void) {
     rejection_keeps_machine(other, good, size, NES_STATE_WRONG_ROM);
     fixture_free(other);
     free(good); free(bad); fixture_free(n);
+    assert(remove(rom) == 0);
+}
+
+static void pending_bus_timing_survives_restore(void) {
+    puts("  pending PPU, controller and DMC timing replays after restore");
+    char rom[512]; fixture_path(rom, "bus-timing.nes");
+    fixture_rom(rom, 0, false, true, 0);
+    NES *a = fixture_load(rom), *b = fixture_load(rom);
+    setup(a);
+    a->ppu.scanline = 241; a->ppu.cycle = 10;
+    ppu_write_reg_timed(a, 0x2001, 0);
+    ppu_write_reg_timed(a, 0x2006, 0x23);
+    ppu_write_reg_timed(a, 0x2006, 0x45);
+    (void)ppu_read_reg_timed(a, 0x2007);
+    a->apu.dmc_buffer_delay = 2;
+    a->dmc_disable_cycle = a->cpu.cycle_count + 3;
+    a->frame_irq_clear_pending = true;
+    a->controller_read_active = true;
+    a->controller_read_address = 0x4016;
+    a->controller_read_value = 0xE1;
+    uint8_t *save; size_t size;
+    assert(nes_state_encode(a, &save, &size) == NES_STATE_OK);
+    assert(nes_state_decode(b, save, size) == NES_STATE_OK);
+    equal_machine(a, b);
+    for (unsigned i = 0; i < 2000; ++i) {
+        inputs_and_step(a, i); inputs_and_step(b, i);
+    }
+    equal_machine(a, b);
+    free(save); fixture_free(a); fixture_free(b);
     assert(remove(rom) == 0);
 }
 
@@ -280,6 +309,16 @@ static void irq_poll_state_and_older_import(void) {
     uint64_t before = n->cpu.cycle_count;
     nes_clock_tick(n);
     assert(n->cpu.cycle_count - before == 7 && n->cpu.program_counter == 0x0100);
+
+    size -= 54; // Version 6 bus timing fields.
+    StateIO v5_header = {save, size, 8, false, true};
+    state_u32(&v5_header, 5);
+    state_u32(&v5_header, (uint32_t)(size - NES_STATE_HEADER_SIZE));
+    refresh_checksum(save, size);
+    n->ppu.mask_delay = 3;
+    n->dmc_disable_cycle = n->cpu.cycle_count + 10;
+    assert(nes_state_decode(n, save, size) == NES_STATE_OK);
+    assert(!n->ppu.mask_delay && !n->dmc_disable_cycle);
 
     size -= version5_size(n);
     StateIO header = {save, size, 8, false, true};
@@ -374,6 +413,7 @@ int main(void) {
     fixture_start("states");
     all_mapper_replay();
     corrupt_and_wrong_states();
+    pending_bus_timing_survives_restore();
     state_files_and_failed_replace();
     irq_poll_state_and_older_import();
     odd_frame_skip_latch_survives_restore();

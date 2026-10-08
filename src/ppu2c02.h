@@ -14,6 +14,10 @@ typedef struct {
     uint8_t m;
     uint8_t secondary_index;
     bool done;
+    uint8_t copy_remaining;
+    bool sprite_zero;
+    bool secondary_full;
+    bool increment_frozen;
 } PPUOAMEvalState;
 
 typedef struct {
@@ -68,6 +72,16 @@ typedef struct {
     uint8_t  open_bus_value;
     uint64_t open_bus_decay_cycles[8];
 
+    uint8_t sprite_fetch_y;
+    uint8_t sprite_fetch_tile;
+    uint8_t sprite_counter_active; // Bits identify counters still delaying sprite output.
+    uint8_t mask_pending, mask_delay;
+    uint8_t address_delay, data_read_pipeline; // PPUDATA read pulses in flight.
+    uint16_t address_pending, fetch_address;
+    uint8_t address_latch, bus_data, fetch_kind;
+    uint8_t corruption_seed;
+    bool corruption_pending;
+
     uint32_t screen_buffer[256 * 240];
 } PPU2C02;
 
@@ -90,6 +104,9 @@ bool ppu_render_nametables(const NES *nes, uint32_t *pixels, int *mirroring);
 
 uint8_t ppu_read_reg(NES *nes, uint16_t address);
 void    ppu_write_reg(NES *nes, uint16_t address, uint8_t data);
+// M2-qualified accesses used by the clocked CPU/DMA bus.
+uint8_t ppu_read_reg_timed(NES *nes, uint16_t address);
+void    ppu_write_reg_timed(NES *nes, uint16_t address, uint8_t data);
 
 uint8_t ppu_palette_read(PPU2C02 *ppu, uint16_t addr);
 void    ppu_palette_write(PPU2C02 *ppu, uint16_t addr, uint8_t data);

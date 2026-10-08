@@ -23,6 +23,10 @@ static inline void update_zero_and_negative_flags(CPU6502 *cpu, uint8_t value) {
 }
 
 static inline void bus_cycle(CPU6502 *cpu, CPUBus *bus) {
+    if (cpu->nmi_delayed) {
+        cpu->nmi_delayed = false;
+        cpu->nmi_edge = true;
+    }
     // The final cycle uses the IRQ level/I flag from the preceding cycle.
     // Sampling before the clock also precedes CLI/SEI/PLP's final flag write.
     // The NES clock refines this sample at its first PPU-dot boundary.
@@ -200,6 +204,15 @@ static inline uint16_t addr_indy_w(CPU6502 *cpu, CPUBus *bus) {
     return (uint16_t)(((high << 8) | low) + cpu->index_y);
 }
 
+/* RDY during the indexed store's dummy read suppresses the unstable opcodes'
+   high-byte gate. A DMA is visible here as extra cycles inside read_byte. */
+static uint8_t unstable_store_mask(CPU6502 *cpu, CPUBus *bus, uint16_t address,
+                                   uint8_t high) {
+    uint64_t before = cpu->cycle_count;
+    read_byte(cpu, bus, address);
+    return cpu->cycle_count - before > 1 ? 0xFF : (uint8_t)(high + 1);
+}
+
 static inline void do_branch(CPU6502 *cpu, CPUBus *bus, bool condition) {
     int8_t offset = (int8_t)read_byte(cpu, bus, cpu->program_counter++);
     bool first_poll = cpu->irq_pending;
@@ -207,9 +220,9 @@ static inline void do_branch(CPU6502 *cpu, CPUBus *bus, bool condition) {
         uint16_t old_pc = cpu->program_counter;
         uint16_t new_pc = (uint16_t)(old_pc + offset);
         uint16_t uncorrected = (uint16_t)((old_pc & 0xFF00) | (new_pc & 0x00FF));
-        read_byte(cpu, bus, uncorrected);
+        read_byte(cpu, bus, old_pc);
         if (uncorrected != new_pc) {
-            read_byte(cpu, bus, (uint16_t)((new_pc & 0xFF00) | (uncorrected & 0x00FF)));
+            read_byte(cpu, bus, uncorrected);
             cpu->irq_pending |= first_poll;
         } else {
             cpu->irq_pending = first_poll;
@@ -413,7 +426,7 @@ static void do_hardware_interrupt(CPU6502 *cpu, CPUBus *bus, bool is_nmi) {
     set_flag(cpu, FLAG_INTERRUPT_DISABLE, true);
 
     uint16_t vector = is_nmi ? VECTOR_NMI : VECTOR_IRQ;
-    if (!is_nmi && cpu->nmi_edge) {
+    if (!is_nmi && cpu->nmi_edge && cpu->nmi_pulsed_cycle < cpu->cycle_count) {
         cpu->nmi_edge = false;
         vector = VECTOR_NMI;
     }
@@ -452,6 +465,10 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
     cpu->irq_poll_valid = true;
     if (irq) {
         do_hardware_interrupt(cpu, bus, false);
+        if (cpu->nmi_edge) {
+            cpu->nmi_edge = false;
+            cpu->nmi_delayed = true;
+        }
         return (int)(cpu->cycle_count - start_cycles);
     }
 
@@ -519,10 +536,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             set_flag(cpu, FLAG_INTERRUPT_DISABLE, true);
 
             uint16_t vector = VECTOR_IRQ;
-            if (cpu->nmi_edge) {
+            if (cpu->nmi_edge && cpu->nmi_pulsed_cycle < cpu->cycle_count) {
                 cpu->nmi_edge = false;
                 vector = VECTOR_NMI;
             }
+
             uint8_t low = read_byte(cpu, bus, vector);
             uint8_t high = read_byte(cpu, bus, (uint16_t)(vector + 1));
             cpu->program_counter = (uint16_t)(low | (high << 8));
@@ -904,11 +922,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             uint8_t low = read_byte(cpu, bus, ptr);
             uint8_t high = read_byte(cpu, bus, (uint8_t)(ptr + 1));
             uint16_t uncorrected = (uint16_t)((high << 8) | ((low + cpu->index_y) & 0xFF));
-            read_byte(cpu, bus, uncorrected);
+            uint8_t mask = unstable_store_mask(cpu, bus, uncorrected, high);
             uint16_t addr = (uint16_t)(((high << 8) | low) + cpu->index_y);
-            uint8_t val = (uint8_t)(cpu->accumulator & cpu->index_x & (uint8_t)(high + 1));
+            uint8_t val = (uint8_t)(cpu->accumulator & cpu->index_x & mask);
             if ((low + cpu->index_y) >= 0x100) {
-                addr = (uint16_t)((addr & 0x00FF) | (((high + 1) & val) << 8));
+                addr = (uint16_t)((addr & 0x00FF) | ((uint16_t)val << 8));
             }
             write_byte(cpu, bus, addr, val);
             break;
@@ -918,11 +936,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             uint8_t high = read_byte(cpu, bus, cpu->program_counter++);
             uint16_t uncorrected = (uint16_t)((high << 8) | ((low + cpu->index_y) & 0xFF));
-            read_byte(cpu, bus, uncorrected);
+            uint8_t mask = unstable_store_mask(cpu, bus, uncorrected, high);
             uint16_t addr = (uint16_t)(((high << 8) | low) + cpu->index_y);
-            uint8_t val = (uint8_t)(cpu->accumulator & cpu->index_x & (uint8_t)(high + 1));
+            uint8_t val = (uint8_t)(cpu->accumulator & cpu->index_x & mask);
             if ((low + cpu->index_y) >= 0x100) {
-                addr = (uint16_t)((addr & 0x00FF) | (((high + 1) & val) << 8));
+                addr = (uint16_t)((addr & 0x00FF) | ((uint16_t)val << 8));
             }
             write_byte(cpu, bus, addr, val);
             break;
@@ -932,11 +950,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             uint8_t high = read_byte(cpu, bus, cpu->program_counter++);
             uint16_t uncorrected = (uint16_t)((high << 8) | ((low + cpu->index_y) & 0xFF));
-            read_byte(cpu, bus, uncorrected);
+            uint8_t mask = unstable_store_mask(cpu, bus, uncorrected, high);
             uint16_t addr = (uint16_t)(((high << 8) | low) + cpu->index_y);
-            uint8_t val = (uint8_t)(cpu->index_x & (uint8_t)(high + 1));
+            uint8_t val = (uint8_t)(cpu->index_x & mask);
             if ((low + cpu->index_y) >= 0x100) {
-                addr = (uint16_t)((addr & 0x00FF) | (((high + 1) & val) << 8));
+                addr = (uint16_t)((addr & 0x00FF) | ((uint16_t)val << 8));
             }
             write_byte(cpu, bus, addr, val);
             break;
@@ -946,11 +964,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             uint8_t high = read_byte(cpu, bus, cpu->program_counter++);
             uint16_t uncorrected = (uint16_t)((high << 8) | ((low + cpu->index_x) & 0xFF));
-            read_byte(cpu, bus, uncorrected);
+            uint8_t mask = unstable_store_mask(cpu, bus, uncorrected, high);
             uint16_t addr = (uint16_t)(((high << 8) | low) + cpu->index_x);
-            uint8_t val = (uint8_t)(cpu->index_y & (uint8_t)(high + 1));
+            uint8_t val = (uint8_t)(cpu->index_y & mask);
             if ((low + cpu->index_x) >= 0x100) {
-                addr = (uint16_t)((addr & 0x00FF) | (((high + 1) & val) << 8));
+                addr = (uint16_t)((addr & 0x00FF) | ((uint16_t)val << 8));
             }
             write_byte(cpu, bus, addr, val);
             break;
@@ -961,11 +979,11 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             uint8_t low = read_byte(cpu, bus, cpu->program_counter++);
             uint8_t high = read_byte(cpu, bus, cpu->program_counter++);
             uint16_t uncorrected = (uint16_t)((high << 8) | ((low + cpu->index_y) & 0xFF));
-            read_byte(cpu, bus, uncorrected);
+            uint8_t mask = unstable_store_mask(cpu, bus, uncorrected, high);
             uint16_t addr = (uint16_t)(((high << 8) | low) + cpu->index_y);
-            uint8_t val = (uint8_t)(cpu->stack_pointer & (uint8_t)(high + 1));
+            uint8_t val = (uint8_t)(cpu->stack_pointer & mask);
             if ((low + cpu->index_y) >= 0x100) {
-                addr = (uint16_t)((addr & 0x00FF) | (((high + 1) & val) << 8));
+                addr = (uint16_t)((addr & 0x00FF) | ((uint16_t)val << 8));
             }
             write_byte(cpu, bus, addr, val);
             break;
@@ -984,7 +1002,7 @@ int cpu_step(CPU6502 *cpu, CPUBus *bus) {
             break;
     }
 
-    if (cpu->nmi_edge && cpu->nmi_pulsed_cycle == cpu->cycle_count) {
+    if (cpu->nmi_edge && (opcode == 0x00 || cpu->nmi_pulsed_cycle == cpu->cycle_count)) {
         cpu->nmi_delayed = true;
         cpu->nmi_edge = false;
     } else if (cpu->nmi_delayed) {

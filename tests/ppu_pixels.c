@@ -27,6 +27,23 @@ static PPU2C02 *pixel_setup(int pixel_x, bool opaque_background) {
     return p;
 }
 
+/* Supply the state at this pixel: counters have already counted down and
+   the pattern registers have shifted for preceding pixels. */
+static ScanlineSprite fetched_sprite(PPU2C02 *p, unsigned index, unsigned x,
+                                    uint8_t low, uint8_t high, uint8_t attr,
+                                    uint8_t sprite_index) {
+    unsigned pixel = (unsigned)p->cycle - 1;
+    if (pixel < x) {
+        p->sprite_counter_active |= 1u << index;
+        return (ScanlineSprite){(uint8_t)(x - pixel), low, high, attr, sprite_index};
+    }
+    unsigned elapsed = pixel - x;
+    if (elapsed >= 8) low = high = 0;
+    else if (attr & 0x40) { low >>= elapsed; high >>= elapsed; }
+    else { low <<= elapsed; high <<= elapsed; }
+    return (ScanlineSprite){0, low, high, attr, sprite_index};
+}
+
 static uint32_t draw_pixel(void) {
     int index = s.nes.ppu.scanline * 256 + s.nes.ppu.cycle - 1;
     ppu_step(&s.nes);
@@ -39,7 +56,7 @@ static void transparency_and_background_priority(void) {
             for (unsigned behind = 0; behind < 2; ++behind) {
                 PPU2C02 *p = pixel_setup(40, bg != 0);
                 p->scanline_sprite_count = 1;
-                p->scanline_sprites[0] = (ScanlineSprite){40, sp ? 0xFF : 0, 0, behind ? 0x20 : 0, 0};
+                p->scanline_sprites[0] = fetched_sprite(p, 0, 40, sp ? 0xFF : 0, 0, behind ? 0x20 : 0, 0);
                 uint32_t expected = bg ? background : backdrop;
                 if (sp && (!bg || !behind)) expected = sprite_red;
                 assert(draw_pixel() == expected);
@@ -54,8 +71,8 @@ static void first_opaque_sprite_wins_even_behind_background(void) {
         for (unsigned first_opaque = 0; first_opaque < 2; ++first_opaque) {
             PPU2C02 *p = pixel_setup(40, bg != 0);
             p->scanline_sprite_count = 2;
-            p->scanline_sprites[0] = (ScanlineSprite){40, first_opaque ? 0xFF : 0, 0, 0x20, 0};
-            p->scanline_sprites[1] = (ScanlineSprite){40, 0xFF, 0, 1, 1};
+            p->scanline_sprites[0] = fetched_sprite(p, 0, 40, first_opaque ? 0xFF : 0, 0, 0x20, 0);
+            p->scanline_sprites[1] = fetched_sprite(p, 1, 40, 0xFF, 0, 1, 1);
             uint32_t expected = first_opaque ? (bg ? background : sprite_red) : sprite_green;
             assert(draw_pixel() == expected);
             assert(!!(p->ppu_status & 0x40) == !!(bg && first_opaque));
@@ -68,7 +85,7 @@ static void sprite_bounds_and_horizontal_flip(void) {
         for (int x = 38; x < 50; ++x) {
             PPU2C02 *p = pixel_setup(x, true);
             p->scanline_sprite_count = 1;
-            p->scanline_sprites[0] = (ScanlineSprite){40, 0x80, 0x01, flip ? 0x40 : 0, 0};
+            p->scanline_sprites[0] = fetched_sprite(p, 0, 40, 0x80, 0x01, flip ? 0x40 : 0, 0);
             uint32_t expected = background;
             if (x == 40) expected = flip ? sprite_green : sprite_red;
             if (x == 47) expected = flip ? sprite_red : sprite_green;
@@ -79,7 +96,7 @@ static void sprite_bounds_and_horizontal_flip(void) {
     // A sprite reaching the right edge does not wrap back onto the left edge.
     PPU2C02 *p = pixel_setup(0, true);
     p->scanline_sprite_count = 1;
-    p->scanline_sprites[0] = (ScanlineSprite){252, 0xFF, 0, 0, 0};
+    p->scanline_sprites[0] = fetched_sprite(p, 0, 252, 0xFF, 0, 0, 0);
     assert(draw_pixel() == background);
     assert(!(p->ppu_status & 0x40));
 }
@@ -93,7 +110,7 @@ static void sprite_zero_clipping_and_right_edge(void) {
                 PPU2C02 *p = pixel_setup(x, true);
                 p->ppu_mask = (uint8_t)((enables << 3) | (clip << 1));
                 p->scanline_sprite_count = 1;
-                p->scanline_sprites[0] = (ScanlineSprite){(uint8_t)x, 0xFF, 0, 0x20, 0};
+                p->scanline_sprites[0] = fetched_sprite(p, 0, (uint8_t)x, 0xFF, 0, 0x20, 0);
                 (void)draw_pixel();
                 bool hit = enables == 3 && x != 255 && (x >= 8 || clip == 3);
                 assert(!!(p->ppu_status & 0x40) == hit);
@@ -104,7 +121,7 @@ static void sprite_zero_clipping_and_right_edge(void) {
     PPU2C02 *p = pixel_setup(7, true);
     p->ppu_mask = 0x1A;
     p->scanline_sprite_count = 1;
-    p->scanline_sprites[0] = (ScanlineSprite){7, 0xFF, 0, 0, 0};
+    p->scanline_sprites[0] = fetched_sprite(p, 0, 7, 0xFF, 0, 0, 0);
     assert(draw_pixel() == background);
     // A hit remains set until the pre-render clear, even on transparent pixels.
     p = pixel_setup(40, false);

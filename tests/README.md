@@ -10,6 +10,33 @@ game code, filenames, ROM hashes, or game-specific timing workarounds. Save suit
 also check application reliability using generated cartridge data in temporary
 subdirectories under `build/tests/`, removed on success.
 
+## AccuracyCoin integration
+
+With an AccuracyCoin ROM already available, run:
+
+```sh
+bash tests/roms/accuracycoin.sh build/AccuracyCoin.nes
+```
+
+The runner boots the ROM, selects Run All through normal controller input,
+reads its menu catalog and reports each result. It returns a nonzero status for
+failures, skipped tests, unfinished tests, or a stalled run. It does not modify
+ROM code or import/write battery saves. No ROM is downloaded by the runner.
+To run a single page or test, append its one-based page and optional row:
+
+```sh
+bash tests/roms/accuracycoin.sh build/AccuracyCoin.nes 20 6
+```
+
+`NES_COIN_DUMP=1` includes the test's scratch RAM when it fails. The implemented
+CPU/PPU alignment covers the supplied 146-test AccuracyCoin revision, including
+undocumented stores under RDY, NMI hijacking, internal/external DMA bus conflicts,
+DMC aborts, controller strobes, PPU read sequencing, rendering transitions and
+cycle-level primary/secondary OAM evaluation. Reference:
+[AccuracyCoin source and hardware test descriptions](https://github.com/100thCoin/AccuracyCoin).
+Save-state version 6 preserves the added bus/evaluation state; versions 1–5
+remain readable, with defaults for timing state absent from older files.
+
 ## Coverage
 
 `menu_bar.c` checks desktop menu navigation, disabled items, separators,
@@ -27,13 +54,14 @@ save/load commands. F10 activates menus; Shift+F10 steps the debugger.
 | `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; NMI and MMC3/TxSROM IRQ poll boundaries across all three PPU dots, both mapper pattern-table layouts, and deferred PPUCTRL enable; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |
 | `cpu_irq_polling.c` | IRQ edges on the penultimate/final CPU cycle, retained sampled IRQ after deassertion, CLI/SEI/PLP/RTI flag timing, branch poll points and stalled boundaries |
 | `ppu_frame_timing.c` | 89,342-dot NTSC frames; odd-frame shortening only with rendering enabled; CPU PPUMASK writes around the skip-decision boundary; vblank/pre-render flag edges; status acknowledgement and shared write-latch reset |
+| `ppu_bus_timing.c` | Separate ALE/read phases, hybrid PPU addresses, delayed PPUDATA/mask/address transfers, simultaneous ALE/read pattern corruption, grayscale palette reads, blanked sprite counters and secondary-OAM wrap/overflow state |
 | `ppu_register_bus.c` | CPU instructions accessing RAM and PPU register mirrors; nametable routing; PPUDATA increments, delayed reads, palette bypass and buffer refill; PPUSTATUS sampled on the CPU data-read cycle; single-dot vblank set/clear boundaries, status-read NMI suppression and PPUCTRL disable timing |
 | `nametable_viewer.c` | Four-table address layout, horizontal/vertical/one-screen/four-screen mirroring, attribute quadrants, CHR table selection, bit order, transparency, mid-frame capture, actual MMC3 gameplay/HUD fetches, mirrored row updates, frame-cache clearing, identical emulator state with the observer enabled, and snapshot isolation across all 23 mapper IDs |
 | `ppu_pixels.c` | Transparency and background priority, first-opaque-sprite ordering, horizontal flips and bounds, sprite-zero hit clipping/right edge/persistence, forced-blank palette selection and mask changes |
 | `ppu_sprite_overflow.c` | DMA-loaded hidden sprites at Y=240..255 across both sprite heights and rendering enables; eight/nine-sprite threshold, vertical range boundaries, Y=239 evaluation and status-read persistence |
 | `apu_timing.c` | Phase-dependent three/four-cycle frame-counter reset; channel-enable/length status; length/halt collisions; held triangle DAC; pulse versus triangle timer division; all 16 NTSC DMC output periods; five-step IRQ suppression and independent IRQ inhibition |
 | `region_audio.c` | PAL CPU/PPU ratio, frame length, vblank/IRQ edges, DMC/noise periods, controller DMA gating, output rate and DC rejection |
-| `expansion_audio.c` | VRC6 address variants, N163 RAM ports, Sunsoft envelopes, MMC5 PCM IRQs, FDS sound engine, VRC7 built-in/custom patches and exact sound-state replay; awaiting user execution |
+| `expansion_audio.c` | VRC6 address variants, N163 RAM ports, Sunsoft envelopes, MMC5 PCM IRQs, FDS sound engine, VRC7 built-in/custom patches and exact sound-state replay |
 | `apu_view.c` | Timer-derived A4 pitches, pulse sweep/length/volume gates, triangle linear-counter gate, noise envelope level, buffered DMC playback versus held DAC, read-only snapshots, paused history, ring wrap, rewind and gaps |
 | `ppu_mmc3_irq.c` | MMC3/TxSROM first pre-render clock and exact split dots with both 8x8 pattern-table layouts and frame parities; IRQ acknowledgement |
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |

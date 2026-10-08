@@ -43,7 +43,7 @@ static void vblank_and_prerender_flag_edges(void) {
 }
 
 // ppu_vbl_nmi/10-even_odd_timing checks late PPUMASK changes. A write
-// before dot 338 is processed affects the skip; one after it is too late.
+// propagates for two dots before the skip latch samples dot 338.
 static void rendering_toggle_at_odd_frame_skip_boundary(void) {
     const uint8_t masks[] = {0x08, 0x10, 0x18};
     for (unsigned odd = 0; odd < 2; ++odd) {
@@ -60,7 +60,7 @@ static void rendering_toggle_at_odd_frame_skip_boundary(void) {
                     test_step(&s, 4); // STA $2001 samples after 12 PPU dots.
                     for (int dot = 0; dot < 5 && s.nes.ppu.scanline == 261; ++dot)
                         ppu_step(&s.nes);
-                    bool skip = odd && (write_at <= 338 ? enable : !enable);
+                    bool skip = odd && (write_at <= 336 ? enable : !enable);
                     assert(s.ppu_ticks == (skip ? 340u : 341u));
                     assert(s.nes.ppu.scanline == 0 && s.nes.ppu.cycle == 0);
                 }
