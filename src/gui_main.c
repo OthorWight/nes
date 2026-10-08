@@ -806,7 +806,7 @@ static void draw_debug_panel(void) {
             nes_sys.zapper_x, nes_sys.zapper_y, nes_sys.zapper_trigger, nes_sys.zapper_light);
     }
     draw_string(&debug_canvas, "F3:Debug panel  F2:Metrics  F4:Capture", 8, 612, 0x78C8FF);
-    draw_string(&debug_canvas, "Shift+F10:Step  F9:Run  Ctrl+F4:Trace", 8, 626, 0x78C8FF);
+    draw_string(&debug_canvas, "F10:Step  F9:Run  Ctrl+F4:Trace", 8, 626, 0x78C8FF);
 }
 static bool running = true, cursor_visible = true, was_playing;
 static uint32_t last_mouse_activity;
@@ -966,7 +966,7 @@ static const MenuItem view_items[] = {
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
 };
 static const MenuItem debug_items[] = {
-    ITEM("Step Instruction", "Shift+F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
+    ITEM("Step Instruction", "F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
     ITEM("Breakpoint", "F7", MENU_BREAKPOINT), ITEM("Event Trace", "Ctrl+F4", MENU_TRACE)
 };
 static const MenuItem help_items[] = {
@@ -1202,7 +1202,7 @@ static void desktop_draw(void) {
         int x = w > 352 ? (w - 336) / 2 : 8, y = MENU_BAR_HEIGHT + 12;
         chrome_fill(NULL, (MenuRect){x, y, 336, 180}, 0x808080);
         chrome_fill(NULL, (MenuRect){x + 1, y + 1, 334, 178}, 0xF0EEE8);
-        static const char *controls[] = {"Controls / Shortcuts", "Alt / F10: Menu bar", "Arrows / Enter: Select", "Escape: Close / Back", "Shift+F10: Step   F9: Run/Pause", "F2: Metrics   F3: Debug panel", "F4: Capture   Ctrl+F4: Trace", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Escape or click: Close"};
+        static const char *controls[] = {"Controls / Shortcuts", "Alt: Menu bar", "Arrows / Enter: Select", "Escape: Close / Back", "F10: Step   F9: Run/Pause", "F2: Metrics   F3: Debug panel", "F4: Capture   Ctrl+F4: Trace", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Escape or click: Close"};
         static const char *about[] = {"NES Emulator", "Custom Sokol desktop interface", "8x8 bitmap font", "Windows / Linux / macOS", "", "Escape, Enter or click: Close"};
         const char **lines = help_page == 1 ? controls : about;
         int count = help_page == 1 ? COUNT(controls) : COUNT(about);
@@ -1465,7 +1465,6 @@ static bool desktop_event(const HostEvent *event) {
         e.repeat = event->key.repeat;
         switch (event->key.keysym.sym) {
             case HOST_KEY_LALT: case HOST_KEY_RALT: e.key = MENU_KEY_ACTIVATE; break;
-            case HOST_KEY_F10: if (!event->key.keysym.mod) e.key = MENU_KEY_ACTIVATE; break;
             case HOST_KEY_LEFT: e.key = MENU_KEY_LEFT; break;
             case HOST_KEY_RIGHT: e.key = MENU_KEY_RIGHT; break;
             case HOST_KEY_UP: e.key = MENU_KEY_UP; break;
@@ -1832,9 +1831,7 @@ static void app_frame(void) {
                         }
                         break;
                     }
-                    case HOST_KEY_F10:
-                        if (event.key.keysym.mod & HOST_MOD_SHIFT) desktop_command(MENU_STEP);
-                        break;
+                    case HOST_KEY_F10: desktop_command(MENU_STEP); break;
                     case HOST_KEY_F9: desktop_command(MENU_RUN); break;
                     case HOST_KEY_F12:
                         if (debugger_active) desktop_command(MENU_RESET);

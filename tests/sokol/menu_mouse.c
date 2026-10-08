@@ -64,7 +64,7 @@ static bool scripted_poll(HostEvent *e) {
             desktop_command(MENU_VOLUME_DOWN); assert(master_volume==90);
             desktop_command(MENU_VOLUME_UP); assert(master_volume==100);
             desktop_command(MENU_CONTROLLER); assert(!zapper_enabled);
-            desktop_command(MENU_ZAPPER); assert(zapper_enabled); key(e,HOST_KEY_F10); break;
+            desktop_command(MENU_ZAPPER); assert(zapper_enabled); key(e,HOST_KEY_LALT); break;
         case 12: assert(desktop_menu.active); key(e,HOST_KEY_ESCAPE); break;
         case 13: assert(!desktop_menu.active); e->type=HOST_QUIT; break;
         default: assert(!"Desktop test did not exit"); break;

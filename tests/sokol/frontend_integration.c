@@ -176,9 +176,9 @@ static bool scripted_poll(HostEvent *e) {
         case 8: e->type = HOST_WINDOWEVENT; e->window.event = HOST_WINDOWEVENT_FOCUS_GAINED; break;
         case 9: key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
         case 10: assert(nes_sys.controller_state[0] == 0); key(e, HOST_KEYDOWN, HOST_KEY_x); break;
-        case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); e->key.keysym.mod = HOST_MOD_SHIFT; break;
+        case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); break;
         case 12: {
-            assert(debugger_active && nes_sys.controller_state[0] == 0);
+            assert(debugger_active && !desktop_menu.active && nes_sys.controller_state[0] == 0);
             assert(renderer->has_frame); /* Stepping retains the game beside the debugger. */
             HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
             assert(panel.w > 0 && game.x + game.w <= panel.x);

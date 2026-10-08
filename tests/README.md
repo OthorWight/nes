@@ -45,7 +45,7 @@ drawing callbacks without a window. `file_browser.c` checks folder traversal,
 file filters, paths with spaces, failed navigation, and cancellation. Sokol integration also exercises the
 window-coordinate menu path, captures `desktop-menu.bmp` on Windows, checks
 the reserved viewport bands and constant DPI scale across 1x through 4K sizes, and verifies pause/reset/power/recent-ROM and
-save/load commands. F10 activates menus; Shift+F10 steps the debugger.
+save/load commands. Alt activates menus; F10 steps the debugger.
 
 | Suite | Behaviors checked |
 | --- | --- |

@@ -9,7 +9,7 @@
 *   **Pause / Resume**: `F1` or `Escape`
 
 ### Desktop Menus and File Browser
-* **Alt / F10** activates the desktop menus. Use arrows, Enter, and Escape, or click/hover with the mouse.
+* **Alt** activates the desktop menus. Use arrows, Enter, and Escape, or click/hover with the mouse.
 * **Ctrl+O** opens the ROM file browser. Double-click a folder or ROM, or select it and press Enter / Open.
 * **Up / Backspace** goes to the parent folder; **Home** goes to your home folder. At a Windows drive root, Up lists drives.
 * **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
@@ -136,7 +136,7 @@ and focused regression coverage.
 ## Real-Time Step Debugger
 
 The custom desktop menu bar uses the existing Sokol renderer and 8x8 bitmap
-font. Click a menu, or press **Alt / F10**, then use arrows, Enter, and Escape.
+font. Click a menu, or press **Alt**, then use arrows, Enter, and Escape.
 Hover opens submenus; clicking outside dismisses them. Menus temporarily pause
 emulation and consume navigation input. The bottom status bar reports measured
 FPS/speed, mapper, audio state, and the selected Port 2 device. Both bars reserve
@@ -161,7 +161,7 @@ render callbacks. Static menu tables and command dispatch live in `gui_main.c`.
 `host_layout()` fits the game and debugger within the remaining content area.
 No additional GUI library, native menu, or window is used.
 
-Press `Shift+F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
+Press `F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
 
 ```
 NES DEBUGGER - PAUSED
@@ -175,12 +175,12 @@ P:34  [..-..IZ.]  CYC:347101
 ...
 --------------------------------
 Stack: [ 00 00 00 00 ]
-Shift+F10:Step|F9:Run|F6:Log:OFF
-F7:BRK | UP/DN:Nav | F10:Menu
+F10:Step|F9:Run|F6:Log:OFF
+F7:BRK | UP/DN:Nav | Alt:Menu
 ```
 
 ### Debugger Commands
-*   **Shift+F10**: Step one single CPU instruction.
+*   **F10**: Step one single CPU instruction.
 *   **F9**: Exit step-mode and run emulator at full speed.
 *   **F7**: Toggle Breakpoint on the currently highlighted address.
 *   **F6**: Toggle writing continuous execution logs to `step_trace.log` (logs include full register maps, cycles, scanlines, mapped PRG-banks, and active IRQ lines).
