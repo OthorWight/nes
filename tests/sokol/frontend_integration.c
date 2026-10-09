@@ -169,6 +169,20 @@ static void rom_history_persistence(void) {
     assert(recent_count == 4 && !strcmp(recent_roms[0], paths[4]));
 
     char settings[1024]; get_settings_filepath(settings, sizeof(settings));
+    /* Version 10 keeps its existing history and defaults the new option off. */
+    uint8_t previous[4 * (13 + 2 * CONTROL_COUNT) + 5 * BROWSER_PATH + 8];
+    f = fopen(settings, "rb"); assert(f);
+    assert(fread(previous, 1, sizeof(previous), f) == sizeof(previous));
+    assert(!fclose(f));
+    size_t option_offset = 4 * (12 + 2 * CONTROL_COUNT);
+    previous[0] = 10;
+    memmove(previous + option_offset, previous + option_offset + 4,
+            sizeof(previous) - option_offset - 4);
+    assert(state_atomic_write(settings, previous, sizeof(previous) - 4));
+    remove_sprite_limit = true;
+    load_emulator_settings();
+    assert(!remove_sprite_limit && recent_count == 4 && !strcmp(recent_roms[0], paths[4]));
+
     f = fopen(settings, "r+b"); assert(f);
     assert(!fseek(f, -1, SEEK_END));
     int byte = fgetc(f); assert(byte != EOF);
@@ -454,6 +468,8 @@ static bool scripted_poll(HostEvent *e) {
             break;
         case 23:
             assert(!debug_panel_enabled && performance_visible && renderer->has_frame);
+            desktop_command(MENU_REMOVE_SPRITE_LIMIT);
+            assert(remove_sprite_limit && nes_sys.sprite_view == &sprite_view);
             desktop_command(MENU_NAMETABLES);
             assert(nametable_viewer_enabled && (desktop_state(NULL, MENU_NAMETABLES) & MENU_CHECKED));
             nametable_viewer_enabled = false; load_emulator_settings();
@@ -461,6 +477,8 @@ static bool scripted_poll(HostEvent *e) {
             break;
         case 24: {
             assert(!paused && !debugger_active && renderer->has_frame);
+            assert(remove_sprite_limit && nes_sys.sprite_view == &sprite_view);
+            assert(!memcmp(sprite_view.pixels, nes_sys.ppu.screen_buffer, sizeof(sprite_view.pixels)));
             assert(nametable_view.valid && nametable_view.sampled);
             HostRect game, panel, nt;
             host_layout(sapp_width(), sapp_height(), &game, &panel);

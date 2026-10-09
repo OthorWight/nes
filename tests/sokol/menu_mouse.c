@@ -53,6 +53,14 @@ static bool scripted_poll(HostEvent *e) {
         case 10:
             assert(!rebinding && control_mappings[0]=='k'); capture_window("controls.bmp"); key(e,HOST_KEY_ESCAPE); break;
         case 11:
+            assert(!remove_sprite_limit && !desktop_state(NULL, MENU_REMOVE_SPRITE_LIMIT));
+            desktop_command(MENU_REMOVE_SPRITE_LIMIT);
+            assert(remove_sprite_limit && nes_sys.sprite_view == &sprite_view);
+            assert(desktop_state(NULL, MENU_REMOVE_SPRITE_LIMIT) & MENU_CHECKED);
+            remove_sprite_limit = false; load_emulator_settings(); assert(remove_sprite_limit);
+            desktop_command(MENU_REMOVE_SPRITE_LIMIT);
+            assert(!remove_sprite_limit && !nes_sys.sprite_view);
+            load_emulator_settings(); assert(!remove_sprite_limit);
             assert(!crt_enabled && !desktop_state(NULL, MENU_CRT));
             desktop_command(MENU_CRT);
             assert(crt_enabled && (desktop_state(NULL, MENU_CRT) & MENU_CHECKED));

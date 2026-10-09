@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-09 — Optional extra sprites
+
+- Add View > Remove Sprite Limit, off by default and saved globally. Draw extra
+  OAM sprites in a separate display buffer while preserving hardware OAM
+  evaluation, overflow/sprite-zero flags, mapper bus activity and Zapper sensing.
+- Fetch extra pattern rows through private mapper snapshots, with priority,
+  clipping and both sprite sizes/flips. Save states retain their existing format;
+  resets and loads clear the display cache. Existing settings remain readable.
+- Cover 9–64 sprites and full-state equivalence across all supported mappers.
+
 ## 2026-10-09 — Playback performance follow-up
 
 - Investigated slowdown and audio starvation with the local Super Mario Bros. 3

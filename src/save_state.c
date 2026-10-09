@@ -1,6 +1,7 @@
 #include "save_state.h"
 #include "state_io.h"
 #include "execution.h"
+#include "sprite_view.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -420,6 +421,7 @@ NES_StateResult nes_state_decode(NES *n, const uint8_t *data, size_t size) {
             live->mirroring = c.mirroring;
             staged->cart = live;
             *n = *staged;
+            sprite_view_reset(n->sprite_view, n);
             live->nes = n;
             result = NES_STATE_OK;
         }

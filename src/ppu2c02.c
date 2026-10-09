@@ -2,6 +2,7 @@
 #include "nes_system.h"
 #include "diagnostics.h"
 #include "nametable_view.h"
+#include "sprite_view.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -187,6 +188,10 @@ static const uint32_t NES_PALETTE[64] = {
 };
 
 #define SCREEN_WIDTH         256
+
+uint32_t ppu_palette_color(const PPU2C02 *ppu, unsigned index) {
+    return NES_PALETTE[ppu->palette_ram[index & 31] & 0x3F];
+}
 
 bool ppu_render_nametables(const NES *nes, uint32_t *pixels, int *mirroring) {
     if (!nes || !nes->cart || !nes->cart->vtable || !pixels) return false;
@@ -583,7 +588,8 @@ static void ppu_load_bg_shifters(PPU2C02 *ppu) {
 
 // Called only for visible dots. Resolve the first opaque sprite directly into
 // the background pixel, keeping sprite priority and sprite-zero timing per dot.
-static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
+static uint32_t ppu_compose_pixel(NES *nes, int pixel_x) {
+    PPU2C02 *ppu = &nes->ppu;
     const uint8_t mask = ppu->ppu_mask;
     uint8_t palette_idx = 0;
 
@@ -593,7 +599,9 @@ static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
             palette_idx = vram_addr & 0x1F;
             if ((palette_idx & 0x13) == 0x10) palette_idx &= 0x0F;
         }
-        return NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+        uint32_t pixel = NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+        if (nes->sprite_view) nes->sprite_view->pixels[ppu->scanline * 256 + pixel_x] = pixel;
+        return pixel;
     }
 
     uint8_t bg_color = 0;
@@ -607,6 +615,7 @@ static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
         if (pixel_x < 8 && !(mask & 0x02)) bg_color = 0;
     }
 
+    bool hardware_sprite = false;
     // Clipped sprites cannot contribute a pixel or a sprite-zero hit.
     if ((mask & 0x10) && (pixel_x >= 8 || (mask & 0x04))) {
         for (int s = 0; s < ppu->scanline_sprite_count; ++s) {
@@ -616,6 +625,7 @@ static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
             uint8_t color = ((spr->low_byte >> shift) & 1) |
                             (((spr->high_byte >> shift) & 1) << 1);
             if (!color) continue;
+            hardware_sprite = true;
             if (bg_color) {
                 if (spr->sprite_index == 0 && pixel_x < 255) ppu->ppu_status |= 0x40;
                 // The first opaque sprite wins sprite selection even when it
@@ -627,7 +637,11 @@ static uint32_t ppu_compose_pixel(PPU2C02 *ppu, int pixel_x) {
         }
     }
 
-    return NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+    uint32_t pixel = NES_PALETTE[ppu->palette_ram[palette_idx] & 0x3F];
+    if (nes->sprite_view)
+        nes->sprite_view->pixels[ppu->scanline * 256 + pixel_x] =
+            sprite_view_pixel(nes->sprite_view, ppu, pixel_x, bg_color != 0, hardware_sprite, pixel);
+    return pixel;
 }
 
 /* The external address latch and multiplexed data pins are shared by
@@ -766,6 +780,8 @@ void ppu_step(NES *nes) {
        the current PPU dot before CPU-visible register reads can occur. */
     ppu_oam_eval_tick(ppu);
     ppu_fetch_tick(nes, rendering_enabled && rendering_scanline);
+    if (nes->sprite_view && ppu->cycle == 320)
+        sprite_view_prepare(nes->sprite_view, nes);
 
     if (ppu->scanline == SCANLINE_PRERENDER && ppu->cycle == 1) {
         ppu->ppu_status &= (uint8_t)~0xE0;
@@ -814,7 +830,7 @@ void ppu_step(NES *nes) {
     if (ppu->scanline < SCANLINE_VISIBLE_MAX &&
         ppu->cycle >= 1 && ppu->cycle <= 256) {
         ppu->screen_buffer[ppu->scanline * SCREEN_WIDTH + ppu->cycle - 1] =
-            ppu_compose_pixel(ppu, ppu->cycle - 1);
+            ppu_compose_pixel(nes, ppu->cycle - 1);
         for (int i = 0; i < ppu->scanline_sprite_count; ++i) {
             ScanlineSprite *spr = &ppu->scanline_sprites[i];
             if (ppu->sprite_counter_active & (1u << i)) {

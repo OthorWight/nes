@@ -22,6 +22,7 @@
 #include "diagnostics.h"
 #include "frontend_runtime.h"
 #include "nametable_view.h"
+#include "sprite_view.h"
 #include "apu_view.h"
 #include "rom_preferences.h"
 
@@ -43,6 +44,8 @@ static bool debug_panel_enabled = false;
 static int window_scale = 5;
 static bool fullscreen = false;
 static bool crt_enabled = false;
+static bool remove_sprite_limit = false;
+static SpriteView sprite_view;
 static bool nametable_viewer_enabled = false;
 static NametableView nametable_view;
 static bool apu_viewer_enabled;
@@ -367,9 +370,9 @@ static void save_emulator_settings(void) {
             show_notification("ROM SETTINGS SAVE FAILED");
         else rom_override = !preferences_inherit;
     }
-    uint8_t data[128 + 5 * BROWSER_PATH + 8];
+    uint8_t data[4 * (13 + 2 * CONTROL_COUNT) + 5 * BROWSER_PATH + 8];
     StateIO io = {data, sizeof(data), 0, false, true};
-    state_u32(&io, 10);
+    state_u32(&io, 11);
     state_i32(&io, master_volume);
     state_i32(&io, audio_muted ? 1 : 0);
     state_i32(&io, (int)global_preferences.scale);
@@ -383,6 +386,7 @@ static void save_emulator_settings(void) {
     state_i32(&io, nametable_viewer_enabled ? 1 : 0);
     state_i32(&io, apu_viewer_enabled ? 1 : 0);
     state_i32(&io, region_setting);
+    state_i32(&io, remove_sprite_limit ? 1 : 0);
     size_t history_start = io.pos;
     state_u32(&io, (uint32_t)recent_count);
     state_bytes(&io, (uint8_t *)last_rom_directory, sizeof(last_rom_directory));
@@ -418,6 +422,7 @@ static void load_emulator_settings(void) {
     update_recent_labels();
     zapper_enabled = false;
     crt_enabled = false;
+    remove_sprite_limit = false;
     nametable_viewer_enabled = false;
     apu_viewer_enabled = false;
     region_setting = NES_REGION_AUTO;
@@ -428,7 +433,7 @@ static void load_emulator_settings(void) {
     if (!f) return;
 
     uint32_t version = 0;
-    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 10) {
+    if (fread(&version, sizeof(version), 1, f) != 1 || version < 1 || version > 11) {
         fclose(f);
         return;
     }
@@ -478,6 +483,10 @@ static void load_emulator_settings(void) {
         int value;
         if (fread(&value, sizeof(value), 1, f) == 1 && value >= NES_NTSC && value <= NES_REGION_AUTO)
             region_setting = value;
+    }
+    if (version >= 11) {
+        int value = 0;
+        if (fread(&value, sizeof(value), 1, f) == 1) remove_sprite_limit = value == 1;
     }
     if (version >= 10) load_rom_history(f);
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
@@ -1081,6 +1090,7 @@ static const MenuItem emulation_items[] = {
 static const MenuItem view_items[] = {
     SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
     ITEM("CRT Shader", NULL, MENU_CRT),
+    ITEM("Remove Sprite Limit", NULL, MENU_REMOVE_SPRITE_LIMIT),
     ITEM("Nametable Viewer", NULL, MENU_NAMETABLES),
     ITEM("APU Viewer", NULL, MENU_APU_VIEWER),
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
@@ -1142,6 +1152,7 @@ static unsigned desktop_state(void *context, MenuCommand command) {
         case MENU_APU_VIEWER: return apu_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_NAMETABLES: return nametable_viewer_enabled ? MENU_CHECKED : 0;
         case MENU_CRT: return crt_enabled ? MENU_CHECKED : 0;
+        case MENU_REMOVE_SPRITE_LIMIT: return remove_sprite_limit ? MENU_CHECKED : 0;
         case MENU_DEBUG_PANEL: return debug_panel_enabled ? MENU_CHECKED : 0;
         case MENU_METRICS: return performance_visible ? MENU_CHECKED : 0;
         case MENU_TRACE: return diagnostics.tracing ? MENU_CHECKED : 0;
@@ -1218,6 +1229,11 @@ static void desktop_command(MenuCommand command) {
             nametable_view.valid = false; save_emulator_settings(); break;
         case MENU_CRT:
             crt_enabled = !crt_enabled; host_set_crt(crt_enabled); save_emulator_settings(); break;
+        case MENU_REMOVE_SPRITE_LIMIT:
+            remove_sprite_limit = !remove_sprite_limit;
+            sprite_view_reset(&sprite_view, &nes_sys);
+            nes_sys.sprite_view = remove_sprite_limit ? &sprite_view : NULL;
+            save_emulator_settings(); break;
         case MENU_METRICS: performance_visible = !performance_visible; save_emulator_settings(); break;
         case MENU_STEP: case MENU_RUN:
             paused = false;
@@ -1748,6 +1764,11 @@ static void app_init(void) {
 
 static void app_frame(void) {
     HostEvent event;
+    SpriteView *display = remove_sprite_limit ? &sprite_view : NULL;
+    if (nes_sys.sprite_view != display) {
+        sprite_view_reset(&sprite_view, &nes_sys);
+        nes_sys.sprite_view = display;
+    }
     nes_sys.nametable_view = nametable_viewer_enabled ? &nametable_view : NULL;
     host_poll_gamepads();
     if (debugger_active && !desktop_menu.active && !help_page && !file_browser.active && focused)
@@ -1763,7 +1784,8 @@ static void app_frame(void) {
             host_color(renderer, 0, 0, 0, 255);
             host_clear(renderer);
             GameCrop crop = game_crop(nes_sys.cart->mapper_id);
-            host_draw_frame(renderer, nes_sys.ppu.screen_buffer, &(HostRect){crop.x, crop.y, crop.w, crop.h});
+            host_draw_frame(renderer, nes_sys.sprite_view ? sprite_view.pixels : nes_sys.ppu.screen_buffer,
+                            &(HostRect){crop.x, crop.y, crop.w, crop.h});
             draw_notification(renderer);
             draw_debug_panel();
             desktop_present(renderer);
@@ -1811,7 +1833,7 @@ static void app_frame(void) {
 
             GameCrop crop = game_crop(nes_sys.cart->mapper_id);
             HostRect src_rect = {crop.x, crop.y, crop.w, crop.h};
-            host_draw_frame(renderer, nes_sys.ppu.screen_buffer, &src_rect);
+            host_draw_frame(renderer, nes_sys.sprite_view ? sprite_view.pixels : nes_sys.ppu.screen_buffer, &src_rect);
 
 
 

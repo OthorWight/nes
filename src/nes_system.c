@@ -1,6 +1,7 @@
 #include "nes_system.h"
 #include "diagnostics.h"
 #include "execution.h"
+#include "sprite_view.h"
 #include <string.h>
 
 void nes_init(NES *nes) {
@@ -24,6 +25,7 @@ void nes_set_region(NES *nes, unsigned region) {
 }
 
 void nes_reset(NES *nes) {
+    sprite_view_reset(nes->sprite_view, nes);
     unsigned region = nes->region_override;
     if (region == NES_REGION_AUTO) {
         unsigned timing = nes->cart ? nes->cart->info.timing : 0;

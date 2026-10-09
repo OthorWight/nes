@@ -9,6 +9,7 @@ typedef struct NES NES;
 typedef struct Cartridge Cartridge;
 typedef struct NESDiagnostics NESDiagnostics;
 typedef struct NametableView NametableView;
+typedef struct SpriteView SpriteView;
 typedef struct NESExecution NESExecution;
 typedef struct {
     uint64_t dots, frames, budget;
@@ -86,6 +87,7 @@ struct NES {
     bool       frame_ready;
     NESDiagnostics *diagnostics; // Host observation only; excluded from save states.
     NametableView *nametable_view; // Optional background-fetch observer; not saved.
+    SpriteView *sprite_view; // Optional extra-sprite display; not saved.
     NESExecution *execution; // Parkable host execution controller; never serialized.
     NESExecutionClock execution_clock; // Host clock accounting and optional hooks; not saved.
     // Host mixer switches: P1/P2/triangle/noise/DMC, then expansion voices in

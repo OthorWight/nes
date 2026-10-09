@@ -110,5 +110,6 @@ void    ppu_write_reg_timed(NES *nes, uint16_t address, uint8_t data);
 
 uint8_t ppu_palette_read(PPU2C02 *ppu, uint16_t addr);
 void    ppu_palette_write(PPU2C02 *ppu, uint16_t addr, uint8_t data);
+uint32_t ppu_palette_color(const PPU2C02 *ppu, unsigned index);
 
 #endif
