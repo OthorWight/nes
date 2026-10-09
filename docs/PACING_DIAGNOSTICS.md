@@ -3,7 +3,12 @@
 Gameplay uses high-resolution fractional deadlines based on the CPU cycles
 actually emulated, at the selected region's CPU clock: NTSC 1,789,773 Hz,
 PAL 1,662,607 Hz, or Dendy 1,773,448 Hz. Audio enabled, muted,
-and unavailable share this scheduler. A host stall more than 50 ms beyond the
+and unavailable share this scheduler. When a whole frame behind, playback can
+emulate up to three frames before presenting once. Each frame retains its audio,
+diagnostics and rewind checkpoint; breakpoints immediately end the batch. This
+bounded recovery avoids extra video work while keeping input processing responsive.
+Reported FPS counts emulated frames, including those in recovery batches.
+A host stall more than 250 ms beyond the
 deadline discards the backlog. Menus, debugger transitions, focus loss, ROM loads
 and state loads rebase time.
 
@@ -31,17 +36,17 @@ continue while other logic waits.
 ## Audio
 
 Audio is queued immediately after emulation, before texture upload and video
-presentation can block. Playback starts paused and primes with at least 3,072
-mono samples (69.7 ms), covering three requested 1,024-sample device blocks.
-Frame-sized batches bring startup priming to about 83 ms. This adds roughly two
-frames of startup reserve compared with the former 1,470-sample threshold.
+presentation can block. Playback starts paused and primes with at least 4,096
+mono samples (92.9 ms), covering four requested 1,024-sample device blocks.
+Frame-sized batches bring startup priming to about 100 ms. The extra block
+protects against bursts of late frames and adds about 23 ms of steady audio reserve.
 The 6,144-sample (139.3 ms) queue limit is a recovery guard; normal queue depth is
-around 60 ms after a frame's refill, plus the device/driver's own buffering.
+around 85 ms after a frame's refill, plus the device/driver's own buffering.
 Excess backlog is cleared and primed again. Core samples are drained even when
 muted or the audio device cannot open.
 
 The host frame clock and the audio device clock can differ slightly. A smoothed
-queue-depth controller targets 2,048 queued samples before refill and adjusts
+queue-depth controller targets 3,072 queued samples before refill and adjusts
 the output/input sample ratio by at most +/-1%. Streaming linear interpolation
 preserves fractional phase and the boundary sample between frames. This corrects
 gradual queue drain/growth without changing CPU/PPU timing or game speed. The
@@ -126,7 +131,8 @@ Scheduler tests simulate ten minutes with sleep jitter and three audio modes,
 followed by a stall and resume. Existing core and save/replay suites still run.
 `audio_playback.c` separately simulates ten minutes per device-clock offset
 (-0.8%, -0.2%, 0%, +0.2%, +0.8%), with 1,024-sample device reads and occasional
-20 ms late frames. It checks both empty-queue observations and partial device
+35 ms late frames and eight-frame bursts accumulating 48 ms of lateness. It checks
+both empty-queue observations and partial device
 reads that would insert silence, plus a 512-sample case. At +/-0.2% drift,
 disabling correction reproduces underruns or queue trims despite the larger
 reserve; correction must eliminate both. Ramp, silence and constant-signal tests
@@ -159,9 +165,39 @@ bash tests/performance/run.sh "build/Super Mario Bros.nes" 240
 The benchmark warms up for 120 frames, then repeats the same workload with
 diagnostics detached, normal frame history, and event tracing. It reports core,
 diagnostic and total milliseconds per frame, CPU cycles and the final image CRC.
+It also compares attached debugger execution with and without rewind history.
+GCC/Clang application and test builds use `-O3 -flto`, without fast-math, so
+performance probes exercise the release optimization settings.
 It does not write game saves. Compare the same ROM/frame count and power profile;
 there are no machine-dependent timing assertions. Host rendering, frame waits and
 physical audio playback are excluded.
+The benchmark also measures attached execution control with and without rewind
+history. All five modes must produce matching cycle counts and framebuffer CRCs.
+
+For a sustained real-window check with a local ROM, CRT rendering, the metrics
+panel, and a large window, run:
+
+```sh
+bash tests/sokol/run.sh "build/Super Mario Bros 3.nes" 1800
+```
+
+The optional probe runs for about 30 seconds after warmup, sends Start through normal
+host input, and checks emulation speed and audio underruns/trims. It writes
+`rom-pacing.log` in an isolated test directory and never uses the game's existing
+battery files. This supplements the short synthetic frontend fixture with actual
+mapper, sprite, background, and rendering work. Run it without concurrent builds
+or benchmarks. Exact wall-clock performance still depends on the host.
+Any audio events also write a capture at the time they occur.
+Set `NES_SOKOL_PACING_STALL_MS=35` to inject a 35 ms host stall every 120
+callbacks and exercise recovery; values from 0 through 40 are accepted.
+
+Local playback follow-up (2026-10-09): Super Mario Bros. 3 at 2862×1722 with
+CRT and metrics enabled completed one minute at 60.10 FPS / 100.00% speed on
+Balanced, and another minute with injected 35 ms stalls at 60.06 FPS / 99.94%.
+Both had zero queue underruns, trims and errors. Power Saver on the same host
+still produced occasional dropouts during bursts of late frames. The emulator
+does not change the desktop power profile; the test restored its temporary change.
+Captures are in `build/tests/sokol-balanced-IrUB6v/`.
 
 The CRC tables are checked in; normal builds need no generator or CPU-specific
 instructions. To regenerate them, run

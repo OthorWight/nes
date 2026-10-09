@@ -2,6 +2,7 @@
 #define DIAGNOSTICS_H
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #define DIAGNOSTIC_EVENTS 4096u
 #define DIAGNOSTIC_FRAMES 180u
 typedef struct NES NES;
@@ -39,4 +40,5 @@ DiagnosticSummary diagnostics_summary(const NESDiagnostics *d);
 bool diagnostics_write(const NES *n, const char *path, const char *rom, unsigned underruns,
                        unsigned trims, unsigned errors, double device_ms);
 bool nes_cpu_peek(NES *n, uint16_t address, uint8_t *value);
+bool nes_ppu_peek_range(const NES *, uint16_t address, uint8_t *out, size_t size);
 #endif

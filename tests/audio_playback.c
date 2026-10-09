@@ -49,10 +49,12 @@ static unsigned simulate(double drift, unsigned device_block, bool correct) {
     const double frame_duration = 29780.5 / NES_HOST_CPU_HZ;
     const double device_duration = device_block / (AUDIO_RATE * (1 + drift));
     for (unsigned frame = 0; frame < 36000; ++frame) {
-        // Irregular wakeups and an occasional 20ms late frame; subsequent
+        // Irregular wakeups and an occasional 35ms late frame; subsequent
         // frames catch up to the same absolute scheduler deadlines.
         double host = frame * frame_duration + (frame % 4) * 0.001;
-        if (frame % 113 == 112) host += 0.020;
+        unsigned burst = frame % 113;
+        if (burst >= 105) host += (burst - 104) * 0.006;
+        else if (frame % 127 == 126) host += 0.035;
         if (host < last_host + 0.001) host = last_host + 0.001;
         last_host = host;
         while (monitor.playing && next_device <= host) {

@@ -6,7 +6,7 @@ $testDir = Join-Path $root ('build/tests/sokol-' + [guid]::NewGuid().ToString('N
 New-Item -ItemType Directory -Path $testDir | Out-Null
 $sources = @(Get-ChildItem src/*.c | Where-Object Name -ne 'gui_main.c' | ForEach-Object FullName)
 foreach ($name in @('frontend_integration','menu_mouse')) {
-    & gcc -Wall -Wextra -std=c11 -O2 -Isrc "tests/sokol/$name.c" @sources -o "$testDir/$name.exe" -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
+    & gcc -Wall -Wextra -std=c11 -O3 -flto -Isrc "tests/sokol/$name.c" @sources -o "$testDir/$name.exe" -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $name" }
 }
 $core = @($sources | Where-Object { (Split-Path $_ -Leaf) -notin @('debugger.c','host_sokol.c') })

@@ -63,6 +63,8 @@ static int control_selection;
 static char recent_labels[4][29] = {"(Empty)", "(Empty)", "(Empty)", "(Empty)"};
 static int recent_count;
 static void update_recent_labels(void);
+static void frontend_execution_observer(NES *, void *);
+static void frontend_instruction_observer(NES *, void *);
 static FrameScheduler frame_scheduler;
 static AudioQueueMonitor audio_monitor;
 static AudioResampler audio_resampler;
@@ -268,6 +270,7 @@ static void get_clean_rom_name(char *out_buf, size_t max_len) {
 }
 
 static bool save_battery_ram(void) {
+    execution_sync(nes_sys.execution);
     if (cartridge_save_battery(nes_sys.cart)) return true;
     show_notification("BATTERY SAVE FAILED");
     notification_timer = 180;
@@ -309,6 +312,19 @@ static void rom_preferences_path(char *path, size_t size) {
     if (slash) *slash = '\0';
     snprintf(path, size, "%s/%08X-%08X-%08X.prefs", root,
         nes_sys.cart->rom_identity[0], nes_sys.cart->rom_identity[1], nes_sys.cart->rom_identity[2]);
+}
+
+static void debugger_settings_path(char *path, size_t size) {
+    rom_preferences_path(path, size);
+    char *extension = strrchr(path, '.');
+    if (extension) snprintf(extension, size - (size_t)(extension - path), ".debug");
+}
+
+static void save_debugger_breakpoints(void) {
+    if (!nes_sys.cart || !nes_sys.execution) return;
+    char path[1200]; debugger_settings_path(path, sizeof(path));
+    if (!execution_save_breakpoints(nes_sys.execution, path))
+        fprintf(stderr, "Cannot save debugger breakpoints: %s\n", path);
 }
 
 static void apply_display(void) { host_display(window_scale, fullscreen); }
@@ -701,6 +717,7 @@ static void capture_diagnostics(void) {
 }
 
 static void save_emulator_state(const char *dir, const char *filename) {
+    execution_sync(nes_sys.execution);
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
     NES_StateResult result = nes_state_save(&nes_sys, filepath);
@@ -712,11 +729,13 @@ static void save_emulator_state(const char *dir, const char *filename) {
 }
 
 static void load_emulator_state(const char *dir, const char *filename) {
+    execution_sync(nes_sys.execution);
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
     NES_StateResult result = nes_state_load(&nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
+        execution_invalidate(nes_sys.execution);
         region_setting = nes_sys.region_override;
         nametable_view.valid = false;
         memset(&apu_view, 0, sizeof(apu_view));
@@ -779,6 +798,7 @@ static void draw_debug_panel(void) {
             debugger_selected_line = 0;
         }
         debugger_render(&debug_canvas, &nes_sys.cpu);
+        if (debugger_active) { debugger_draw_workspace(&debug_canvas); return; }
         y = 258;
     }
     DiagnosticSummary s = diagnostics_summary(&diagnostics);
@@ -907,7 +927,10 @@ static bool frontend_load_rom(const char *name) {
         return false;
     }
     if (nes_sys.cart) {
+        execution_sync(nes_sys.execution);
         if (!save_battery_ram()) return false;
+        save_debugger_breakpoints();
+        execution_destroy(nes_sys.execution);
         cartridge_free(nes_sys.cart);
         nes_sys.cart = NULL;
     }
@@ -992,6 +1015,22 @@ static bool frontend_load_rom(const char *name) {
         }
         paused = false;
         runtime_reset_pending = true;
+        NESExecution *execution = execution_create(&nes_sys);
+        if (!execution) {
+            show_notification("CANNOT START EXECUTION CONTROLLER");
+            cartridge_free(nes_sys.cart); nes_sys.cart = NULL;
+            return false;
+        }
+        execution_set_pc_breakpoints(execution, breakpoints);
+        execution_set_observer(execution, frontend_execution_observer, NULL);
+        execution_set_instruction_observer(execution, frontend_instruction_observer);
+        execution_enable_history(execution, true);
+        char debug_path[1200]; debugger_settings_path(debug_path, sizeof(debug_path));
+        FILE *debug_file = fopen(debug_path, "rb");
+        if (debug_file) {
+            fclose(debug_file);
+            if (!execution_load_breakpoints(execution, debug_path)) debugger_set_message("Saved breakpoint file is damaged; no breakpoints loaded.");
+        }
         remember_rom(rom_path);
     }
     return nes_sys.cart != NULL;
@@ -1046,9 +1085,25 @@ static const MenuItem view_items[] = {
     ITEM("APU Viewer", NULL, MENU_APU_VIEWER),
     ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
 };
+static const MenuItem debug_step_items[] = {
+    ITEM("Instruction", "F10", MENU_STEP), ITEM("Step Over", "Shift+F10", MENU_STEP_OVER),
+    ITEM("Step Out", "Ctrl+F10", MENU_STEP_OUT), ITEM("CPU Cycle", NULL, MENU_STEP_CYCLE),
+    ITEM("PPU Dot", NULL, MENU_STEP_DOT), ITEM("One Scanline", NULL, MENU_STEP_SCANLINE),
+    ITEM("One Frame", "F8", MENU_STEP_FRAME), ITEM("Next Scanline Start", NULL, MENU_NEXT_SCANLINE),
+    ITEM("Next Frame Start", NULL, MENU_NEXT_FRAME), ITEM("Finish Instruction", NULL, MENU_DEBUG_FINISH)
+};
+static const Menu debug_step_menu = {"Step", debug_step_items, COUNT(debug_step_items)};
+static const MenuItem debug_run_items[] = {
+    ITEM("Selected Instruction", "Ctrl+F8", MENU_RUN_CURSOR), ITEM("Next NMI Handler", NULL, MENU_RUN_NMI),
+    ITEM("Next IRQ Handler", NULL, MENU_RUN_IRQ)
+};
+static const Menu debug_run_menu = {"Run To", debug_run_items, COUNT(debug_run_items)};
 static const MenuItem debug_items[] = {
-    ITEM("Step Instruction", "F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
-    ITEM("Breakpoint", "F7", MENU_BREAKPOINT), ITEM("Event Trace", "Ctrl+F4", MENU_TRACE)
+    ITEM("Open / Step Instruction", "F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
+    SUB("Step", debug_step_menu), SUB("Run To", debug_run_menu),
+    ITEM("Back One Instruction", "Alt+F10", MENU_DEBUG_BACK), ITEM("Back One Frame", "Shift+F8", MENU_DEBUG_BACK_FRAME),
+    ITEM("Toggle Code Breakpoint", "F7", MENU_BREAKPOINT), ITEM("Commands / Watchpoints...", "Ctrl+G", MENU_DEBUG_COMMAND),
+    ITEM("Export Execution Trace", NULL, MENU_DEBUG_TRACE_SAVE), ITEM("Event Trace", "Ctrl+F4", MENU_TRACE)
 };
 static const MenuItem help_items[] = {
     ITEM("Controls / Shortcuts", NULL, MENU_CONTROLS), ITEM("About", NULL, MENU_ABOUT)
@@ -1069,13 +1124,14 @@ static unsigned desktop_state(void *context, MenuCommand command) {
     if ((command == MENU_SAVE_AS || command == MENU_LOAD_FROM || command == MENU_SAVE || command == MENU_LOAD || command == MENU_PAUSE ||
          command == MENU_RESET || command == MENU_POWER || command == MENU_STEP ||
          command == MENU_RUN || command == MENU_BREAKPOINT) && !nes_sys.cart) return MENU_DISABLED;
+    if (command >= MENU_STEP_OVER && command <= MENU_DEBUG_BACK_FRAME && !nes_sys.cart) return MENU_DISABLED;
     switch (command) {
         case MENU_MUTE: return audio_muted ? MENU_CHECKED : 0;
         case MENU_INHERIT: return !nes_sys.cart ? MENU_DISABLED : preferences_inherit ? MENU_CHECKED : 0;
         case MENU_PAUSE: return paused ? MENU_CHECKED : 0;
         case MENU_RUN: return debugger_active ? MENU_CHECKED : 0;
         case MENU_BREAKPOINT: return !debugger_active ? MENU_DISABLED :
-            breakpoints[debugger_line_pcs[debugger_selected_line]] ? MENU_CHECKED : 0;
+            debugger_breakpoint_enabled(debugger_line_pcs[debugger_selected_line]) ? MENU_CHECKED : 0;
         case MENU_CONTROLLER: return !zapper_enabled ? MENU_CHECKED : 0;
         case MENU_ZAPPER: return zapper_enabled ? MENU_CHECKED : 0;
         case MENU_FULLSCREEN: return fullscreen ? MENU_CHECKED : 0;
@@ -1124,9 +1180,11 @@ static void desktop_command(MenuCommand command) {
         case MENU_EXIT: if (save_battery_ram()) running = false; break;
         case MENU_PAUSE: paused = !paused; break;
         case MENU_RESET:
+            execution_sync(nes_sys.execution);
             nametable_view.valid = false;
             memset(&apu_view, 0, sizeof(apu_view));
             nes_reset(&nes_sys); nes_clock_tick(&nes_sys);
+            execution_invalidate(nes_sys.execution);
             debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0;
             clear_view_history(debugger_view_pc); break;
         case MENU_POWER: {
@@ -1145,6 +1203,8 @@ static void desktop_command(MenuCommand command) {
             memset(&apu_view, 0, sizeof(apu_view));
             save_emulator_settings(); break;
         case MENU_REGION_AUTO: case MENU_REGION_NTSC: case MENU_REGION_PAL: case MENU_REGION_DENDY:
+            execution_sync(nes_sys.execution);
+            execution_invalidate(nes_sys.execution);
             region_setting = command == MENU_REGION_AUTO ? NES_REGION_AUTO :
                 command == MENU_REGION_NTSC ? NES_NTSC : command == MENU_REGION_PAL ? NES_PAL : NES_DENDY;
             nes_sys.region_override = (uint8_t)region_setting;
@@ -1162,16 +1222,49 @@ static void desktop_command(MenuCommand command) {
         case MENU_STEP: case MENU_RUN:
             paused = false;
             if (debugger_active) {
-                debugger_step_instruction(&nes_sys.cpu, &cpu_bus_bridge);
-                if (command == MENU_RUN) debugger_active = false;
+                if (command == MENU_STEP) debugger_request(EXEC_INSTRUCTION, 1, 0, 0);
+                else {
+                    execution_request(nes_sys.execution, EXEC_PAUSE, 1, 0, 0);
+                    debugger_active = false;
+                }
             } else {
                 debugger_active = true; debugger_view_pc = nes_sys.cpu.program_counter;
                 debugger_selected_line = 0;
             }
             clear_view_history(debugger_view_pc); break;
+        case MENU_STEP_OVER: case MENU_STEP_OUT: case MENU_STEP_CYCLE: case MENU_STEP_DOT:
+        case MENU_STEP_SCANLINE: case MENU_STEP_FRAME: case MENU_NEXT_SCANLINE: case MENU_NEXT_FRAME:
+        case MENU_RUN_NMI: case MENU_RUN_IRQ: {
+            ExecutionMode mode = command == MENU_STEP_OVER ? EXEC_OVER : command == MENU_STEP_OUT ? EXEC_OUT :
+                command == MENU_STEP_CYCLE ? EXEC_CPU_CYCLE : command == MENU_STEP_DOT ? EXEC_PPU_DOT :
+                command == MENU_STEP_SCANLINE ? EXEC_SCANLINE : command == MENU_STEP_FRAME ? EXEC_FRAME :
+                command == MENU_NEXT_SCANLINE ? EXEC_NEXT_SCANLINE : command == MENU_NEXT_FRAME ? EXEC_NEXT_FRAME :
+                command == MENU_RUN_NMI ? EXEC_NMI : EXEC_IRQ;
+            paused = false; debugger_request(mode, 1, 0, 0); break;
+        }
+        case MENU_RUN_CURSOR:
+            paused = false; debugger_request(EXEC_ADDRESS, 1, debugger_line_pcs[debugger_selected_line], 0); break;
+        case MENU_DEBUG_FINISH:
+            debugger_active = true;
+            execution_sync(nes_sys.execution); debugger_view_pc = nes_sys.cpu.program_counter;
+            debugger_selected_line = 0; break;
+        case MENU_DEBUG_COMMAND: {
+            debugger_active = true;
+            HostEvent event = {.type = HOST_KEYDOWN, .key.keysym = {'g', HOST_MOD_CTRL}};
+            debugger_event(&event, -1, -1); break;
+        }
+        case MENU_DEBUG_TRACE_SAVE:
+            show_notification(execution_export_trace(nes_sys.execution, "debugger-trace.csv") ? "TRACE EXPORTED" : "TRACE EXPORT FAILED"); break;
+        case MENU_DEBUG_BACK: case MENU_DEBUG_BACK_FRAME:
+            debugger_active = true;
+            if (execution_reverse(nes_sys.execution, command == MENU_DEBUG_BACK_FRAME)) {
+                debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0;
+                nametable_view.valid = false; memset(&apu_view, 0, sizeof(apu_view));
+            } else debugger_set_message("No earlier checkpoint/input history is available.");
+            break;
         case MENU_BREAKPOINT: {
             uint16_t pc = debugger_line_pcs[debugger_selected_line];
-            breakpoints[pc] = !breakpoints[pc]; break;
+            debugger_toggle_breakpoint(pc); break;
         }
         case MENU_TRACE:
             diagnostics.tracing = !diagnostics.tracing;
@@ -1503,8 +1596,10 @@ static bool desktop_event(const HostEvent *event) {
         if (selected) {
             if (!browser_mode) frontend_load_rom(path);
             else {
+                execution_sync(nes_sys.execution);
                 NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
                 if (browser_mode != 2 && result == NES_STATE_OK) {
+                    execution_invalidate(nes_sys.execution);
                     region_setting = nes_sys.region_override;
                     nametable_view.valid = false;
                     memset(&apu_view, 0, sizeof(apu_view));
@@ -1546,6 +1641,18 @@ static bool desktop_event(const HostEvent *event) {
         return event->type != HOST_QUIT && event->type != HOST_WINDOWEVENT &&
             event->type != HOST_CONTROLLERDEVICEADDED && event->type != HOST_CONTROLLERDEVICEREMOVED;
     }
+    if (!desktop_menu.active && !help_page && nes_sys.cart && event->type == HOST_KEYDOWN &&
+        event->key.keysym.sym == 'g' && (event->key.keysym.mod & HOST_MOD_CTRL)) {
+        desktop_command(MENU_DEBUG_COMMAND); return true;
+    }
+    if (!desktop_menu.active && !help_page && debugger_event(event, -1, -1)) return true;
+    /* Alt itself activates the menu. Its debugger chord must still dispatch. */
+    if (!help_page && nes_sys.cart && event->type == HOST_KEYDOWN &&
+        event->key.keysym.sym == HOST_KEY_F10 && (event->key.keysym.mod & HOST_MOD_ALT)) {
+        menu_bar_close(&desktop_menu);
+        clear_host_input(); runtime_reset_pending = true;
+        desktop_command(MENU_DEBUG_BACK); return true;
+    }
     if (event->type == HOST_KEYDOWN || event->type == HOST_KEYUP) {
         e.type = event->type == HOST_KEYDOWN ? MENU_KEY_PRESS : MENU_KEY_RELEASE;
         e.repeat = event->key.repeat;
@@ -1583,7 +1690,12 @@ static bool desktop_event(const HostEvent *event) {
         (event->type == HOST_MOUSEBUTTONDOWN || event->type == HOST_MOUSEWHEEL)) {
         HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
         HostPoint point = {event->window_mouse.x, event->window_mouse.y};
-        if (host_point_in_rect(&point, &panel)) return true;
+        if (host_point_in_rect(&point, &panel)) {
+            if (panel.w > 0 && panel.h > 0) debugger_event(event,
+                (point.x - panel.x) * HOST_PANEL_WIDTH / panel.w,
+                (point.y - panel.y) * HOST_PANEL_HEIGHT / panel.h);
+            return true;
+        }
         host_nametable_layout(sapp_width(), sapp_height(), &panel);
         if (host_point_in_rect(&point, &panel)) return true;
         host_apu_layout(sapp_width(), sapp_height(), &panel);
@@ -1601,6 +1713,16 @@ static bool desktop_event(const HostEvent *event) {
         }
     }
     return consumed;
+}
+
+static void frontend_instruction_observer(NES *nes, void *context) {
+    (void)context;
+    if (debugger_logging_active) debugger_log_instruction(&nes->cpu);
+}
+static void frontend_execution_observer(NES *nes, void *context) {
+    (void)context;
+    if (apu_viewer_enabled) apu_view_sample_nes(&apu_view, nes);
+    if (nametable_viewer_enabled && !nametable_view.sampled) nametable_view_sample(&nametable_view, nes);
 }
 
 static void app_init(void) {
@@ -1628,6 +1750,8 @@ static void app_frame(void) {
     HostEvent event;
     nes_sys.nametable_view = nametable_viewer_enabled ? &nametable_view : NULL;
     host_poll_gamepads();
+    if (debugger_active && !desktop_menu.active && !help_page && !file_browser.active && focused)
+        debugger_update();
     bool playing = nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && focused;
     if (runtime_reset_pending || playing != was_playing) {
         clear_host_input();
@@ -1646,35 +1770,41 @@ static void app_frame(void) {
             host_delay(16);
         } else {
             uint64_t frame_start_tick = host_counter();
-            uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
+            uint64_t cycles = 0, emu_ticks = 0;
 
-            nes_sys.frame_ready = false;
-            if (nametable_viewer_enabled) nametable_view_begin_frame(&nametable_view);
-            while (!nes_sys.frame_ready) {
-                if (breakpoints[nes_sys.cpu.program_counter]) {
-                    debugger_active = true;
-                    debugger_view_pc = nes_sys.cpu.program_counter;
-                    debugger_selected_line = 0;
-                    clear_view_history(debugger_view_pc);
-                    break;
+            // Recover short host stalls without paying for a presentation for
+            // every late frame. Input stays stable through this bounded batch;
+            // every NES frame still runs, records history and feeds audio.
+            for (unsigned catch_up = 0; ; ++catch_up) {
+                uint64_t emu_start_tick = host_counter();
+                uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
+
+                nes_sys.frame_ready = false;
+                if (nametable_viewer_enabled) nametable_view_begin_frame(&nametable_view);
+                execution_request(nes_sys.execution, EXEC_PLAY_FRAME, 1, 0, 0);
+                ExecutionStatus stopped = execution_pump(nes_sys.execution, 200000);
+                if (stopped.reason != EXEC_STOP_FRAME && stopped.reason != EXEC_STOP_BUDGET) {
+                    debugger_active = true; debugger_view_pc = stopped.instruction_pc;
+                    debugger_selected_line = 0; clear_view_history(debugger_view_pc);
                 }
-                if (debugger_logging_active && nes_sys.clock.cpu_divider == 0) {
-                    debugger_log_instruction(&nes_sys.cpu);
-                }
-                nes_clock_tick(&nes_sys);
-                if (apu_viewer_enabled) apu_view_sample_nes(&apu_view, &nes_sys);
-                if (nametable_viewer_enabled && !nametable_view.sampled)
-                    nametable_view_sample(&nametable_view, &nes_sys);
+
+                if (nametable_viewer_enabled) nametable_view_finish_frame(&nametable_view);
+                if (nes_sys.frame_ready) nes_check_zapper_stall(&nes_sys);
+
+                emu_ticks = host_counter() - emu_start_tick;
+                debug_emu_ticks += emu_ticks;
+
+                // Feed the device before texture upload/presentation can block.
+                if (nes_sys.frame_ready) queue_game_audio();
+                cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
+                double now = host_time();
+                if (debugger_active || !nes_sys.frame_ready || catch_up >= 2 ||
+                    !frame_scheduler_catch_up(&frame_scheduler, now, cycles, nes_region_cpu_hz(nes_sys.apu.region))) break;
+                frame_scheduler_advance_rate(&frame_scheduler, now, cycles, nes_region_cpu_hz(nes_sys.apu.region));
+                diagnostics_frame(&nes_sys, cycles, now - diagnostic_last_time,
+                    (double)emu_ticks * 1000 / host_frequency(), audio_monitor.queue_samples * 1000.0 / AUDIO_RATE);
+                diagnostic_last_time = now;
             }
-
-            if (nametable_viewer_enabled) nametable_view_finish_frame(&nametable_view);
-            if (nes_sys.frame_ready) nes_check_zapper_stall(&nes_sys);
-
-            uint64_t emu_end_tick = host_counter();
-            debug_emu_ticks += (emu_end_tick - frame_start_tick);
-
-            // Feed the device before texture upload/presentation can block.
-            if (nes_sys.frame_ready) queue_game_audio();
 
             host_color(renderer, 0, 0, 0, 255);
             host_clear(renderer);
@@ -1701,7 +1831,6 @@ static void app_frame(void) {
             desktop_present(renderer);
 
             if (nes_sys.frame_ready) {
-                uint64_t cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
                 double wait = frame_scheduler_advance_rate(&frame_scheduler, host_time(), cycles,
                     nes_region_cpu_hz(nes_sys.apu.region));
                 while (wait > 0) {
@@ -1710,7 +1839,7 @@ static void app_frame(void) {
                 }
                 double now = host_time();
                 diagnostics_frame(&nes_sys, cycles, now - diagnostic_last_time,
-                    (double)(emu_end_tick - frame_start_tick) * 1000 / host_frequency(),
+                    (double)emu_ticks * 1000 / host_frequency(),
                     audio_monitor.queue_samples * 1000.0 / AUDIO_RATE);
                 diagnostic_last_time = now;
             } else runtime_reset_pending = true;
@@ -1907,7 +2036,7 @@ static void app_frame(void) {
                     case HOST_KEY_F7: {
                         if (debugger_active) {
                             uint16_t target_pc = debugger_line_pcs[debugger_selected_line];
-                            breakpoints[target_pc] = !breakpoints[target_pc];
+                            debugger_toggle_breakpoint(target_pc);
                         }
                         break;
                     }
@@ -1917,7 +2046,12 @@ static void app_frame(void) {
                         }
                         break;
                     }
-                    case HOST_KEY_F10: desktop_command(MENU_STEP); break;
+                    case HOST_KEY_F10:
+                        desktop_command(event.key.keysym.mod & HOST_MOD_ALT ? MENU_DEBUG_BACK : event.key.keysym.mod & HOST_MOD_CTRL ? MENU_STEP_OUT :
+                            event.key.keysym.mod & HOST_MOD_SHIFT ? MENU_STEP_OVER : MENU_STEP); break;
+                    case HOST_KEY_F8:
+                        desktop_command(event.key.keysym.mod & HOST_MOD_SHIFT ? MENU_DEBUG_BACK_FRAME :
+                            event.key.keysym.mod & HOST_MOD_CTRL ? MENU_RUN_CURSOR : MENU_STEP_FRAME); break;
                     case HOST_KEY_F9: desktop_command(MENU_RUN); break;
                     case HOST_KEY_F12:
                         if (debugger_active) desktop_command(MENU_RESET);
@@ -1981,6 +2115,8 @@ static void app_frame(void) {
 }
 
 static void app_cleanup(void) {
+    save_debugger_breakpoints();
+    execution_destroy(nes_sys.execution);
     save_emulator_settings();
     debugger_shutdown();
     host_shutdown();

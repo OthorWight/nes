@@ -1,5 +1,6 @@
 #include "nes_system.h"
 #include "diagnostics.h"
+#include "execution.h"
 #include <string.h>
 
 void nes_init(NES *nes) {
@@ -196,6 +197,10 @@ static inline void nes_step_subsystems(NES *nes) {
         nes->clock.ppu_divider = 0;
         dots = 4; // PAL master clock: CPU /16, PPU /5.
     }
+    /* A PPU access watchpoint can park inside ppu_step. Such clocks, exact dot
+       steps and replay must retain per-dot accounting across a mode change. */
+    bool precise = (nes->execution_clock.events & ((1u << EXEC_EVENT_DOT) |
+        (1u << EXEC_EVENT_PPU_READ) | (1u << EXEC_EVENT_PPU_WRITE))) != 0;
     for (unsigned p = 0; p < dots; p++) {
         ppu_step(nes);
         // For this CPU/PPU alignment the NMI poll boundary falls after
@@ -208,12 +213,15 @@ static inline void nes_step_subsystems(NES *nes) {
         if (p == 0)
             nes->cpu.irq_pending = nes->cpu.irq_lines &&
                 !(nes->cpu.status_flags & FLAG_INTERRUPT_DISABLE);
+        if (precise) execution_dot(nes);
     }
+    if (!precise) execution_advance(nes, dots);
     apu_step(&nes->apu, nes);
     if (nes->cart && nes->cart->vtable && nes->cart->vtable->clock_m2) {
         nes->cart->vtable->clock_m2(nes->cart);
     }
     if (nes->diagnostics && nes->diagnostics->tracing) diagnostics_lines(nes);
+    execution_cycle(nes);
 }
 
 void nes_request_dmc_dma(NES *nes, bool load) {
@@ -235,7 +243,7 @@ static void dma_clock(NES *nes) {
     nes_step_subsystems(nes);
 }
 
-static uint8_t clocked_bus_read(NES *nes, uint16_t address) {
+static uint8_t clocked_bus_read_value(NES *nes, uint16_t address) {
     bool frame_irq = nes->apu.frame_irq_active;
     bool controller = address == 0x4016 || address == 0x4017;
     if (controller && nes->controller_read_active &&
@@ -261,17 +269,25 @@ static uint8_t clocked_bus_read(NES *nes, uint16_t address) {
     return value;
 }
 
+static uint8_t clocked_bus_read(NES *nes, uint16_t address) {
+    uint8_t value = clocked_bus_read_value(nes, address);
+    if (nes->execution_clock.events & (1u << EXEC_EVENT_READ)) execution_event(nes, EXEC_EVENT_READ, address, value);
+    return value;
+}
+
 static uint8_t dma_bus_read(NES *nes, uint16_t address, uint16_t cpu_address) {
     nes->dma_resume_controller = 0;
     bool internal_enabled = (cpu_address & 0xFFE0) == 0x4000;
     if (!internal_enabled && address >= 0x4000 && address <= 0x401F) {
         nes->controller_read_active = false;
+        if (nes->execution_clock.events & (1u << EXEC_EVENT_READ)) execution_event(nes, EXEC_EVENT_READ, address, nes->cpu_open_bus);
         return nes->cpu_open_bus;
     }
     uint16_t internal = 0x4000 | (address & 0x1F);
     if (internal_enabled && internal == 0x4015) {
         uint8_t value = clocked_bus_read(nes, internal);
         uint8_t external = address == internal ? nes->cpu_open_bus : nes_cpu_bus_read(nes, address);
+        if (address != internal && (nes->execution_clock.events & (1u << EXEC_EVENT_READ))) execution_event(nes, EXEC_EVENT_READ, address, external);
         value = (value & 0xDF) | (external & 0x20);
         nes->controller_read_active = false;
         return value;
@@ -280,6 +296,7 @@ static uint8_t dma_bus_read(NES *nes, uint16_t address, uint16_t cpu_address) {
         uint8_t value = clocked_bus_read(nes, internal);
         if (address != internal) {
             uint8_t external = nes_cpu_bus_read(nes, address);
+            if (nes->execution_clock.events & (1u << EXEC_EVENT_READ)) execution_event(nes, EXEC_EVENT_READ, address, external);
             value = (external & 0xE0) | (external & value & 0x1F);
         }
         nes->dma_resume_controller = internal;
@@ -344,6 +361,7 @@ static void nes_run_dma(NES *nes, uint16_t cpu_address) {
                     bus_used = true;
                 } else if (!get && have_value) {
                     nes_cpu_bus_write(nes, 0x2004, value);
+                    if (nes->execution_clock.events & (1u << EXEC_EVENT_WRITE)) execution_event(nes, EXEC_EVENT_WRITE, 0x2004, value);
                     nes->controller_read_active = false;
                     have_value = false;
                     bus_used = true;
@@ -424,7 +442,7 @@ void nes_ppu_bus_set_address(NES *nes, uint16_t addr) {
     }
 }
 
-uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
+static uint8_t ppu_bus_read_value(NES *nes, uint16_t addr) {
     addr &= 0x3FFF;
     nes_ppu_bus_set_address(nes, addr);
 
@@ -459,7 +477,13 @@ uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
     return nes->ppu.palette_ram[pal_addr];
 }
 
-void nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
+uint8_t nes_ppu_bus_read(NES *nes, uint16_t addr) {
+    uint8_t value = ppu_bus_read_value(nes, addr);
+    if (nes->execution_clock.events & (1u << EXEC_EVENT_PPU_READ)) execution_event(nes, EXEC_EVENT_PPU_READ, addr & 0x3FFF, value);
+    return value;
+}
+
+static void ppu_bus_write_value(NES *nes, uint16_t addr, uint8_t data) {
     addr &= 0x3FFF;
     nes_ppu_bus_set_address(nes, addr);
 
@@ -492,6 +516,11 @@ void nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
     nes->ppu.palette_ram[pal_addr] = data;
 }
 
+void nes_ppu_bus_write(NES *nes, uint16_t addr, uint8_t data) {
+    ppu_bus_write_value(nes, addr, data);
+    if (nes->execution_clock.events & (1u << EXEC_EVENT_PPU_WRITE)) execution_event(nes, EXEC_EVENT_PPU_WRITE, addr & 0x3FFF, data);
+}
+
 static void nes_cpu_cycle_tick_wrapper(void *context) {
     NES *nes = (NES*)context;
     nes_step_subsystems(nes);
@@ -503,11 +532,14 @@ static uint8_t nes_cpu_bus_read_wrapper(void *context, uint16_t addr) {
     nes_run_dma(nes, addr);
     uint16_t resume = nes->dma_resume_controller;
     nes->dma_resume_controller = 0;
-    uint8_t value = clocked_bus_read(nes, addr);
+    uint8_t value = clocked_bus_read_value(nes, addr);
     if (resume && (addr & 0xFFE0) == 0x4000 && addr != 0x4015 &&
         addr != 0x4016 && addr != 0x4017)
         value = clocked_bus_read(nes, resume);
     if (addr == 0x4015) value = (value & 0xDF) | (internal_bus & 0x20);
+    /* Report the byte actually returned to the CPU, including its internal
+       open-bus bit at $4015. DMA observations remain in clocked_bus_read. */
+    if (nes->execution_clock.events & (1u << EXEC_EVENT_READ)) execution_event(nes, EXEC_EVENT_READ, addr, value);
     return value;
 }
 
@@ -541,17 +573,24 @@ static void nes_cpu_bus_write_wrapper(void *context, uint16_t addr, uint8_t data
         nes->controller_shift[0] = shift[0];
         nes->controller_shift[1] = shift[1];
     }
+    if (nes->execution_clock.events & (1u << EXEC_EVENT_WRITE)) execution_event(nes, EXEC_EVENT_WRITE, addr, data);
+}
+
+static void nes_cpu_interrupt_wrapper(void *context, bool nmi) {
+    NES *nes = context;
+    if (nes->execution) execution_event(nes, nmi ? EXEC_EVENT_NMI : EXEC_EVENT_IRQ, 0, 0);
 }
 
 void nes_clock_tick(NES *nes) {
     cpu_set_irq_line(&nes->cpu, 0, nes->lines.irq_line);
 
-    CPUBus bus;
+    CPUBus bus = {0};
     bus.bus_context = nes;
     bus.read = nes_cpu_bus_read_wrapper;
     bus.write = nes_cpu_bus_write_wrapper;
     
     bus.cycle_tick = nes_cpu_cycle_tick_wrapper;
+    bus.interrupt = nes_cpu_interrupt_wrapper;
 
     cpu_step(&nes->cpu, &bus);
 }

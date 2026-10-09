@@ -71,6 +71,8 @@ save/load commands. Alt activates menus; F10 steps the debugger.
 | `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
 | `frontend_behavior.c` | Fractional pacing deadlines, host stalls/resume, audio queue lifecycle, independent input sources, cropped/letterboxed aim and per-ROM preference validation |
+| `execution.c` | Exact CPU/PPU stops, instruction state equivalence, DMA suspension, interrupt entry, nested over/out, conditional/range/one-shot breakpoints, controller side effects, breakpoint persistence, trace export, reverse history and read-only PPU inspection |
+| `debug_symbols.c` | ca65/VICE and plain symbol imports, lookup/replacement, bounded names and atomic rejection of invalid files |
 | `diagnostic_capture.c` | Non-consuming memory inspection, bank-aware peeks, input counters, timestamped events, bounded histories, performance summaries and save-state isolation |
 
 The optional `powershell -File tests/sokol/run.ps1` (Windows/GCC) or
@@ -80,6 +82,11 @@ per-ROM defaults, save/load and audio/muted/unavailable pacing. ROM-history chec
 cover settings reload, recent-list ordering and deduplication, failed loads,
 ROM/state browser folder separation, navigation followed by cancellation,
 unavailable-folder fallback, corrupt history, and migration from version 9.
+Debugger checks cover command parsing (including quoted paths), exact dot stops,
+safe edits, symbols, watchpoints, memory inspection, reverse stepping, and panel
+mouse routing, breakpoint paging, and the Alt+F10 menu chord.
+Portable `debugger-memory.ppm`, `debugger-ppu.ppm`, and `debugger-help.ppm` captures
+remain under the test output directory.
 The nametable viewer stays open during pacing checks; tests verify its saved toggle, controller input, simultaneous panel layout, and game-only mouse aiming. Windows also
 checks the D3D11 render target, including CRT shader edge blending, shallow
 scanlines, rounded contour corners, solid black thin outlines and preserved midtones,
@@ -92,6 +99,10 @@ paused. Both viewers stay open during pacing checks. `apu-piano-roll.ppm` is a
 portable capture of the panel rendered from a deterministic synthetic melody.
 See [Sokol checks and limits](../docs/SOKOL.md). The Zapper characterization probe
 reports the existing sensor discrepancy without treating it as an accuracy pass.
+Passing a local ROM and optional frame count to `bash tests/sokol/run.sh` adds
+a sustained large-window CRT/audio pacing probe, for example
+`bash tests/sokol/run.sh "build/Super Mario Bros 3.nes" 1800`. Its saves and
+`rom-pacing.log` are isolated under the test output directory.
 `test_system.h` supplies a synthetic cartridge and observers for mapper bus
 accesses, PPU dots, and M2 clocks. The CPU, PPU, APU, and system bus are the normal
 production implementations. Tests seed internal state where necessary to isolate

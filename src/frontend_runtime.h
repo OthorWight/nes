@@ -5,9 +5,10 @@
 
 #define NES_HOST_CPU_HZ 1789773.0
 #define AUDIO_RATE 44100u
-// Reserve two device blocks before each frame's refill; prime with a third.
-#define AUDIO_TARGET_SAMPLES 2048u
-#define AUDIO_PRIME_SAMPLES 3072u
+// Reserve three device blocks before each frame's refill; prime with a fourth.
+// This also covers bursts of several late frames, rather than only one wakeup.
+#define AUDIO_TARGET_SAMPLES 3072u
+#define AUDIO_PRIME_SAMPLES 4096u
 #define AUDIO_MAX_SAMPLES 6144u
 #define AUDIO_MAX_RATE_CORRECTION 0.01
 
@@ -15,6 +16,8 @@ typedef struct { double deadline; } FrameScheduler;
 void frame_scheduler_reset(FrameScheduler *s, double now);
 double frame_scheduler_advance(FrameScheduler *s, double now, uint64_t cycles);
 double frame_scheduler_advance_rate(FrameScheduler *s, double now, uint64_t cycles, double cpu_hz);
+// After emulating a frame, omit its presentation if another whole frame is due.
+bool frame_scheduler_catch_up(const FrameScheduler *s, double now, uint64_t cycles, double cpu_hz);
 
 typedef struct {
     bool playing;

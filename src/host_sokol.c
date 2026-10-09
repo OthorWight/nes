@@ -522,9 +522,9 @@ HostKey host_key(sapp_keycode key) {
         case SAPP_KEYCODE_UP: return HOST_KEY_UP;
         case SAPP_KEYCODE_INSERT: return 0x40000000 + 73;
         case SAPP_KEYCODE_HOME: return 0x40000000 + 74;
-        case SAPP_KEYCODE_PAGE_UP: return 0x40000000 + 75;
+        case SAPP_KEYCODE_PAGE_UP: return HOST_KEY_PAGEUP;
         case SAPP_KEYCODE_END: return 0x40000000 + 77;
-        case SAPP_KEYCODE_PAGE_DOWN: return 0x40000000 + 78;
+        case SAPP_KEYCODE_PAGE_DOWN: return HOST_KEY_PAGEDOWN;
         case SAPP_KEYCODE_LEFT_SHIFT: return 0x40000000 + 225;
         case SAPP_KEYCODE_RIGHT_SHIFT: return 0x40000000 + 229;
         case SAPP_KEYCODE_LEFT_CONTROL: return 0x40000000 + 224;

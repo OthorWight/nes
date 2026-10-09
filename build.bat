@@ -79,7 +79,7 @@ if "%COMPILER_TYPE%"=="msvc" (
     if not "!ERRORLEVEL!"=="0" goto :build_failed
 ) else (
     echo Compiling Sokol frontend with GCC...
-    gcc -Wall -Wextra -std=c11 -O2 -Isrc src/*.c -o build/nes_emulator.exe -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
+    gcc -Wall -Wextra -std=c11 -O3 -flto -Isrc src/*.c -o build/nes_emulator.exe -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
     if not "!ERRORLEVEL!"=="0" goto :build_failed
 )
 echo Compilation successful!
@@ -124,7 +124,7 @@ if "%COMPILER_TYPE%"=="msvc" (
     cl /nologo /W4 /O2 /std:c11 /Isrc /D_CRT_SECURE_NO_WARNINGS "%~1" !CORE_SOURCES! /Fo"build\tests\\" /Fe"%TEST_EXE%"
     if not "!ERRORLEVEL!"=="0" goto :test_compile_failed
 ) else (
-    gcc -Wall -Wextra -Werror -std=c11 -O2 -Isrc "%~1" !CORE_SOURCES! -o "%TEST_EXE%" -lm
+    gcc -Wall -Wextra -Werror -std=c11 -O3 -flto -Isrc "%~1" !CORE_SOURCES! -o "%TEST_EXE%" -lm
     if not "!ERRORLEVEL!"=="0" goto :test_compile_failed
 )
 echo Running test: %TEST_NAME%

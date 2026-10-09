@@ -434,6 +434,7 @@ static void do_hardware_interrupt(CPU6502 *cpu, CPUBus *bus, bool is_nmi) {
     uint8_t low = read_byte(cpu, bus, vector);
     uint8_t high = read_byte(cpu, bus, (uint16_t)(vector + 1));
     cpu->program_counter = (uint16_t)(low | (high << 8));
+    if (bus->interrupt) bus->interrupt(bus->bus_context, vector == VECTOR_NMI);
 }
 
 int cpu_step(CPU6502 *cpu, CPUBus *bus) {

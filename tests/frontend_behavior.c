@@ -41,6 +41,39 @@ static void queue_lifecycle(void) {
     assert(!audio_queue_observe(&a, 0, 734));
     assert(a.underruns == 1 && a.queue_samples == 0);
 }
+static void late_frame_recovery(void) {
+    puts("  late presentation catches up without dropping emulated frames");
+    const unsigned clocks[] = {1789773, 1662607, 1773448};
+    for (unsigned region = 0; region < 3; ++region) {
+        FrameScheduler s = {0};
+        double duration = 29781.0 / clocks[region];
+        frame_scheduler_reset(&s, 10);
+        assert(!frame_scheduler_catch_up(&s, 10 + duration * 1.9, 29781, clocks[region]));
+        double now = 10 + duration * 2.8;
+        assert(frame_scheduler_catch_up(&s, now, 29781, clocks[region]));
+        assert(frame_scheduler_advance_rate(&s, now, 29781, clocks[region]) == 0);
+        now += duration * 0.4; // Emulate the next frame, with no extra presentation.
+        assert(frame_scheduler_catch_up(&s, now, 29781, clocks[region]));
+        assert(frame_scheduler_advance_rate(&s, now, 29781, clocks[region]) == 0);
+        now += duration * 0.4;
+        assert(!frame_scheduler_catch_up(&s, now, 29781, clocks[region]));
+        frame_scheduler_advance_rate(&s, now, 29781, clocks[region]);
+        assert(fabs(s.deadline - (10 + 3 * duration)) < 1e-9);
+        // A burst of late frames can accumulate more than 50ms of debt. Keep
+        // that debt so recovery also replenishes the audio consumed meanwhile.
+        frame_scheduler_reset(&s, 20);
+        now = 20.080;
+        assert(frame_scheduler_advance_rate(&s, now, 29781, clocks[region]) == 0);
+        assert(fabs(s.deadline - (20 + duration)) < 1e-9);
+        unsigned recovered = 1;
+        do {
+            now += duration * 0.4;
+            frame_scheduler_advance_rate(&s, now, 29781, clocks[region]);
+            assert(++recovered < 20);
+        } while (s.deadline < now);
+        assert(fabs(s.deadline - (20 + recovered * duration)) < 1e-9);
+    }
+}
 static void input_sources_and_aim(void) {
     puts("  independent keyboard/button/stick releases and cropped letterbox aim");
     HostInput i = {0};
@@ -93,7 +126,7 @@ static void preferences(void) {
 }
 int main(void) {
     fixture_start("frontend");
-    precise_clock(); queue_lifecycle(); input_sources_and_aim(); preferences();
+    precise_clock(); late_frame_recovery(); queue_lifecycle(); input_sources_and_aim(); preferences();
     assert(SAVE_RMDIR(fixture_dir) == 0);
     puts("Frontend scheduling, input, aim and preference checks passed.");
     return 0;

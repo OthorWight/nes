@@ -166,6 +166,13 @@ No additional GUI library, native menu, or window is used.
 
 Press `F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
 
+The debugger supports instruction/over/out, CPU cycle, PPU dot, scanline/frame,
+interrupt and raster targets, and instruction/frame rewind. Its workspace has
+memory, breakpoint, call, trace and PPU tabs. Use **Ctrl+G** for conditional
+watchpoints, symbols, memory search, register/RAM edits, explicit controller
+inputs and trace export. Breakpoints persist per ROM. See the
+[debugger guide](docs/DEBUGGER.md) for shortcuts, commands and TAS extension points.
+
 ```
 NES DEBUGGER - PAUSED
 =========================

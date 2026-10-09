@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include "host.h"
 #include "cpu6502.h"
+#include "execution.h"
 
 extern bool debugger_active;
 extern bool debugger_logging_active;
@@ -23,5 +24,14 @@ void    debugger_step_instruction(CPU6502 *cpu, CPUBus *bus);
 void    debugger_log_instruction(CPU6502 *cpu);
 void    debugger_render(HostCanvas *renderer, CPU6502 *cpu);
 void    disassemble_instruction(uint16_t pc, char *out_buf, size_t max_len, CPU6502 *cpu);
+bool debugger_request(ExecutionMode mode, uint64_t count, int line, int dot);
+void debugger_update(void);
+bool debugger_event(const HostEvent *, int panel_x, int panel_y);
+bool debugger_command(const char *text);
+void debugger_toggle_breakpoint(uint16_t address);
+bool debugger_breakpoint_enabled(uint16_t address);
+void debugger_set_message(const char *text);
+void debugger_draw_workspace(HostCanvas *);
+bool debugger_console_active(void);
 
 #endif

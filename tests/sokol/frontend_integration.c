@@ -209,6 +209,103 @@ static void rom_history_persistence(void) {
     assert(recent_count == 1 && !strcmp(recent_labels[0], "fixture.nes"));
 }
 
+static void capture_debugger_panel(const char *path) {
+    FILE *f = fopen(path, "wb"); assert(f);
+    fprintf(f, "P6\n%d %d\n255\n", HOST_PANEL_WIDTH, HOST_PANEL_HEIGHT);
+    for (int i = 0; i < HOST_PANEL_WIDTH * HOST_PANEL_HEIGHT; ++i) {
+        uint32_t pixel = debug_canvas.pixels[i];
+        unsigned char rgb[] = {pixel & 255, (pixel >> 8) & 255, (pixel >> 16) & 255};
+        assert(fwrite(rgb, 1, 3, f) == 3);
+    }
+    assert(!fclose(f));
+}
+static void debugger_workspace_checks(void) {
+    execution_sync(nes_sys.execution);
+    uint8_t *saved; size_t saved_size;
+    assert(nes_state_encode(&nes_sys, &saved, &saved_size) == NES_STATE_OK);
+    desktop_command(MENU_STEP); assert(debugger_active);
+    uint64_t dots = execution_status(nes_sys.execution).dots;
+    desktop_command(MENU_STEP_DOT);
+    assert(execution_status(nes_sys.execution).dots == dots + 1);
+    assert(!execution_status(nes_sys.execution).boundary);
+    desktop_command(MENU_DEBUG_FINISH); assert(execution_status(nes_sys.execution).boundary);
+    assert(debugger_command("label $0010 counter"));
+    assert(debugger_command("poke counter $A5")); assert(nes_sys.wram[0x10] == 0xA5);
+    assert(debugger_command("watch counter")); assert(debugger_command("mem counter"));
+    uint8_t shift = nes_sys.controller_shift[0];
+    draw_debug_panel(); desktop_present(renderer);
+    assert(nes_sys.controller_shift[0] == shift);
+    capture_window("debugger-memory.bmp");
+    capture_debugger_panel("debugger-memory.ppm");
+    assert(debugger_command("vram $3F00"));
+    uint16_t bus = nes_sys.ppu.bus_address;
+    draw_debug_panel(); assert(nes_sys.ppu.bus_address == bus);
+    assert(debugger_command("view ppu")); draw_debug_panel();
+    assert(nes_sys.ppu.bus_address == bus);
+    HostEvent oam_page={.type=HOST_KEYDOWN,.key.keysym.sym=HOST_KEY_PAGEDOWN};
+    for(unsigned i=0;i<6;++i) assert(debugger_event(&oam_page,-1,-1));
+    draw_debug_panel(); assert(nes_sys.ppu.bus_address == bus);
+    capture_debugger_panel("debugger-ppu.ppm");
+    assert(debugger_command("wp rw $0010-$001F value=$A5 ignore=2 once"));
+    ExecutionBreakpoint *b = execution_breakpoints(nes_sys.execution);
+    assert(b[0].used && b[0].first == 0x10 && b[0].last == 0x1F && b[0].ignore == 2 && b[0].once);
+    assert(debugger_command("disable 0") && !b[0].enabled);
+    assert(debugger_command("enable 0") && b[0].enabled);
+    assert(!debugger_command("wp rw $FF00-$0010"));
+    assert(!debugger_command("set imaginary $FF"));
+    assert(debugger_command("delete 0") && !b[0].used);
+    /* Keyboard code breakpoints must use the structured entry: the legacy
+       boolean path would bypass conditions, hit counters, and one-shot state. */
+    debugger_toggle_breakpoint(0x0200);
+    assert(b[0].used && b[0].enabled && !breakpoints[0x0200]);
+    assert(debugger_command("delete 0"));
+    for(unsigned i=0;i<EXEC_BREAKPOINTS;++i) {
+        char command[48]; snprintf(command,sizeof(command),"bp $%04X",0x0200+i);
+        assert(debugger_command(command));
+    }
+    draw_debug_panel();
+    HostEvent page={.type=HOST_KEYDOWN,.key.keysym.sym=HOST_KEY_PAGEDOWN};
+    for(unsigned i=0;i<3;++i) assert(debugger_event(&page,-1,-1));
+    HostEvent entry={.type=HOST_MOUSEBUTTONDOWN,.button.button=HOST_BUTTON_LEFT};
+    assert(debugger_event(&entry,16,334) && debugger_console_active());
+    HostEvent enter={.type=HOST_KEYDOWN,.key.keysym.sym=HOST_KEY_RETURN};
+    assert(debugger_event(&enter,-1,-1) && !b[24].enabled && b[23].enabled);
+    assert(debugger_command("clear"));
+    assert(debugger_command("trace \"debugger trace.csv\""));
+    assert(!remove("debugger trace.csv"));
+    assert(debugger_command("step instruction 3"));
+    while (execution_status(nes_sys.execution).pending) debugger_update();
+    uint64_t cycle = nes_sys.cpu.cycle_count;
+    assert(debugger_command("back instruction")); assert(nes_sys.cpu.cycle_count < cycle);
+    assert(debugger_command("step instruction 2"));
+    while(execution_status(nes_sys.execution).pending) debugger_update();
+    cycle=nes_sys.cpu.cycle_count;
+    HostEvent alt={.type=HOST_KEYDOWN,.key.keysym.sym=HOST_KEY_LALT};
+    assert(desktop_event(&alt) && desktop_menu.active);
+    HostEvent reverse={.type=HOST_KEYDOWN,.key.keysym={HOST_KEY_F10,HOST_MOD_ALT}};
+    assert(desktop_event(&reverse) && !desktop_menu.active && nes_sys.cpu.cycle_count<cycle);
+    assert(debugger_command("help")); draw_debug_panel(); desktop_present(renderer);
+    capture_window("debugger-help.bmp");
+    capture_debugger_panel("debugger-help.ppm");
+    desktop_command(MENU_DEBUG_COMMAND); assert(debugger_console_active());
+    HostEvent escape = {.type = HOST_KEYDOWN, .key.keysym.sym = HOST_KEY_ESCAPE};
+    assert(desktop_event(&escape) && !debugger_console_active());
+    /* Exercise real panel hit testing at its rendered screen coordinates. */
+    draw_debug_panel();
+    HostRect game, panel; host_layout(sapp_width(), sapp_height(), &game, &panel);
+    HostEvent click = {.type=HOST_MOUSEBUTTONDOWN,.button.button=HOST_BUTTON_LEFT};
+    click.window_mouse.valid = true;
+    click.window_mouse.x = panel.x + 12 * panel.w / HOST_PANEL_WIDTH;
+    click.window_mouse.y = panel.y + 255 * panel.h / HOST_PANEL_HEIGHT;
+    cycle = nes_sys.cpu.cycle_count;
+    assert(desktop_event(&click)); assert(nes_sys.cpu.cycle_count > cycle);
+    assert(execution_sync(nes_sys.execution));
+    assert(nes_state_decode(&nes_sys, saved, saved_size) == NES_STATE_OK); free(saved);
+    execution_invalidate(nes_sys.execution);
+    debugger_active = false; runtime_reset_pending = true;
+    assert(debugger_command("unwatch"));
+}
+
 static bool scripted_poll(HostEvent *e) {
     if (delivered) { delivered = false; ++iteration; return 0; }
     delivered = true; host_zero(*e);
@@ -330,6 +427,7 @@ static bool scripted_poll(HostEvent *e) {
             assert(recent_count == 1 && !strcmp(loaded_rom_name, "fixture.nes"));
             desktop_command(MENU_RECENT_1); assert(nes_sys.cart && recent_count == 1);
             rom_history_persistence();
+            debugger_workspace_checks();
             break;
         case 17: key(e, HOST_KEYDOWN, HOST_KEY_LEFT); break;
         case 18:

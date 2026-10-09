@@ -15,7 +15,7 @@ static void tick(void *ctx) {
     if (cpu.cycle_count == assert_at) cpu_set_irq_line(&cpu, 0, true);
     if (cpu.cycle_count == clear_at) cpu_set_irq_line(&cpu, 0, false);
 }
-static CPUBus bus = {NULL, read_memory, write_memory, tick};
+static CPUBus bus = {NULL, read_memory, write_memory, tick, NULL};
 static void start(uint8_t opcode, unsigned rise, unsigned fall) {
     memset(memory, 0xEA, sizeof(memory));
     cpu_init(&cpu, CPU_MODEL_RICOH_2A03);

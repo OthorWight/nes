@@ -30,7 +30,7 @@ if [ "$build_mode" = --test ]; then
         [ -f "$test_source" ] || continue
         test_name=$(basename "$test_source" .c)
         echo "Building test: $test_name"
-        "$compiler" -Wall -Wextra -Werror -std=c11 -O2 -Isrc "$test_source" "${core_sources[@]}" -o "build/tests/$test_name" -lm
+        "$compiler" -Wall -Wextra -Werror -std=c11 -O3 -flto -Isrc "$test_source" "${core_sources[@]}" -o "build/tests/$test_name" -pthread -lm
         echo "Running test: $test_name"
         "build/tests/$test_name"
         echo "PASS: $test_name"

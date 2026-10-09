@@ -53,12 +53,14 @@ typedef struct {
 typedef uint8_t (*CPUReadCallback)(void *bus_context, uint16_t address);
 typedef void    (*CPUWriteCallback)(void *bus_context, uint16_t address, uint8_t data);
 typedef void    (*CPUCycleTickCallback)(void *bus_context);
+typedef void    (*CPUInterruptCallback)(void *bus_context, bool nmi);
 
 typedef struct {
     void *bus_context;
     CPUReadCallback      read;
     CPUWriteCallback     write;
     CPUCycleTickCallback cycle_tick;
+    CPUInterruptCallback interrupt;
 } CPUBus;
 
 void cpu_init(CPU6502 *cpu, CPUModel model);

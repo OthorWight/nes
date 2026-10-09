@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 void diagnostics_event(NES *n, DiagnosticKind kind, uint16_t address, uint8_t value) {
     NESDiagnostics *d = n->diagnostics;
@@ -102,4 +103,20 @@ bool nes_cpu_peek(NES *n, uint16_t address, uint8_t *value) {
         if (handled) { *value = result; return true; }
     }
     return false;
+}
+
+bool nes_ppu_peek_range(const NES *n, uint16_t address, uint8_t *out, size_t size) {
+    if (!n || !n->cart || !n->cart->vtable || !out || size > 0x4000) return false;
+    NES *copy = malloc(sizeof(*copy));
+    size_t mapper_size = n->cart->vtable->state_size;
+    void *mapper = mapper_size ? malloc(mapper_size) : NULL;
+    if (!copy || (mapper_size && !mapper)) { free(copy); free(mapper); return false; }
+    *copy = *n;
+    Cartridge cart = *n->cart;
+    if (mapper_size) memcpy(mapper, cart.mapper_data, mapper_size);
+    cart.mapper_data = mapper; cart.nes = copy;
+    copy->cart = &cart; copy->diagnostics = NULL; copy->nametable_view = NULL; copy->execution = NULL;
+    copy->execution_clock.events = 0;
+    for (size_t i = 0; i < size; ++i) out[i] = nes_ppu_bus_read(copy, (uint16_t)((address + i) & 0x3FFF));
+    free(mapper); free(copy); return true;
 }

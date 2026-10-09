@@ -1,5 +1,6 @@
 #include "save_state.h"
 #include "state_io.h"
+#include "execution.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +73,13 @@ static void machine_fields(NES *n, StateIO *io) {
     n->ppu.overflow_cycle = state_i32(io, n->ppu.overflow_cycle);
     n->ppu.open_bus_value = state_u8(io, n->ppu.open_bus_value);
     for (size_t i = 0; i < 8; ++i) n->ppu.open_bus_decay_cycles[i] = state_u64(io, n->ppu.open_bus_decay_cycles[i]);
-    for (size_t i = 0; i < 256 * 240; ++i) n->ppu.screen_buffer[i] = state_u32(io, n->ppu.screen_buffer[i]);
+    /* The framebuffer dominates frequent debugger checkpoints. On little-endian
+       hosts its native representation is already the portable field stream;
+       count/copy it in one operation without changing a byte of the format. */
+    const uint16_t endian_probe = 1;
+    if (*(const uint8_t *)&endian_probe == 1)
+        state_bytes(io, (uint8_t *)n->ppu.screen_buffer, sizeof(n->ppu.screen_buffer));
+    else for (size_t i = 0; i < 256 * 240; ++i) n->ppu.screen_buffer[i] = state_u32(io, n->ppu.screen_buffer[i]);
     for (size_t i = 0; i < 2; ++i) n->apu.pulse_enabled[i] = state_bool(io, n->apu.pulse_enabled[i]);
     state_bytes(io, n->apu.pulse_duty, sizeof(n->apu.pulse_duty));
     for (size_t i = 0; i < 2; ++i) n->apu.pulse_halt[i] = state_bool(io, n->apu.pulse_halt[i]);
@@ -337,6 +344,7 @@ static void payload(NES *n, StateIO *io, unsigned version) {
 
 static NES_StateResult available(NES *n) {
     if (!n || !n->cart) return NES_STATE_NO_CART;
+    if (n->execution && !execution_status(n->execution).boundary) return NES_STATE_BUSY;
     Cartridge *c = n->cart;
     if (!c->vtable || !c->vtable->state || (c->vtable->state_size && !c->mapper_data)) return NES_STATE_MAPPER;
     if (!c->prg_rom || !c->prg_rom_size || (c->chr_rom_size && !c->chr_rom) ||
@@ -464,6 +472,7 @@ const char *nes_state_message(NES_StateResult result) {
         case NES_STATE_LEGACY: return "OLD STATE: CREATE A NEW SAVE";
         case NES_STATE_WRONG_ROM: return "STATE IS FOR A DIFFERENT ROM";
         case NES_STATE_MEMORY: return "NOT ENOUGH MEMORY FOR STATE";
+        case NES_STATE_BUSY: return "FINISH CURRENT INSTRUCTION FIRST";
         default: return "INVALID OR DAMAGED STATE";
     }
 }
