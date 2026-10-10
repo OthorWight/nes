@@ -395,9 +395,9 @@ void debugger_render(HostCanvas *renderer, CPU6502 *cpu) {
     if (debugger_active) draw_string(renderer, "F7:Breakpoint  Ctrl+G:Commands  Shift+F10:Over", 8, 222, 0x91A6BD);
     else {
         char log_status_str[64];
-        snprintf(log_status_str, sizeof(log_status_str), "F10:Step|F9:Run|F6:Log:%s", debugger_logging_active ? "ON" : "OFF");
+        snprintf(log_status_str, sizeof(log_status_str), "F10:Step|F9:Debugger|Shift+F4:Log:%s", debugger_logging_active ? "ON" : "OFF");
         draw_string(renderer, log_status_str, 8, 222, 0xFF00FF);
-        draw_string(renderer, "F7:BRK | UP/DN:Nav | Alt:Menu", 8, 231, 0xFF00FF);
+        draw_string(renderer, "F7:BRK | Ctrl+UP/DN:Nav | Alt:Menu", 8, 231, 0xFF00FF);
     }
 }
 
@@ -628,27 +628,27 @@ static void scroll_workspace(int rows) {
 }
 bool debugger_event(const HostEvent *e, int x, int y) {
     if (!debugger_active) return false;
-    if (!console_open && e->type==HOST_KEYDOWN && (e->key.keysym.mod&HOST_MOD_CTRL) && e->key.keysym.sym>='1' && e->key.keysym.sym<='6') {
+    if (!console_open && e->type==HOST_KEYDOWN && e->key.keysym.mod==HOST_MOD_CTRL && e->key.keysym.sym>='1' && e->key.keysym.sym<='6') {
         workspace_tab=(unsigned)(e->key.keysym.sym-'1'); return true;
     }
-    if (e->type==HOST_KEYDOWN && e->key.keysym.sym=='g' && (e->key.keysym.mod&HOST_MOD_CTRL)) {
-        console_open=true; command_text[0]=0; return true;
+    if (e->type==HOST_KEYDOWN && e->key.keysym.sym=='g' && e->key.keysym.mod==HOST_MOD_CTRL) {
+        if (!console_open && !e->key.repeat) { console_open=true; command_text[0]=0; }
+        return true;
     }
     if (console_open) {
         if (e->type==HOST_TEXTINPUT && e->character>=32 && e->character<127) {
             size_t len=strlen(command_text); if (len+1<sizeof(command_text)) { command_text[len]=(char)e->character; command_text[len+1]=0; }
-        } else if (e->type==HOST_KEYDOWN) {
+        } else if (e->type==HOST_KEYDOWN && !e->key.keysym.mod) {
             if (e->key.keysym.sym==HOST_KEY_ESCAPE) console_open=false;
             else if (e->key.keysym.sym==HOST_KEY_BACKSPACE) { size_t len=strlen(command_text); if(len) command_text[len-1]=0; }
             else if (e->key.keysym.sym==HOST_KEY_RETURN) { debugger_command(command_text); console_open=false; }
         }
         return e->type==HOST_KEYDOWN || e->type==HOST_KEYUP || e->type==HOST_TEXTINPUT;
     }
-    if (e->type==HOST_KEYDOWN && workspace_tab<=4 &&
-        ((workspace_tab==1 && (e->key.keysym.sym=='+' || e->key.keysym.sym=='-')) ||
-         e->key.keysym.sym==HOST_KEY_PAGEUP || e->key.keysym.sym==HOST_KEY_PAGEDOWN)) {
+    if (e->type==HOST_KEYDOWN && !e->key.keysym.mod && workspace_tab<=4 &&
+        (e->key.keysym.sym==HOST_KEY_PAGEUP || e->key.keysym.sym==HOST_KEY_PAGEDOWN)) {
         int rows=workspace_tab==0?7:workspace_tab==1?12:workspace_tab==2?8:workspace_tab==3?16:10;
-        scroll_workspace((e->key.keysym.sym=='-' || e->key.keysym.sym==HOST_KEY_PAGEUP)?-rows:rows); return true;
+        scroll_workspace(e->key.keysym.sym==HOST_KEY_PAGEUP?-rows:rows); return true;
     }
     if (x<0 || y<0) return false;
     if (e->type==HOST_MOUSEWHEEL) {

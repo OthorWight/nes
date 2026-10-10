@@ -20,7 +20,7 @@ and state loads rebase time.
 | Ctrl+F4 | Toggle bounded event tracing |
 | F4 | Write the recent capture, including from menus/debugger |
 | F3 | Toggle the full debug side panel; saved globally |
-| F6 in debugger | Existing instruction log, independent of event tracing |
+| Shift+F4 | Existing instruction log, independent of event tracing |
 
 Settings also contains Performance and Event trace toggles. The side panel summarizes
 up to 180 completed gameplay frames: FPS, emulated CPU time as a percentage of

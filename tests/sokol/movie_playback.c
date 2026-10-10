@@ -31,40 +31,61 @@ static bool scripted_poll(HostEvent*e) {
     switch(iteration) {
         case 0:
             movie_fixture();assert(frontend_load_movie("synthetic.fm2"));
-            assert(!paused && movie_player.frame==0 && !nes_sys.zapper_enabled);key(e,HOST_KEY_F9);break;
+            assert(!paused && movie_player.frame==0 && !nes_sys.zapper_enabled);key(e,HOST_KEY_F1);break;
         case 1:
             assert(paused && !movie_player.frame);paused_cycles=nes_sys.cpu.cycle_count;key(e,'z');break;
         case 2:
-            assert(paused_cycles==nes_sys.cpu.cycle_count && !movie_player.frame);key(e,HOST_KEY_F8);break;
+            assert(paused_cycles==nes_sys.cpu.cycle_count && !movie_player.frame);
+            key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 3:
             assert(paused && movie_player.frame==1 && nes_sys.controller_state[0]==0x42 && nes_sys.controller_state[1]==1);
-            save_emulator_state(save_state_dir,"movie-test.state");key(e,HOST_KEY_F8);break;
+            key(e,HOST_KEY_F5);break;
         case 4:
-            assert(movie_player.frame==2);key(e,HOST_KEY_F8);e->key.keysym.mod=HOST_MOD_SHIFT;break;
+            assert(paused && movie_player.frame==1);key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 5:
-            assert(paused && movie_player.frame==1);
-            load_emulator_state(save_state_dir,"movie-test.state");assert(movie_player.frame==1);
-            desktop_command(MENU_MOVIE_SEEK);assert(movie_seek_dialog);key(e,'3');break;
-        case 6:assert(!strcmp(movie_seek_text,"3"));key(e,'0');break;
-        case 7:assert(!strcmp(movie_seek_text,"30"));key(e,HOST_KEY_RETURN);break;
+            assert(movie_player.frame==2);key(e,HOST_KEY_F8);break;
+        case 6:
+            assert(paused && movie_player.frame==1);key(e,HOST_KEY_LEFT);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 7:
+            assert(paused && movie_player.frame==0);key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 8:
+            assert(movie_player.frame==1);key(e,'j');e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 9:assert(movie_seek_dialog);key(e,'3');break;
+        case 10:assert(!strcmp(movie_seek_text,"3"));key(e,'0');break;
+        case 11:assert(!strcmp(movie_seek_text,"30"));key(e,HOST_KEY_RETURN);break;
+        case 12:
             if(movie_seeking){--iteration;break;}
             assert(paused && movie_player.frame==30);capture_window("tas-playback.bmp");
             assert(desktop_state(NULL,MENU_RESET)&MENU_DISABLED);
             assert(desktop_state(NULL,MENU_STEP)&MENU_DISABLED);
-            desktop_command(MENU_MOVIE_TURBO);assert(!movie_speed);key(e,HOST_KEY_F9);break;
-        case 9:
+            key(e,HOST_KEY_F6);break;
+        case 13:
+            assert(paused && !debugger_active && movie_player.frame==30);
+            key(e,HOST_KEY_F9);break;
+        case 14:
+            assert(paused && !debugger_active && movie_player.frame==30);
+            key(e,HOST_KEY_F10);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 15:
+            assert(paused && !debugger_active && movie_player.frame==30);
+            key(e,HOST_KEY_F8);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 16:
+            assert(paused && movie_player.frame==30);
+            desktop_command(MENU_MOVIE_TURBO);assert(!movie_speed);key(e,HOST_KEY_F1);break;
+        case 17:
             if(movie_player.frame<36){--iteration;break;}
-            assert(paused && movie_player.frame==36);key(e,HOST_KEY_F8);break;
-        case 10:
-            assert(paused && movie_player.frame==36);desktop_command(MENU_MOVIE_RESTART);assert(!movie_player.frame);
-            desktop_command(MENU_MOVIE_STOP);assert(!movie_player.movie && paused);
+            assert(paused && movie_player.frame==36);key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 18:
+            assert(paused && movie_player.frame==36);key(e,HOST_KEY_HOME);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 19:
+            assert(paused && movie_player.frame==0);key(e,HOST_KEY_END);e->key.keysym.mod=HOST_MOD_CTRL;break;
+        case 20:
+            assert(!movie_player.movie && paused);
             assert(!(desktop_state(NULL,MENU_RESET)&MENU_DISABLED));key(e,'m');e->key.keysym.mod=HOST_MOD_CTRL;break;
-        case 11:assert(file_browser.active && browser_mode==3);key(e,HOST_KEY_ESCAPE);break;
-        case 12:assert(!file_browser.active);e->type=HOST_QUIT;break;
+        case 21:assert(file_browser.active && browser_mode==3);key(e,HOST_KEY_ESCAPE);break;
+        case 22:assert(!file_browser.active);e->type=HOST_QUIT;break;
         default:assert(!"Movie frontend test did not exit");
     }
     return true;
 }
-static void cleanup(void){assert(iteration==12);app_cleanup();puts("Movie shortcuts, input isolation, pause, stepping, seeking, end, restart and saves passed");}
+static void cleanup(void){assert(iteration==22);app_cleanup();puts("Movie shortcuts, input isolation, pause, stepping, seeking, end, restart and saves passed");}
 sapp_desc sokol_main(int argc,char**argv){sapp_desc desc=emulator_desc(argc,argv);desc.cleanup_cb=cleanup;desc.event_cb=NULL;desc.width=1024;desc.height=996;window_scale=4;return desc;}

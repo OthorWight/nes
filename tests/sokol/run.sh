@@ -13,15 +13,15 @@ for source in src/*.c; do
     case "$source" in src/gui_main.c) ;; *) sources+=("$source");; esac
     case "$source" in src/gui_main.c|src/debugger.c|src/host_sokol.c) ;; *) core+=("$source");; esac
 done
-for name in frontend_integration menu_mouse movie_playback; do
+for name in frontend_integration menu_mouse movie_playback shortcuts; do
     sokol_build "$test_dir/$name" "tests/sokol/$name.c" "${sources[@]}"
 done
 if [ -n "$rom_path" ]; then sokol_build "$test_dir/pacing" tests/sokol/pacing.c "${sources[@]}"; fi
 "${CC:-cc}" -Wall -Wextra -Werror -std=c11 -O2 -Isrc tests/sokol/zapper_probe.c "${core[@]}" -o "$test_dir/zapper_probe" -pthread -lm
 "$test_dir/zapper_probe"
-for mode in mouse movie audio muted unavailable; do
+for mode in mouse movie keys audio muted unavailable; do
     mkdir "$test_dir/$mode"
-    if [ "$mode" = mouse ]; then name=menu_mouse; elif [ "$mode" = movie ]; then name=movie_playback; else name=frontend_integration; fi
+    if [ "$mode" = mouse ]; then name=menu_mouse; elif [ "$mode" = movie ]; then name=movie_playback; elif [ "$mode" = keys ]; then name=shortcuts; else name=frontend_integration; fi
     cp "$test_dir/$name" "$test_dir/$mode/"
     (cd "$test_dir/$mode"
         if [ "$mode" = unavailable ]; then export NES_DISABLE_AUDIO=1; else unset NES_DISABLE_AUDIO; fi

@@ -1,17 +1,20 @@
 ## Controls
 
+See the [complete Action - Key shortcut list](docs/SHORTCUTS.md). F5/F8 are
+reserved for save/load in gameplay, the debugger, and TAS playback.
+
 ### Keyboard Layout (Mappable)
 *   **D-Pad**: `Arrow Keys`
 *   **Button A**: `Z`
 *   **Button B**: `X`
 *   **Select**: `Space`
 *   **Start**: `Enter`
-*   **Pause / Resume**: `F1` or `Escape`
+*   **Pause / Resume**: `F1` (Escape closes UI)
 
 ### Desktop Menus and File Browser
 * **Alt** activates the desktop menus. Use arrows, Enter, and Escape, or click/hover with the mouse.
 * **Ctrl+O** opens the ROM file browser. Double-click a folder or ROM, or select it and press Enter / Open.
-* **Up / Backspace** goes to the parent folder; **Home** goes to your home folder. At a Windows drive root, Up lists drives.
+* **Backspace / Alt+Up** goes to the parent folder; click **Home** to go to your home folder. Up / Down select entries. At a Windows drive root, going to the parent lists drives.
 * **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
 * **Emulation > Audio** provides mute and volume controls. **Controller Bindings** edits keyboard/gamepad mappings.
 * **Emulation > Region** selects Auto, NTSC, PAL, or Dendy. Auto uses the ROM header and defaults dual-region images to NTSC. Changing regions resets the game.
@@ -27,21 +30,21 @@ Load the matching ROM, then choose **File > TAS Movie > Open FM2...**
 power-on memory using the movie's NTSC/PAL and RAM settings. Recorded input
 owns both controller ports; keyboard/gamepad input cannot change the run.
 
-* **F9** plays/pauses; **F8** advances one frame; **Shift+F8** goes back one frame.
-  These take precedence over the usual F8 quickload while a movie is open.
-* **Go to Frame...** seeks to a completed-frame count; zero is power-on. Seeking
-  replays recorded inputs from a checkpoint and remains cancellable with F9.
+* **F1** plays/pauses; **Ctrl+Right** advances one frame; **Ctrl+Left** goes back
+  one frame. **F5/F8** save/load movie states, including while paused.
+* **Go to Frame...** (`Ctrl+J`) seeks to a completed-frame count; zero is power-on. Seeking
+  replays recorded inputs from a checkpoint and remains cancellable with F1.
   The UI stays responsive and playback pauses at the requested frame.
 * **Speed** offers 0.5x, 1x, 2x, 4x and unthrottled playback. Audio plays at 1x;
   other speeds and seeking are muted.
-* **Restart** returns to frame zero, paused. Playback pauses at the end; F9
+* **Restart** (`Ctrl+Home`) returns to frame zero, paused. Playback pauses at the end; F1
   starts it again. The status bar shows progress, speed and both pads; subtitles
   appear over the game.
 * Save/load commands retain the movie identity and input position along with
   the game state. Rolling movie saves use `movie_quick_0.state` through
   `movie_quick_9.state`, separate from ordinary quicksaves. Load them with the
   same FM2 open. Native/FCEUX states cannot replace a movie checkpoint.
-* **Stop Playback** restores the game as it was before playback, paused.
+* **Stop Playback** (`Ctrl+End`) restores the game as it was before playback, paused.
   Playback does not overwrite battery saves. Ordinary reset, power, region,
   controller changes and debugger editing/stepping are disabled during playback.
 
@@ -203,7 +206,7 @@ render callbacks. Static menu tables and command dispatch live in `gui_main.c`.
 `host_layout()` fits the game and debugger within the remaining content area.
 No additional GUI library, native menu, or window is used.
 
-Press `F10` during gameplay to pause and open the **Step Debugger** beside the game. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
+Press `F9` to toggle **Step Debugger** inspection beside the game; `F10` enters it and executes one instruction. The game image stays visible while stepping. `F9` resumes; the panel stays open if F2 or F3 is enabled. These toggles also appear in View and preserve existing saved preferences.
 
 The debugger supports instruction/over/out, CPU cycle, PPU dot, scanline/frame,
 interrupt and raster targets, and instruction/frame rewind. Its workspace has
@@ -224,18 +227,20 @@ P:34  [..-..IZ.]  CYC:347101
 ...
 --------------------------------
 Stack: [ 00 00 00 00 ]
-F10:Step|F9:Run|F6:Log:OFF
-F7:BRK | UP/DN:Nav | Alt:Menu
+F10:Step|F9:Debugger|Shift+F4:Log:OFF
+F7:BRK | Ctrl+UP/DN:Nav | Alt:Menu
 ```
 
 ### Debugger Commands
-*   **F10**: Step one single CPU instruction.
-*   **F9**: Exit step-mode and run emulator at full speed.
+*   **F10**: Step one CPU instruction; Shift+F10 steps over, Ctrl+F10 steps out, Alt+F10 rewinds.
+*   **F6 / Shift+F6**: Advance a nominal frame / rewind a frame checkpoint.
+*   **Ctrl+F9**: Run to the selected instruction.
+*   **F9**: Toggle debugger inspection / ordinary playback.
 *   **F7**: Toggle Breakpoint on the currently highlighted address.
-*   **F6**: Toggle writing continuous execution logs to `step_trace.log` (logs include full register maps, cycles, scanlines, mapped PRG-banks, and active IRQ lines).
-*   **Up / Down**: Navigate instruction view.
-*   **F12**: Reset the system while debugging. Use Emulation > Power Cycle to reload the ROM and initialize the system.
-*   **Escape**: Pause/resume gameplay; close an active desktop menu or dialog. Use F9 to leave the step debugger.
+*   **Shift+F4**: Toggle writing continuous execution logs to `step_trace.log` (logs include full register maps, cycles, scanlines, mapped PRG-banks, and active IRQ lines).
+*   **Ctrl+Up / Ctrl+Down**: Navigate instruction view.
+*   **F12**: Reset the loaded game. Use Emulation > Power Cycle to reload the ROM and initialize the system.
+*   **F1**: Pause/resume gameplay or TAS. **Escape** closes UI. Use F9 to leave debugger inspection.
 
 ---
 

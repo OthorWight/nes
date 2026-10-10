@@ -389,7 +389,7 @@ static bool scripted_poll(HostEvent *e) {
             if (audio_device) assert(host_audio_queued_bytes() == 0);
             key(e, HOST_KEYUP, HOST_KEY_z); break;
         case 8: e->type = HOST_WINDOWEVENT; e->window.event = HOST_WINDOWEVENT_FOCUS_GAINED; break;
-        case 9: key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
+        case 9: key(e, HOST_KEYDOWN, HOST_KEY_F1); break;
         case 10: assert(nes_sys.controller_state[0] == 0); key(e, HOST_KEYDOWN, HOST_KEY_x); break;
         case 11: assert(nes_sys.controller_state[0] & 2); key(e, HOST_KEYDOWN, HOST_KEY_F10); break;
         case 12: {
@@ -446,7 +446,7 @@ static bool scripted_poll(HostEvent *e) {
         case 17: key(e, HOST_KEYDOWN, HOST_KEY_LEFT); break;
         case 18:
             assert(nes_sys.controller_state[0] & 0x40);
-            key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
+            key(e, HOST_KEYDOWN, HOST_KEY_F1); break;
         case 19:
             assert(paused && !nes_sys.controller_state[0]);
             assert(renderer->pixels[108 * 256 + 96] == 0xDC000000u);
@@ -456,7 +456,7 @@ static bool scripted_poll(HostEvent *e) {
             memset(&diagnostics, 0, sizeof(diagnostics)); diagnostics.tracing = true;
             memset(&audio_monitor, 0, sizeof(audio_monitor));
             runtime_reset_pending = true;
-            key(e, HOST_KEYDOWN, HOST_KEY_ESCAPE); break;
+            key(e, HOST_KEYDOWN, HOST_KEY_F1); break;
         case 21:
             assert(!paused && !nes_sys.zapper_trigger);
             assert(renderer->pixels[108 * 256 + 96] == 0); /* OSD clears on resume. */

@@ -123,8 +123,10 @@ bool file_browser_event(FileBrowser *b, const HostEvent *e, double now, char out
         if (n + 1 < sizeof(b->location)) { b->location[n] = (char)e->character; b->location[n+1] = 0; }
     } else if (e->type == HOST_KEYDOWN) {
         HostKey key = e->key.keysym.sym;
-        if (key == HOST_KEY_ESCAPE) { if (b->editing) b->editing = false; else b->active = false; }
-        else if (key == 'l' && (e->key.keysym.mod & HOST_MOD_CTRL)) { b->editing = b->replace_text = true; }
+        if (key == 'l' && e->key.keysym.mod == HOST_MOD_CTRL) { b->editing = b->replace_text = true; }
+        else if (!b->editing && key == HOST_KEY_UP && e->key.keysym.mod == HOST_MOD_ALT) parent(b);
+        else if (e->key.keysym.mod) return false;
+        else if (key == HOST_KEY_ESCAPE) { if (b->editing) b->editing = false; else b->active = false; }
         else if (b->editing) {
             size_t n = strlen(b->location);
             if (key == HOST_KEY_BACKSPACE) {
@@ -137,7 +139,7 @@ bool file_browser_event(FileBrowser *b, const HostEvent *e, double now, char out
                 }
                 if (file_browser_scan(b, b->location)) b->editing = false;
             }
-        } else if (key == HOST_KEY_BACKSPACE || (key == HOST_KEY_UP && (e->key.keysym.mod & HOST_MOD_ALT))) parent(b);
+        } else if (key == HOST_KEY_BACKSPACE) parent(b);
         else if (key == HOST_KEY_RETURN) return choose(b, output);
         else if (key == HOST_KEY_UP || key == HOST_KEY_DOWN || key == 0x40000000+75 || key == 0x40000000+78) {
             int step = (key == HOST_KEY_UP || key == 0x40000000+75) ? -1 : 1;

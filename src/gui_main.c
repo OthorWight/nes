@@ -26,6 +26,10 @@
 #include "apu_view.h"
 #include "rom_preferences.h"
 #include "movie.h"
+#include "shortcuts.h"
+
+static void normalize_control_mappings(void);
+static bool assign_control_mapping(HostKey key, int modifiers, HostButton button);
 
 NES nes_sys;
 static CPUBus cpu_bus_bridge;
@@ -188,6 +192,7 @@ static const HostButton default_controller_mappings[CONTROL_COUNT] = {
 };
 
 static bool control_mode_keyboard = true;
+static char binding_error[64];
 
 static uint8_t cpu_bridge_read(void *ctx, uint16_t addr) {
     return nes_cpu_bus_read((NES*)ctx, addr);
@@ -501,6 +506,7 @@ static void load_emulator_settings(void) {
     if (version >= 10) load_rom_history(f);
     if (window_scale < 1 || window_scale > 5) window_scale = 5;
     if (master_volume < 0 || master_volume > 100) master_volume = 100;
+    normalize_control_mappings();
     global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
     fclose(f);
 }
@@ -552,6 +558,64 @@ static const char *button_names[CONTROL_COUNT] = {
     "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
     "Quick Save", "Quick Load"
 };
+
+static bool mapping_used(const int32_t *keys, int count, int32_t key, int except) {
+    for (int i = 0; i < count; ++i) if (i != except && keys[i] == key) return true;
+    return false;
+}
+static void normalize_control_mappings(void) {
+    bool changed = control_mappings[8] != HOST_KEY_F5 || control_mappings[9] != HOST_KEY_F8;
+    control_mappings[8] = HOST_KEY_F5;
+    control_mappings[9] = HOST_KEY_F8;
+    for (int i = 0; i < 8; ++i) {
+        if (!shortcut_binding_key_allowed(control_mappings[i]) ||
+            mapping_used(control_mappings, i, control_mappings[i], -1)) {
+            control_mappings[i] = -1; changed = true;
+        }
+    }
+    for (int i = 0; i < 8; ++i) if (control_mappings[i] == -1) {
+        HostKey key = default_control_mappings[i];
+        if (mapping_used(control_mappings, 8, key, i)) {
+            for (key = 'a'; key <= 'z'; ++key) if (!mapping_used(control_mappings, 8, key, i)) break;
+        }
+        control_mappings[i] = key;
+    }
+    for (int i = 0; i < CONTROL_COUNT; ++i) {
+        if (controller_button_mappings[i] < 0 || controller_button_mappings[i] > HOST_CONTROLLER_BUTTON_DPAD_RIGHT ||
+            mapping_used(controller_button_mappings, i, controller_button_mappings[i], -1)) {
+            controller_button_mappings[i] = -1; changed = true;
+        }
+    }
+    for (int i = 0; i < CONTROL_COUNT; ++i) if (controller_button_mappings[i] == -1) {
+        HostButton button = default_controller_mappings[i];
+        if (mapping_used(controller_button_mappings, CONTROL_COUNT, button, i)) {
+            for (button = 0; button <= HOST_CONTROLLER_BUTTON_DPAD_RIGHT; ++button)
+                if (!mapping_used(controller_button_mappings, CONTROL_COUNT, button, i)) break;
+        }
+        controller_button_mappings[i] = button;
+    }
+    if (changed) show_notification("CONFLICTING BINDINGS REPAIRED");
+}
+static bool assign_control_mapping(HostKey key, int modifiers, HostButton button) {
+    int selected = control_selection - 1;
+    if (selected < 0 || selected >= CONTROL_COUNT) return false;
+    const char *error = NULL;
+    if (control_mode_keyboard) {
+        if (selected >= 8) error = "Save/load keys are fixed: F5 / F8";
+        else if (modifiers) error = "Use an unmodified key";
+        else if (!shortcut_binding_key_allowed(key)) error = "Key reserved for shortcuts/navigation";
+        else if (mapping_used(control_mappings, CONTROL_COUNT, key, selected)) error = "Key already assigned";
+        if (!error) control_mappings[selected] = key;
+    } else {
+        if (button < 0 || button > HOST_CONTROLLER_BUTTON_DPAD_RIGHT) error = "Unsupported controller button";
+        else if (mapping_used(controller_button_mappings, CONTROL_COUNT, button, selected)) error = "Button already assigned";
+        if (!error) controller_button_mappings[selected] = button;
+    }
+    snprintf(binding_error, sizeof(binding_error), "%s", error ? error : "");
+    if (error) return false;
+    save_emulator_settings();
+    return true;
+}
 
 static const uint8_t font8x8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
@@ -880,7 +944,7 @@ static void draw_debug_panel(void) {
             nes_sys.zapper_x, nes_sys.zapper_y, nes_sys.zapper_trigger, nes_sys.zapper_light);
     }
     draw_string(&debug_canvas, "F3:Debug panel  F2:Metrics  F4:Capture", 8, 612, 0x78C8FF);
-    draw_string(&debug_canvas, "F10:Step  F9:Run  Ctrl+F4:Trace", 8, 626, 0x78C8FF);
+    draw_string(&debug_canvas, "F10:Step  F9:Debugger  Ctrl+F4:Trace", 8, 626, 0x78C8FF);
 }
 static bool running = true, cursor_visible = true, was_playing;
 static uint32_t last_mouse_activity;
@@ -1113,7 +1177,6 @@ static const MenuItem size_items[] = {
     ITEM("3x", NULL, MENU_SIZE_3), ITEM("4x", NULL, MENU_SIZE_4), ITEM("Maximized", NULL, MENU_MAXIMIZED)
 };
 static const Menu size_menu = {"Window Size", size_items, COUNT(size_items)};
-static char save_shortcut[32], load_shortcut[32];
 static const MenuItem movie_speed_items[] = {
     ITEM("0.5x", NULL, MENU_MOVIE_HALF), ITEM("1x", NULL, MENU_MOVIE_NORMAL),
     ITEM("2x", NULL, MENU_MOVIE_DOUBLE), ITEM("4x", NULL, MENU_MOVIE_QUAD),
@@ -1121,16 +1184,16 @@ static const MenuItem movie_speed_items[] = {
 };
 static const Menu movie_speed_menu = {"Speed", movie_speed_items, COUNT(movie_speed_items)};
 static const MenuItem movie_items[] = {
-    ITEM("Open FM2...", "Ctrl+M", MENU_MOVIE_OPEN), ITEM("Play / Pause", "F9", MENU_MOVIE_PAUSE),
-    ITEM("Advance One Frame", "F8", MENU_MOVIE_STEP), ITEM("Back One Frame", "Shift+F8", MENU_MOVIE_BACK),
-    ITEM("Go to Frame...", NULL, MENU_MOVIE_SEEK), SUB("Speed", movie_speed_menu),
-    ITEM("Restart", NULL, MENU_MOVIE_RESTART), ITEM("Stop Playback", NULL, MENU_MOVIE_STOP)
+    ITEM("Open FM2...", shortcut_MOVIE_OPEN, MENU_MOVIE_OPEN), ITEM("Play / Pause", shortcut_PAUSE, MENU_MOVIE_PAUSE),
+    ITEM("Advance One Frame", shortcut_MOVIE_STEP, MENU_MOVIE_STEP), ITEM("Back One Frame", shortcut_MOVIE_BACK, MENU_MOVIE_BACK),
+    ITEM("Go to Frame...", shortcut_MOVIE_SEEK, MENU_MOVIE_SEEK), SUB("Speed", movie_speed_menu),
+    ITEM("Restart", shortcut_MOVIE_RESTART, MENU_MOVIE_RESTART), ITEM("Stop Playback", shortcut_MOVIE_STOP, MENU_MOVIE_STOP)
 };
 static const Menu movie_menu = {"TAS Movie", movie_items, COUNT(movie_items)};
 static const MenuItem file_items[] = {
-    ITEM("Open ROM...", "Ctrl+O", MENU_OPEN), SUB("Recent ROMs", recent_menu),
-    ITEM("Save State", save_shortcut, MENU_SAVE), ITEM("Load State", load_shortcut, MENU_LOAD),
-    ITEM("Save State As...", NULL, MENU_SAVE_AS), ITEM("Load State From...", NULL, MENU_LOAD_FROM),
+    ITEM("Open ROM...", shortcut_OPEN, MENU_OPEN), SUB("Recent ROMs", recent_menu),
+    ITEM("Save State", shortcut_SAVE, MENU_SAVE), ITEM("Load State", shortcut_LOAD, MENU_LOAD),
+    ITEM("Save State As...", shortcut_SAVE_AS, MENU_SAVE_AS), ITEM("Load State From...", shortcut_LOAD_FROM, MENU_LOAD_FROM),
     SUB("TAS Movie", movie_menu), SEPARATOR, ITEM("Exit", NULL, MENU_EXIT)
 };
 static const MenuItem audio_items[] = {
@@ -1144,38 +1207,40 @@ static const MenuItem region_items[] = {
 };
 static const Menu region_menu = {"Region", region_items, COUNT(region_items)};
 static const MenuItem emulation_items[] = {
-    ITEM("Pause", NULL, MENU_PAUSE), ITEM("Reset", NULL, MENU_RESET),
+    ITEM("Pause", shortcut_PAUSE, MENU_PAUSE), ITEM("Reset", shortcut_RESET, MENU_RESET),
     ITEM("Power Cycle", NULL, MENU_POWER), SEPARATOR, SUB("Region", region_menu), SUB("Port 2", port_menu), SUB("Audio", audio_menu),
     ITEM("Controller Bindings...", NULL, MENU_BINDINGS), SEPARATOR,
     ITEM("Use Global ROM Settings", NULL, MENU_INHERIT), ITEM("Set as Global Defaults", NULL, MENU_GLOBAL_DEFAULTS)
 };
 static const MenuItem view_items[] = {
-    SUB("Window Size", size_menu), ITEM("Fullscreen", "F11", MENU_FULLSCREEN),
+    SUB("Window Size", size_menu), ITEM("Fullscreen", shortcut_FULLSCREEN, MENU_FULLSCREEN),
     ITEM("CRT Shader", NULL, MENU_CRT),
     ITEM("Remove Sprite Limit", NULL, MENU_REMOVE_SPRITE_LIMIT),
     ITEM("Nametable Viewer", NULL, MENU_NAMETABLES),
     ITEM("APU Viewer", NULL, MENU_APU_VIEWER),
-    ITEM("Debug Panel", "F3", MENU_DEBUG_PANEL), ITEM("Metrics Panel", "F2", MENU_METRICS)
+    ITEM("Debug Panel", shortcut_DEBUG_PANEL, MENU_DEBUG_PANEL), ITEM("Metrics Panel", shortcut_METRICS, MENU_METRICS)
 };
 static const MenuItem debug_step_items[] = {
-    ITEM("Instruction", "F10", MENU_STEP), ITEM("Step Over", "Shift+F10", MENU_STEP_OVER),
-    ITEM("Step Out", "Ctrl+F10", MENU_STEP_OUT), ITEM("CPU Cycle", NULL, MENU_STEP_CYCLE),
+    ITEM("Instruction", shortcut_STEP, MENU_STEP), ITEM("Step Over", shortcut_OVER, MENU_STEP_OVER),
+    ITEM("Step Out", shortcut_OUT, MENU_STEP_OUT), ITEM("CPU Cycle", NULL, MENU_STEP_CYCLE),
     ITEM("PPU Dot", NULL, MENU_STEP_DOT), ITEM("One Scanline", NULL, MENU_STEP_SCANLINE),
-    ITEM("One Frame", "F8", MENU_STEP_FRAME), ITEM("Next Scanline Start", NULL, MENU_NEXT_SCANLINE),
+    ITEM("One Frame", shortcut_STEP_FRAME, MENU_STEP_FRAME), ITEM("Next Scanline Start", NULL, MENU_NEXT_SCANLINE),
     ITEM("Next Frame Start", NULL, MENU_NEXT_FRAME), ITEM("Finish Instruction", NULL, MENU_DEBUG_FINISH)
 };
 static const Menu debug_step_menu = {"Step", debug_step_items, COUNT(debug_step_items)};
 static const MenuItem debug_run_items[] = {
-    ITEM("Selected Instruction", "Ctrl+F8", MENU_RUN_CURSOR), ITEM("Next NMI Handler", NULL, MENU_RUN_NMI),
+    ITEM("Selected Instruction", shortcut_RUN_CURSOR, MENU_RUN_CURSOR), ITEM("Next NMI Handler", NULL, MENU_RUN_NMI),
     ITEM("Next IRQ Handler", NULL, MENU_RUN_IRQ)
 };
 static const Menu debug_run_menu = {"Run To", debug_run_items, COUNT(debug_run_items)};
 static const MenuItem debug_items[] = {
-    ITEM("Open / Step Instruction", "F10", MENU_STEP), ITEM("Run/Pause", "F9", MENU_RUN),
+    ITEM("Step Instruction", shortcut_STEP, MENU_STEP), ITEM("Toggle Debugger", shortcut_DEBUGGER, MENU_RUN),
     SUB("Step", debug_step_menu), SUB("Run To", debug_run_menu),
-    ITEM("Back One Instruction", "Alt+F10", MENU_DEBUG_BACK), ITEM("Back One Frame", "Shift+F8", MENU_DEBUG_BACK_FRAME),
-    ITEM("Toggle Code Breakpoint", "F7", MENU_BREAKPOINT), ITEM("Commands / Watchpoints...", "Ctrl+G", MENU_DEBUG_COMMAND),
-    ITEM("Export Execution Trace", NULL, MENU_DEBUG_TRACE_SAVE), ITEM("Event Trace", "Ctrl+F4", MENU_TRACE)
+    ITEM("Back One Instruction", shortcut_BACK, MENU_DEBUG_BACK), ITEM("Back One Frame", shortcut_BACK_FRAME, MENU_DEBUG_BACK_FRAME),
+    ITEM("Toggle Code Breakpoint", shortcut_BREAKPOINT, MENU_BREAKPOINT), ITEM("Commands / Watchpoints...", shortcut_COMMAND, MENU_DEBUG_COMMAND),
+    ITEM("Instruction Logging", shortcut_LOG, MENU_INSTRUCTION_LOG),
+    ITEM("Capture Diagnostics", shortcut_CAPTURE, MENU_CAPTURE),
+    ITEM("Export Execution Trace", NULL, MENU_DEBUG_TRACE_SAVE), ITEM("Event Trace", shortcut_TRACE, MENU_TRACE)
 };
 static const MenuItem help_items[] = {
     ITEM("Controls / Shortcuts", NULL, MENU_CONTROLS), ITEM("About", NULL, MENU_ABOUT)
@@ -1191,6 +1256,11 @@ static const Menu desktop_menus[] = {
 
 static unsigned desktop_state(void *context, MenuCommand command) {
     (void)context;
+    if (command == MENU_INSTRUCTION_LOG) return !nes_sys.cart || movie_player.movie ? MENU_DISABLED :
+        debugger_logging_active ? MENU_CHECKED : 0;
+    if (command == MENU_PAUSE && debugger_active) return MENU_DISABLED;
+    if (command == MENU_DEBUG_UP || command == MENU_DEBUG_DOWN)
+        return !nes_sys.cart || !debugger_active || movie_player.movie ? MENU_DISABLED : 0;
     if (command == MENU_MOVIE_OPEN) return nes_sys.cart ? 0 : MENU_DISABLED;
     if (command >= MENU_MOVIE_STOP && command <= MENU_MOVIE_TURBO) {
         if (!movie_player.movie) return MENU_DISABLED;
@@ -1269,9 +1339,9 @@ static void desktop_command(MenuCommand command) {
                 nametable_view.valid = false; memset(&apu_view, 0, sizeof(apu_view));
             }
             break;
-        case MENU_MOVIE_PAUSE:
+        case MENU_MOVIE_PAUSE: case MENU_PAUSE:
             movie_seeking = movie_step = false;
-            if (movie_player.frame == movie_player.movie->count) movie_restart(&movie_player, &nes_sys);
+            if (movie_player.movie && movie_player.frame == movie_player.movie->count) movie_restart(&movie_player, &nes_sys);
             paused = !paused; break;
         case MENU_MOVIE_STEP:
             movie_seeking = false; movie_step = true; paused = true; break;
@@ -1301,7 +1371,6 @@ static void desktop_command(MenuCommand command) {
             break;
         }
         case MENU_EXIT: if (save_battery_ram()) running = false; break;
-        case MENU_PAUSE: paused = !paused; break;
         case MENU_RESET:
             execution_sync(nes_sys.execution);
             nametable_view.valid = false;
@@ -1347,19 +1416,42 @@ static void desktop_command(MenuCommand command) {
             nes_sys.sprite_view = remove_sprite_limit ? &sprite_view : NULL;
             save_emulator_settings(); break;
         case MENU_METRICS: performance_visible = !performance_visible; save_emulator_settings(); break;
-        case MENU_STEP: case MENU_RUN:
+        case MENU_STEP:
+            paused = false;
+            debugger_request(EXEC_INSTRUCTION, 1, 0, 0);
+            clear_view_history(debugger_view_pc); break;
+        case MENU_RUN:
             paused = false;
             if (debugger_active) {
-                if (command == MENU_STEP) debugger_request(EXEC_INSTRUCTION, 1, 0, 0);
-                else {
-                    execution_request(nes_sys.execution, EXEC_PAUSE, 1, 0, 0);
-                    debugger_active = false;
-                }
+                execution_request(nes_sys.execution, EXEC_PAUSE, 1, 0, 0);
+                debugger_active = false;
             } else {
                 debugger_active = true; debugger_view_pc = nes_sys.cpu.program_counter;
                 debugger_selected_line = 0;
             }
             clear_view_history(debugger_view_pc); break;
+        case MENU_CAPTURE: capture_diagnostics(); break;
+        case MENU_INSTRUCTION_LOG: debugger_logging_active = !debugger_logging_active; break;
+        case MENU_DEBUG_UP:
+            if (debugger_selected_line > 0) --debugger_selected_line;
+            else if (view_history_count > 1) debugger_view_pc = pop_view_history();
+            else {
+                uint16_t target = debugger_view_pc;
+                if (target >= 1 && op_bytes[test_bus_peek(target - 1)] == 1) debugger_view_pc = target - 1;
+                else if (target >= 2 && op_bytes[test_bus_peek(target - 2)] == 2) debugger_view_pc = target - 2;
+                else if (target >= 3 && op_bytes[test_bus_peek(target - 3)] == 3) debugger_view_pc = target - 3;
+                else --debugger_view_pc;
+                clear_view_history(debugger_view_pc);
+            }
+            break;
+        case MENU_DEBUG_DOWN:
+            if (debugger_selected_line < 11) ++debugger_selected_line;
+            else {
+                uint8_t op = test_bus_peek(debugger_view_pc);
+                debugger_view_pc += op_bytes[op] ? op_bytes[op] : 1;
+                push_view_history(debugger_view_pc);
+            }
+            break;
         case MENU_STEP_OVER: case MENU_STEP_OUT: case MENU_STEP_CYCLE: case MENU_STEP_DOT:
         case MENU_STEP_SCANLINE: case MENU_STEP_FRAME: case MENU_NEXT_SCANLINE: case MENU_NEXT_FRAME:
         case MENU_RUN_NMI: case MENU_RUN_IRQ: {
@@ -1432,18 +1524,19 @@ static MenuRect controls_bounds(int w, int h) {
     return (MenuRect){(w-width)/2, MENU_BAR_HEIGHT+8, width, height};
 }
 static void controls_activate(void) {
+    binding_error[0] = 0;
     if (!control_selection) control_mode_keyboard = !control_mode_keyboard;
     else if (control_selection == CONTROL_COUNT+1) {
         memcpy(control_mappings, default_control_mappings, sizeof(control_mappings));
         memcpy(controller_button_mappings, default_controller_mappings, sizeof(controller_button_mappings));
         save_emulator_settings();
-    } else rebinding = true;
+    } else if (control_mode_keyboard && control_selection >= 9)
+        snprintf(binding_error, sizeof(binding_error), "Save/load keys are fixed: F5 / F8");
+    else rebinding = true;
 }
 static void desktop_draw(void) {
     int w, h; host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
     menu_bar_resize(&desktop_menu, w, h);
-    snprintf(save_shortcut, sizeof(save_shortcut), "%s", host_key_name(control_mappings[8]));
-    snprintf(load_shortcut, sizeof(load_shortcut), "%s", host_key_name(control_mappings[9]));
     MenuPainter painter = {NULL, chrome_fill, chrome_text};
     DiagnosticSummary summary = diagnostics_summary(&diagnostics);
     bool playing = nes_sys.cart && !paused &&
@@ -1512,19 +1605,19 @@ static void desktop_draw(void) {
             if (!i) snprintf(line,sizeof(line),"Input: %s",control_mode_keyboard ? "Keyboard" : "Controller");
             else if (i == CONTROL_COUNT+1) snprintf(line,sizeof(line),"Restore Defaults");
             else if (rebinding && i == control_selection) snprintf(line,sizeof(line),"%s: Press a %s...",button_names[i-1],control_mode_keyboard ? "key" : "button");
-            else if (control_mode_keyboard) snprintf(line,sizeof(line),"%s: %s",button_names[i-1],host_key_name(control_mappings[i-1]));
+            else if (control_mode_keyboard) snprintf(line,sizeof(line),"%s: %s%s",button_names[i-1],host_key_name(control_mappings[i-1]),i>=9 ? " (fixed)" : "");
             else snprintf(line,sizeof(line),"%s: Button %d",button_names[i-1],controller_button_mappings[i-1]);
             int y = r.y+26+i*row_height;
             if (i == control_selection) chrome_fill(NULL,(MenuRect){r.x+4,y-2,r.w-8,row_height},0x0A246A);
             int chars = (r.w-16)/8; if (chars >= 0 && chars < (int)sizeof(line)) line[chars] = 0;
             chrome_text(NULL,line,r.x+8,y,i == control_selection ? 0xFFFFFF : 0x202020);
         }
-        chrome_text(NULL,"Enter: Change  Esc: Close",r.x+8,r.y+r.h-16,0x202020);
+        chrome_text(NULL,*binding_error ? binding_error : "Enter: Change  Esc: Close",r.x+8,r.y+r.h-16,0x202020);
     } else if (help_page) {
         int x = w > 352 ? (w - 336) / 2 : 8, y = MENU_BAR_HEIGHT + 12;
         chrome_fill(NULL, (MenuRect){x, y, 336, 180}, 0x808080);
         chrome_fill(NULL, (MenuRect){x + 1, y + 1, 334, 178}, 0xF0EEE8);
-        static const char *controls[] = {"Controls / Shortcuts", "Alt: Menu bar", "Arrows / Enter: Select", "Escape: Close / Back", "F10: Step   F9: Run/Pause", "F2: Metrics   F3: Debug panel", "F4: Capture   Ctrl+F4: Trace", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Escape or click: Close"};
+        static const char *controls[] = {"Controls / Shortcuts", "F1: Pause   F5/F8: Save/Load", "F6: Frame   Shift+F6: Back", "F9: Debugger   F10: Instruction", "Ctrl+Left/Right: TAS Back/Frame", "F2/F3: Panels   F4: Capture", "Ctrl+F4: Trace  Shift+F4: Log", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Alt: Menus   Escape: Close"};
         static const char *about[] = {"NES Emulator", "Custom Sokol desktop interface", "8x8 bitmap font", "Windows / Linux / macOS", "", "Escape, Enter or click: Close"};
         const char **lines = help_page == 1 ? controls : about;
         int count = help_page == 1 ? COUNT(controls) : COUNT(about);
@@ -1795,12 +1888,12 @@ static bool desktop_event(const HostEvent *event) {
     if (help_page == 3) {
         if (rebinding) {
             if (event->type == HOST_KEYDOWN && !event->key.repeat) {
-                if (event->key.keysym.sym == HOST_KEY_ESCAPE) rebinding = false;
+                if (event->key.keysym.sym == HOST_KEY_ESCAPE) { rebinding = false; binding_error[0] = 0; }
                 else if (control_mode_keyboard) {
-                    control_mappings[control_selection-1] = event->key.keysym.sym; save_emulator_settings(); rebinding = false;
+                    if (assign_control_mapping(event->key.keysym.sym, event->key.keysym.mod, 0)) rebinding = false;
                 }
             } else if (!control_mode_keyboard && event->type == HOST_CONTROLLERBUTTONDOWN && event->cbutton.which == game_controller) {
-                controller_button_mappings[control_selection-1] = event->cbutton.button; save_emulator_settings(); rebinding = false;
+                if (assign_control_mapping(0, 0, event->cbutton.button)) rebinding = false;
             }
         } else if (event->type == HOST_KEYDOWN) {
             if (event->key.keysym.sym == HOST_KEY_ESCAPE) help_page = 0;
@@ -1819,27 +1912,15 @@ static bool desktop_event(const HostEvent *event) {
         return event->type != HOST_QUIT && event->type != HOST_WINDOWEVENT &&
             event->type != HOST_CONTROLLERDEVICEADDED && event->type != HOST_CONTROLLERDEVICEREMOVED;
     }
-    if (!desktop_menu.active && !help_page && nes_sys.cart && event->type == HOST_KEYDOWN &&
-        event->key.keysym.sym == 'g' && (event->key.keysym.mod & HOST_MOD_CTRL)) {
-        desktop_command(MENU_DEBUG_COMMAND); return true;
-    }
     if (!movie_player.movie && !desktop_menu.active && !help_page && debugger_event(event, -1, -1)) return true;
-    if (!desktop_menu.active && !help_page && event->type == HOST_KEYDOWN && !event->key.repeat) {
-        if (event->key.keysym.sym == 'm' && (event->key.keysym.mod & HOST_MOD_CTRL)) {
-            desktop_command(MENU_MOVIE_OPEN); return true;
+    MenuCommand shortcut;
+    if (!help_page && shortcut_match(event, &shortcut) &&
+        (!desktop_menu.active || shortcut == MENU_DEBUG_BACK)) {
+        if (!event->key.repeat || shortcut == MENU_DEBUG_UP || shortcut == MENU_DEBUG_DOWN) {
+            if (shortcut == MENU_DEBUG_BACK) menu_bar_close(&desktop_menu);
+            desktop_command(shortcut);
         }
-        if (movie_player.movie && (event->key.keysym.sym == HOST_KEY_F8 || event->key.keysym.sym == HOST_KEY_F9)) {
-            desktop_command(event->key.keysym.sym == HOST_KEY_F9 ? MENU_MOVIE_PAUSE :
-                event->key.keysym.mod & HOST_MOD_SHIFT ? MENU_MOVIE_BACK : MENU_MOVIE_STEP);
-            return true;
-        }
-    }
-    /* Alt itself activates the menu. Its debugger chord must still dispatch. */
-    if (!help_page && nes_sys.cart && event->type == HOST_KEYDOWN &&
-        event->key.keysym.sym == HOST_KEY_F10 && (event->key.keysym.mod & HOST_MOD_ALT)) {
-        menu_bar_close(&desktop_menu);
-        clear_host_input(); runtime_reset_pending = true;
-        desktop_command(MENU_DEBUG_BACK); return true;
+        return true;
     }
     if (event->type == HOST_KEYDOWN || event->type == HOST_KEYUP) {
         e.type = event->type == HOST_KEYDOWN ? MENU_KEY_PRESS : MENU_KEY_RELEASE;
@@ -2104,12 +2185,6 @@ static void app_frame(void) {
         } else if (event.type == HOST_CONTROLLERBUTTONDOWN) {
             if (!focused || game_controller < 0 || event.cbutton.which !=
                 game_controller) continue;
-            if (rebinding && !control_mode_keyboard) {
-                controller_button_mappings[control_selection - 1] = event.cbutton.button;
-                save_emulator_settings();
-                rebinding = false;
-                continue;
-            }
             if (nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active) {
                 if (event.cbutton.button == controller_button_mappings[8]) {
                     char filename[128];
@@ -2143,149 +2218,12 @@ static void app_frame(void) {
                     host_input_axis(&host_input, true, event.caxis.value);
             }
         } else if (event.type == HOST_KEYDOWN) {
-            if (!focused || event.key.repeat) continue;
-            if (!rebinding && event.key.keysym.sym == HOST_KEY_F2) {
-                performance_visible = !performance_visible;
-                save_emulator_settings();
-                continue;
-            }
-            if (!rebinding && event.key.keysym.sym == HOST_KEY_F3) {
-                debug_panel_enabled = !debug_panel_enabled;
-                save_emulator_settings();
-                continue;
-            }
-            if (!rebinding && event.key.keysym.sym == HOST_KEY_F4) {
-                if (event.key.keysym.mod & HOST_MOD_CTRL) {
-                    diagnostics.tracing = !diagnostics.tracing;
-                    if (diagnostics.tracing) {
-                        diagnostics.event_count = diagnostics.event_head = 0;
-                        diagnostics.overwritten = 0;
-                        diagnostics_event(&nes_sys, DIAG_RESUME, 0, 0);
-                    }
-                    show_notification(diagnostics.tracing ? "EVENT TRACE ON" : "EVENT TRACE OFF");
-                } else capture_diagnostics();
-                continue;
-            }
-            if (rebinding) {
-                if (control_mode_keyboard && event.key.keysym.sym != HOST_KEY_ESCAPE) {
-                    control_mappings[control_selection - 1] = event.key.keysym.sym;
-                    save_emulator_settings();
+            if (!focused || event.key.repeat || event.key.keysym.mod) continue;
+            if (nes_sys.cart && !debugger_active) {
+                for (int i = 0; i < 8; ++i) {
+                    if (event.key.keysym.sym == control_mappings[i])
+                        host_input_button(&host_input.keyboard, (unsigned)i, true);
                 }
-                rebinding = false;
-                break;
-            }
-
-            if (event.key.keysym.sym == HOST_KEY_ESCAPE || event.key.keysym.sym == HOST_KEY_F1) {
-                if (nes_sys.cart) desktop_command(MENU_PAUSE);
-                else desktop_command(MENU_OPEN);
-                continue;
-            }
-            if (event.key.keysym.sym == 'o' && (event.key.keysym.mod & HOST_MOD_CTRL)) {
-                desktop_command(MENU_OPEN); continue;
-            }
-            if (nes_sys.cart) {
-                HostKey sym = event.key.keysym.sym;
-                if (sym == control_mappings[8]) {
-                    char filename[128];
-                    get_rolling_quicksave_filename(filename, sizeof(filename), true);
-                    save_emulator_state(save_state_dir, filename);
-                } else if (sym == control_mappings[9]) {
-                    char filename[128];
-                    get_rolling_quicksave_filename(filename, sizeof(filename), false);
-                    load_emulator_state(save_state_dir, filename);
-                } else {
-                    switch (sym) {
-                        case HOST_KEY_f:
-                        case HOST_KEY_F11: {
-                        preferences_inherit = false;
-                        fullscreen = !fullscreen;
-                        apply_display();
-                        save_emulator_settings();
-                        break;
-                    }
-                    case HOST_KEY_UP: {
-                        if (debugger_active) {
-                            debugger_selected_line--;
-                            if (debugger_selected_line < 0) {
-                                debugger_selected_line = 0;
-                                if (view_history_count > 1) {
-                                    debugger_view_pc = pop_view_history();
-                                } else {
-                                    uint16_t target = debugger_view_pc;
-                                    if (target >= 1 && op_bytes[test_bus_peek(target - 1)] == 1) {
-                                        debugger_view_pc = target - 1;
-                                    } else if (target >= 2 && op_bytes[test_bus_peek(target - 2)] == 2) {
-                                        debugger_view_pc = target - 2;
-                                    } else if (target >= 3 && op_bytes[test_bus_peek(target - 3)] == 3) {
-                                        debugger_view_pc = target - 3;
-                                    } else {
-                                        debugger_view_pc--;
-                                    }
-                                    clear_view_history(debugger_view_pc);
-                                }
-                            }
-                        } else {
-                            for (int i = 0; i < 8; i++) {
-                                if (event.key.keysym.sym == control_mappings[i]) {
-                                    host_input_button(&host_input.keyboard, (unsigned)i, true);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    case HOST_KEY_DOWN: {
-                        if (debugger_active) {
-                            debugger_selected_line++;
-                            if (debugger_selected_line >= 12) {
-                                debugger_selected_line = 11;
-                                uint8_t op = test_bus_peek(debugger_view_pc);
-                                debugger_view_pc += op_bytes[op] ? op_bytes[op] : 1;
-                                push_view_history(debugger_view_pc);
-                            }
-                        } else {
-                            for (int i = 0; i < 8; i++) {
-                                if (event.key.keysym.sym == control_mappings[i]) {
-                                    host_input_button(&host_input.keyboard, (unsigned)i, true);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    case HOST_KEY_F7: {
-                        if (debugger_active) {
-                            uint16_t target_pc = debugger_line_pcs[debugger_selected_line];
-                            debugger_toggle_breakpoint(target_pc);
-                        }
-                        break;
-                    }
-                    case HOST_KEY_F6: {
-                        if (debugger_active) {
-                            debugger_logging_active = !debugger_logging_active;
-                        }
-                        break;
-                    }
-                    case HOST_KEY_F10:
-                        desktop_command(event.key.keysym.mod & HOST_MOD_ALT ? MENU_DEBUG_BACK : event.key.keysym.mod & HOST_MOD_CTRL ? MENU_STEP_OUT :
-                            event.key.keysym.mod & HOST_MOD_SHIFT ? MENU_STEP_OVER : MENU_STEP); break;
-                    case HOST_KEY_F8:
-                        desktop_command(event.key.keysym.mod & HOST_MOD_SHIFT ? MENU_DEBUG_BACK_FRAME :
-                            event.key.keysym.mod & HOST_MOD_CTRL ? MENU_RUN_CURSOR : MENU_STEP_FRAME); break;
-                    case HOST_KEY_F9: desktop_command(MENU_RUN); break;
-                    case HOST_KEY_F12:
-                        if (debugger_active) desktop_command(MENU_RESET);
-                        break;
-                    default: {
-                        if (!debugger_active) {
-                            for (int i = 0; i < 8; i++) {
-                                if (event.key.keysym.sym == control_mappings[i]) {
-                                    host_input_button(&host_input.keyboard, (unsigned)i, true);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
             }
         } else if (event.type == HOST_KEYUP) {
             for (int i = 0; i < 8; i++) {

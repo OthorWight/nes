@@ -1,9 +1,9 @@
 # NES debugger
 
-Open the debugger with **F10** or **Debug > Open / Step Instruction**. The game
-remains visible beside the debugger, including pixels produced so far in a
+Open debugger inspection with **F9**; **F10** or **Debug > Step Instruction**
+enters it and executes one instruction. The game remains visible beside the debugger, including pixels produced so far in a
 partial frame. Click stepping buttons, select a Debug menu command, or open the
-command bar with **Ctrl+G**. Keyboard navigation and F7 operate on the selected
+command bar with **Ctrl+G**. Ctrl+Up/Down navigation and F7 operate on the selected
 disassembly row; right-clicking a row toggles its code breakpoint.
 Use **Ctrl+1** through **Ctrl+6** to select workspace tabs. The mouse wheel and
 Page Up/Down scroll calls, memory, breakpoints, trace records, or OAM entries in
@@ -21,13 +21,19 @@ Enter applies it.
 | Dot | Advance one actual PPU dot, including dots during DMA |
 | Line | Stop at the next scanline's dot zero |
 | Frame | Stop at the next frame's scanline zero, dot zero |
-| F8 | Advance a nominal frame duration in PPU dots |
-| Ctrl+F8 | Run to the selected instruction |
+| F6 | Advance a nominal frame duration in PPU dots |
+| Ctrl+F9 | Run to the selected instruction |
 | Alt+F10 | Reverse to an earlier instruction boundary |
-| Shift+F8 | Restore an earlier frame checkpoint |
+| Shift+F6 | Restore an earlier frame checkpoint |
 | F9 | Switch between ordinary playback and debugger inspection |
 | Debug > Run To | Seek to a code address or the next NMI/IRQ handler entry |
 | Debug > Finish Instruction | Complete suspended execution to a safe instruction boundary |
+
+F5/F8 always save/load states, including during debugger inspection.
+Shift+F5/Shift+F8 open named save/load browsers. Shift+F4 toggles instruction
+logging; Ctrl+Up/Down select disassembly rows. Escape closes UI; F1 pauses
+ordinary gameplay or TAS, while F9 leaves debugger inspection to resume.
+See the [complete Action - Key list](SHORTCUTS.md).
 
 The menu also offers a nominal scanline duration (341 dots). A nominal frame
 uses the selected region's scanline count; an odd rendered NTSC frame has a
