@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-10 — FM2 TAS playback
+
+- Add File > TAS Movie with FM2 opening, play/pause, frame advance/back,
+  restart/stop, asynchronous seeking and 0.5x/1x/2x/4x/unthrottled speeds.
+  Show progress, both pads and subtitles; keep live input out of the recording.
+- Parse text/binary version 3, validate the ROM payload MD5, honor NTSC/PAL,
+  gamepad/disconnected ports, reset/power and RAM initialization options 0–2.
+  Reject unsupported devices, commands, seeded RAM and FCEUX state starts.
+- Isolate FCEUX input/startup timing to active movie playback. Preserve the
+  native CPU/PPU behavior outside playback and the native save-state format.
+- Save movie identity, position and startup phase with checkpoints. Add bounded
+  rewind/seek caching, separate movie quicksave names, and restoration of the
+  pre-playback game so movie RAM cannot replace battery saves.
+- Add synthetic core/frontend coverage and an optional real-ROM FM2 runner.
+  Verify the local 72,250-frame SMB movie through 8-4 against FCEUX: all 62,251
+  checked gameplay snapshots from frame 10,000 onward and all final RAM match.
+
 ## 2026-10-10 — Namco 163 graphics routing
 
 - Honor `$E800` bits 6 and 7 when choosing CHR storage versus internal nametable

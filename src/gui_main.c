@@ -25,6 +25,7 @@
 #include "sprite_view.h"
 #include "apu_view.h"
 #include "rom_preferences.h"
+#include "movie.h"
 
 NES nes_sys;
 static CPUBus cpu_bus_bridge;
@@ -56,6 +57,14 @@ static bool performance_visible = false;
 static bool focused = true;
 static MenuBar desktop_menu;
 static bool paused;
+static MoviePlayer movie_player;
+static double movie_speed = 1;
+static bool movie_seeking, movie_step;
+static size_t movie_seek_target;
+static bool movie_seek_dialog;
+static bool movie_seek_replace;
+static char movie_seek_text[24];
+static char movie_error[160];
 static int help_page;
 static char recent_roms[4][BROWSER_PATH];
 static char last_rom_directory[BROWSER_PATH];
@@ -82,7 +91,7 @@ static bool preferences_inherit = true;
 
 static void clear_host_input(void) {
     memset(&host_input, 0, sizeof(host_input));
-    memset(nes_sys.controller_state, 0, sizeof(nes_sys.controller_state));
+    if (!movie_player.movie) memset(nes_sys.controller_state, 0, sizeof(nes_sys.controller_state));
     nes_sys.zapper_trigger = nes_sys.zapper_light = false;
     nes_sys.zapper_x = nes_sys.zapper_y = -1;
 }
@@ -233,7 +242,7 @@ static void get_rolling_quicksave_filename(char *out_filename, size_t max_len, b
 
     for (int i = 0; i < 10; i++) {
         char filepath[1024];
-        snprintf(filepath, sizeof(filepath), "%s/quick_%d.state", save_state_dir, i);
+        snprintf(filepath, sizeof(filepath), "%s/%squick_%d.state", save_state_dir, movie_player.movie ? "movie_" : "", i);
         struct stat st;
         if (stat(filepath, &st) == 0) {
             if (selected_slot == -1) {
@@ -263,7 +272,7 @@ static void get_rolling_quicksave_filename(char *out_filename, size_t max_len, b
     if (selected_slot == -1) {
         selected_slot = 0;
     }
-    snprintf(out_filename, max_len, "quick_%d.state", selected_slot);
+    snprintf(out_filename, max_len, "%squick_%d.state", movie_player.movie ? "movie_" : "", selected_slot);
 }
 
 static void get_clean_rom_name(char *out_buf, size_t max_len) {
@@ -274,6 +283,7 @@ static void get_clean_rom_name(char *out_buf, size_t max_len) {
 
 static bool save_battery_ram(void) {
     execution_sync(nes_sys.execution);
+    if (movie_player.movie) return true;
     if (cartridge_save_battery(nes_sys.cart)) return true;
     show_notification("BATTERY SAVE FAILED");
     notification_timer = 180;
@@ -342,7 +352,7 @@ static void apply_rom_preferences(void) {
     }
     preferences_inherit = !rom_override;
     window_scale = (int)value.scale; fullscreen = value.fullscreen;
-    zapper_enabled = value.zapper; nes_sys.zapper_enabled = zapper_enabled;
+    zapper_enabled = value.zapper; nes_sys.zapper_enabled = !movie_player.movie && zapper_enabled;
     apply_display();
     clear_host_input(); runtime_reset_pending = true;
 }
@@ -729,7 +739,7 @@ static void save_emulator_state(const char *dir, const char *filename) {
     execution_sync(nes_sys.execution);
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
-    NES_StateResult result = nes_state_save(&nes_sys, filepath);
+    NES_StateResult result = movie_state_save(&movie_player, &nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE SAVED" : nes_state_message(result));
     if (result != NES_STATE_OK) {
         notification_timer = 180;
@@ -741,14 +751,15 @@ static void load_emulator_state(const char *dir, const char *filename) {
     execution_sync(nes_sys.execution);
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
-    NES_StateResult result = nes_state_load(&nes_sys, filepath);
+    NES_StateResult result = movie_state_load(&movie_player, &nes_sys, filepath);
     show_notification(result == NES_STATE_OK ? "STATE LOADED" : nes_state_message(result));
     if (result == NES_STATE_OK) {
         execution_invalidate(nes_sys.execution);
-        region_setting = nes_sys.region_override;
+        if (!movie_player.movie) region_setting = nes_sys.region_override;
         nametable_view.valid = false;
         memset(&apu_view, 0, sizeof(apu_view));
-        nes_sys.zapper_enabled = zapper_enabled;
+        nes_sys.zapper_enabled = !movie_player.movie && zapper_enabled;
+        movie_seeking = movie_step = false;
         clear_host_input();
         runtime_reset_pending = true;
         debugger_view_pc = nes_sys.cpu.program_counter;
@@ -937,6 +948,8 @@ static bool frontend_load_rom(const char *name) {
     }
     if (nes_sys.cart) {
         execution_sync(nes_sys.execution);
+        if (!movie_stop(&movie_player, &nes_sys)) return false;
+        movie_seeking = movie_step = movie_seek_dialog = false;
         if (!save_battery_ram()) return false;
         save_debugger_breakpoints();
         execution_destroy(nes_sys.execution);
@@ -1045,6 +1058,42 @@ static bool frontend_load_rom(const char *name) {
     return nes_sys.cart != NULL;
 }
 
+static bool frontend_load_movie(const char *path) {
+    FM2Movie *movie = movie_load(path, movie_error, sizeof(movie_error));
+    if (!movie) goto failed;
+    /* Validate before replacing playback, so a bad selection leaves it intact. */
+    if (!movie_matches_rom(movie, nes_sys.cart)) {
+        snprintf(movie_error, sizeof(movie_error), "Load the matching ROM first: %.100s", movie->rom_name);
+        movie_free(movie); goto failed;
+    }
+    if (!save_battery_ram()) { movie_free(movie); return false; }
+    if (!movie_stop(&movie_player, &nes_sys) ||
+        !movie_start(&movie_player, &nes_sys, movie, movie_error, sizeof(movie_error))) {
+        movie_free(movie); goto failed;
+    }
+    movie_speed = 1; movie_seeking = movie_step = movie_seek_dialog = false;
+    paused = debugger_active = false;
+    execution_enable_history(nes_sys.execution, false);
+    nametable_view.valid = false; memset(&apu_view, 0, sizeof(apu_view));
+    clear_host_input(); runtime_reset_pending = true;
+    show_notification("FM2 PLAYBACK STARTED");
+    return true;
+failed:
+    show_notification(movie_error); notification_timer = 180;
+    fprintf(stderr, "%s: %s\n", path, movie_error);
+    return false;
+}
+
+static void frontend_movie_seek(size_t frame) {
+    if (!movie_seek_begin(&movie_player, &nes_sys, frame)) {
+        show_notification("CANNOT SEEK MOVIE"); return;
+    }
+    movie_seek_target = frame; movie_seeking = movie_player.frame != frame;
+    movie_step = false; paused = true; debugger_active = false;
+    nametable_view.valid = false; memset(&apu_view, 0, sizeof(apu_view));
+    clear_host_input(); runtime_reset_pending = true;
+}
+
 
 #define ITEM(label, shortcut, command) {label, shortcut, command, 0, NULL}
 #define SUB(label, menu) {label, NULL, MENU_NONE, 0, &menu}
@@ -1065,11 +1114,24 @@ static const MenuItem size_items[] = {
 };
 static const Menu size_menu = {"Window Size", size_items, COUNT(size_items)};
 static char save_shortcut[32], load_shortcut[32];
+static const MenuItem movie_speed_items[] = {
+    ITEM("0.5x", NULL, MENU_MOVIE_HALF), ITEM("1x", NULL, MENU_MOVIE_NORMAL),
+    ITEM("2x", NULL, MENU_MOVIE_DOUBLE), ITEM("4x", NULL, MENU_MOVIE_QUAD),
+    ITEM("Unthrottled", NULL, MENU_MOVIE_TURBO)
+};
+static const Menu movie_speed_menu = {"Speed", movie_speed_items, COUNT(movie_speed_items)};
+static const MenuItem movie_items[] = {
+    ITEM("Open FM2...", "Ctrl+M", MENU_MOVIE_OPEN), ITEM("Play / Pause", "F9", MENU_MOVIE_PAUSE),
+    ITEM("Advance One Frame", "F8", MENU_MOVIE_STEP), ITEM("Back One Frame", "Shift+F8", MENU_MOVIE_BACK),
+    ITEM("Go to Frame...", NULL, MENU_MOVIE_SEEK), SUB("Speed", movie_speed_menu),
+    ITEM("Restart", NULL, MENU_MOVIE_RESTART), ITEM("Stop Playback", NULL, MENU_MOVIE_STOP)
+};
+static const Menu movie_menu = {"TAS Movie", movie_items, COUNT(movie_items)};
 static const MenuItem file_items[] = {
     ITEM("Open ROM...", "Ctrl+O", MENU_OPEN), SUB("Recent ROMs", recent_menu),
     ITEM("Save State", save_shortcut, MENU_SAVE), ITEM("Load State", load_shortcut, MENU_LOAD),
     ITEM("Save State As...", NULL, MENU_SAVE_AS), ITEM("Load State From...", NULL, MENU_LOAD_FROM),
-    SEPARATOR, ITEM("Exit", NULL, MENU_EXIT)
+    SUB("TAS Movie", movie_menu), SEPARATOR, ITEM("Exit", NULL, MENU_EXIT)
 };
 static const MenuItem audio_items[] = {
     ITEM("Mute", NULL, MENU_MUTE), ITEM("Volume Down", NULL, MENU_VOLUME_DOWN), ITEM("Volume Up", NULL, MENU_VOLUME_UP)
@@ -1129,6 +1191,21 @@ static const Menu desktop_menus[] = {
 
 static unsigned desktop_state(void *context, MenuCommand command) {
     (void)context;
+    if (command == MENU_MOVIE_OPEN) return nes_sys.cart ? 0 : MENU_DISABLED;
+    if (command >= MENU_MOVIE_STOP && command <= MENU_MOVIE_TURBO) {
+        if (!movie_player.movie) return MENU_DISABLED;
+        if (command == MENU_MOVIE_BACK && !movie_player.frame) return MENU_DISABLED;
+        if (command == MENU_MOVIE_STEP && movie_player.frame == movie_player.movie->count) return MENU_DISABLED;
+        if (command == MENU_MOVIE_PAUSE) return paused ? MENU_CHECKED : 0;
+        if (command >= MENU_MOVIE_HALF) {
+            const double speeds[] = {0.5,1,2,4,0};
+            return movie_speed == speeds[command - MENU_MOVIE_HALF] ? MENU_CHECKED : 0;
+        }
+    }
+    if (movie_player.movie && (command == MENU_RESET || command == MENU_POWER ||
+        command == MENU_CONTROLLER || command == MENU_ZAPPER || command == MENU_STEP ||
+        command == MENU_RUN || command == MENU_BREAKPOINT || command == MENU_DEBUG_COMMAND ||
+        (command >= MENU_REGION_AUTO && command <= MENU_DEBUG_BACK_FRAME))) return MENU_DISABLED;
     if (command >= MENU_RECENT_1 && command <= MENU_RECENT_4)
         return (int)(command - MENU_RECENT_1) >= recent_count ? MENU_DISABLED : 0;
     if ((command == MENU_SAVE_AS || command == MENU_LOAD_FROM || command == MENU_SAVE || command == MENU_LOAD || command == MENU_PAUSE ||
@@ -1172,6 +1249,41 @@ static void desktop_command(MenuCommand command) {
         preferences_inherit = false; apply_display(); save_emulator_settings(); return;
     }
     switch (command) {
+        case MENU_MOVIE_OPEN:
+            browser_mode = 3;
+            file_browser_open(&file_browser, *last_rom_directory ? last_rom_directory : NULL, "Open TAS Movie", ".fm2", false);
+            break;
+        case MENU_MOVIE_STOP:
+            if (movie_stop(&movie_player, &nes_sys)) {
+                movie_seeking = movie_step = movie_seek_dialog = false;
+                execution_enable_history(nes_sys.execution, true);
+                nes_sys.zapper_enabled = zapper_enabled;
+                paused = true; nametable_view.valid = false;
+                memset(&apu_view, 0, sizeof(apu_view));
+                clear_host_input(); show_notification("PLAYBACK STOPPED");
+            }
+            break;
+        case MENU_MOVIE_RESTART:
+            if (movie_restart(&movie_player, &nes_sys)) {
+                movie_seeking = movie_step = false; paused = true;
+                nametable_view.valid = false; memset(&apu_view, 0, sizeof(apu_view));
+            }
+            break;
+        case MENU_MOVIE_PAUSE:
+            movie_seeking = movie_step = false;
+            if (movie_player.frame == movie_player.movie->count) movie_restart(&movie_player, &nes_sys);
+            paused = !paused; break;
+        case MENU_MOVIE_STEP:
+            movie_seeking = false; movie_step = true; paused = true; break;
+        case MENU_MOVIE_BACK: frontend_movie_seek(movie_player.frame - 1); break;
+        case MENU_MOVIE_SEEK:
+            movie_seek_dialog = movie_seek_replace = true;
+            paused = true;
+            snprintf(movie_seek_text, sizeof(movie_seek_text), "%zu", movie_player.frame);
+            break;
+        case MENU_MOVIE_HALF: case MENU_MOVIE_NORMAL: case MENU_MOVIE_DOUBLE: case MENU_MOVIE_QUAD: case MENU_MOVIE_TURBO: {
+            const double speeds[] = {0.5,1,2,4,0}; movie_speed = speeds[command - MENU_MOVIE_HALF]; break;
+        }
         case MENU_OPEN:
             browser_mode = 0;
             if (!file_browser_open(&file_browser, *last_rom_directory ? last_rom_directory : NULL, "Open ROM", ".nes", false))
@@ -1364,6 +1476,16 @@ static void desktop_draw(void) {
     if (!nes_sys.cart && notification_timer > 0) {
         snprintf(text, sizeof(text), "%s", notification_text); --notification_timer;
     }
+    if (movie_player.movie) {
+        char p1[9], p2[9]; size_t frame = movie_player.frame;
+        const MovieInput *input = &movie_player.movie->inputs[frame ? frame - 1 : 0];
+        movie_input_text(input->pads[0], p1); movie_input_text(input->pads[1], p2);
+        const char *state = movie_seeking ? "Seeking" : frame == movie_player.movie->count ? "Finished" : paused ? "Paused" : "Playing";
+        char rate[24];
+        if (!movie_speed) snprintf(rate, sizeof(rate), "Turbo");
+        else snprintf(rate, sizeof(rate), "%gx", movie_speed);
+        snprintf(text, sizeof(text), "TAS %zu/%zu | %s | %s | P1 %s | P2 %s", frame, movie_player.movie->count, state, rate, p1, p2);
+    }
     status_bar_draw(&(StatusBar){text}, &painter, w, h);
     if (!nes_sys.cart && !file_browser.active && !help_page) {
         chrome_text(NULL, "File > Open ROM...", 16, MENU_BAR_HEIGHT + 24, 0xAAAAAA);
@@ -1371,6 +1493,13 @@ static void desktop_draw(void) {
     }
     if (file_browser.active) {
         file_browser_resize(&file_browser, w, h); file_browser_draw(&file_browser, &painter);
+    }
+    if (movie_seek_dialog) {
+        MenuRect r = {16, MENU_BAR_HEIGHT + 24, w - 32, 96};
+        chrome_fill(NULL, r, 0xD4D0C8);
+        chrome_text(NULL, "Go to TAS frame (0 = power-on)", r.x+8, r.y+8, 0x000000);
+        chrome_text(NULL, movie_seek_text, r.x+8, r.y+32, 0x0A246A);
+        chrome_text(NULL, "Enter: seek   Esc: cancel", r.x+8, r.y+64, 0x000000);
     }
     if (help_page == 3) {
         MenuRect r = controls_bounds(w, h);
@@ -1580,6 +1709,13 @@ static void draw_apu_panel(void) {
 static void desktop_present(HostCanvas *game) {
     draw_nametable_panel();
     draw_apu_panel();
+    const char *subtitle = movie_subtitle(&movie_player);
+    if (*subtitle) {
+        char line[31]; snprintf(line, sizeof(line), "%.30s", subtitle);
+        host_color(game, 0, 0, 0, 220);
+        host_fill_rect(game, &(HostRect){4, 220, 248, 16});
+        draw_string(game, line, 8, 224, 0xFFFFFF);
+    }
     if (nes_sys.cart && paused) {
         /* Use game pixels so the OSD grows with the picture, unlike desktop text. */
         HostRect badge = {96, 108, 64, 24};
@@ -1599,6 +1735,25 @@ static bool desktop_event(const HostEvent *event) {
         e.type = MENU_BLUR; menu_bar_event(&desktop_menu, &e, &command); help_page = 0; rebinding = false; return false;
     }
     if (!focused) return false;
+    if (movie_seek_dialog) {
+        if (event->type == HOST_KEYDOWN && !event->key.repeat) {
+            HostKey key = event->key.keysym.sym;
+            size_t length = strlen(movie_seek_text);
+            if (key == HOST_KEY_ESCAPE) movie_seek_dialog = false;
+            else if (key == HOST_KEY_BACKSPACE && length) { movie_seek_text[length - 1] = 0; movie_seek_replace = false; }
+            else if (key >= '0' && key <= '9' && length < sizeof(movie_seek_text) - 1) {
+                if (movie_seek_replace) length = 0;
+                movie_seek_replace = false;
+                movie_seek_text[length] = (char)key; movie_seek_text[length + 1] = 0;
+            } else if (key == HOST_KEY_RETURN) {
+                char *end; uint64_t frame = strtoull(movie_seek_text, &end, 10);
+                if (*movie_seek_text && !*end && frame <= movie_player.movie->count) {
+                    movie_seek_dialog = false; frontend_movie_seek((size_t)frame);
+                } else show_notification("FRAME OUT OF RANGE");
+            }
+        }
+        return event->type != HOST_QUIT && event->type != HOST_WINDOWEVENT;
+    }
     if (file_browser.active) {
         HostEvent input = *event;
         if (event->window_mouse.valid) {
@@ -1611,18 +1766,25 @@ static bool desktop_event(const HostEvent *event) {
         if (!browser_mode) remember_rom_directory(file_browser.path);
         if (selected) {
             if (!browser_mode) frontend_load_rom(path);
+            else if (browser_mode == 3) {
+                if (!frontend_load_movie(path)) {
+                    file_browser.active = true;
+                    snprintf(file_browser.error, sizeof(file_browser.error), "%.95s", movie_error);
+                }
+            }
             else {
                 execution_sync(nes_sys.execution);
-                NES_StateResult result = browser_mode == 2 ? nes_state_save(&nes_sys, path) : nes_state_load(&nes_sys, path);
+                NES_StateResult result = browser_mode == 2 ? movie_state_save(&movie_player, &nes_sys, path) : movie_state_load(&movie_player, &nes_sys, path);
                 if (browser_mode != 2 && result == NES_STATE_OK) {
                     execution_invalidate(nes_sys.execution);
-                    region_setting = nes_sys.region_override;
+                    if (!movie_player.movie) region_setting = nes_sys.region_override;
+                    movie_seeking = movie_step = false;
                     nametable_view.valid = false;
                     memset(&apu_view, 0, sizeof(apu_view));
                 }
                 show_notification(result == NES_STATE_OK ? (browser_mode == 2 ? "STATE SAVED" : "STATE LOADED") : nes_state_message(result));
                 clear_host_input(); runtime_reset_pending = true;
-                nes_sys.zapper_enabled = zapper_enabled;
+                nes_sys.zapper_enabled = !movie_player.movie && zapper_enabled;
                 debugger_view_pc = nes_sys.cpu.program_counter; debugger_selected_line = 0; clear_view_history(debugger_view_pc);
             }
         }
@@ -1661,7 +1823,17 @@ static bool desktop_event(const HostEvent *event) {
         event->key.keysym.sym == 'g' && (event->key.keysym.mod & HOST_MOD_CTRL)) {
         desktop_command(MENU_DEBUG_COMMAND); return true;
     }
-    if (!desktop_menu.active && !help_page && debugger_event(event, -1, -1)) return true;
+    if (!movie_player.movie && !desktop_menu.active && !help_page && debugger_event(event, -1, -1)) return true;
+    if (!desktop_menu.active && !help_page && event->type == HOST_KEYDOWN && !event->key.repeat) {
+        if (event->key.keysym.sym == 'm' && (event->key.keysym.mod & HOST_MOD_CTRL)) {
+            desktop_command(MENU_MOVIE_OPEN); return true;
+        }
+        if (movie_player.movie && (event->key.keysym.sym == HOST_KEY_F8 || event->key.keysym.sym == HOST_KEY_F9)) {
+            desktop_command(event->key.keysym.sym == HOST_KEY_F9 ? MENU_MOVIE_PAUSE :
+                event->key.keysym.mod & HOST_MOD_SHIFT ? MENU_MOVIE_BACK : MENU_MOVIE_STEP);
+            return true;
+        }
+    }
     /* Alt itself activates the menu. Its debugger chord must still dispatch. */
     if (!help_page && nes_sys.cart && event->type == HOST_KEYDOWN &&
         event->key.keysym.sym == HOST_KEY_F10 && (event->key.keysym.mod & HOST_MOD_ALT)) {
@@ -1773,14 +1945,15 @@ static void app_frame(void) {
     host_poll_gamepads();
     if (debugger_active && !desktop_menu.active && !help_page && !file_browser.active && focused)
         debugger_update();
-    bool playing = nes_sys.cart && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && focused;
+    bool playing = nes_sys.cart && !debugger_active && (!paused || movie_step || movie_seeking) &&
+        !movie_seek_dialog && !desktop_menu.active && !help_page && !file_browser.active && focused;
     if (runtime_reset_pending || playing != was_playing) {
         clear_host_input();
         reset_runtime();
     }
     was_playing = playing;
     if (nes_sys.cart != NULL) {
-        if (debugger_active || paused || desktop_menu.active || help_page || file_browser.active || !focused) {
+        if (!playing) {
             host_color(renderer, 0, 0, 0, 255);
             host_clear(renderer);
             GameCrop crop = game_crop(nes_sys.cart->mapper_id);
@@ -1793,6 +1966,8 @@ static void app_frame(void) {
         } else {
             uint64_t frame_start_tick = host_counter();
             uint64_t cycles = 0, emu_ticks = 0;
+            double playback_rate = movie_player.movie ? movie_speed : 1;
+            double pacing_hz = nes_region_cpu_hz(nes_sys.apu.region) * (playback_rate ? playback_rate : 1);
 
             // Recover short host stalls without paying for a presentation for
             // every late frame. Input stays stable through this bounded batch;
@@ -1801,13 +1976,27 @@ static void app_frame(void) {
                 uint64_t emu_start_tick = host_counter();
                 uint64_t frame_start_cycles = nes_sys.cpu.cycle_count;
 
-                nes_sys.frame_ready = false;
+                if (movie_player.movie) {
+                    if (!movie_begin_frame(&movie_player, &nes_sys)) { paused = true; movie_step = movie_seeking = false; break; }
+                } else nes_sys.frame_ready = false;
                 if (nametable_viewer_enabled) nametable_view_begin_frame(&nametable_view);
                 execution_request(nes_sys.execution, EXEC_PLAY_FRAME, 1, 0, 0);
                 ExecutionStatus stopped = execution_pump(nes_sys.execution, 200000);
                 if (stopped.reason != EXEC_STOP_FRAME && stopped.reason != EXEC_STOP_BUDGET) {
-                    debugger_active = true; debugger_view_pc = stopped.instruction_pc;
-                    debugger_selected_line = 0; clear_view_history(debugger_view_pc);
+                    if (movie_player.movie) {
+                        paused = true; movie_step = movie_seeking = false;
+                        show_notification(execution_stop_name(stopped.reason));
+                    } else {
+                        debugger_active = true; debugger_view_pc = stopped.instruction_pc;
+                        debugger_selected_line = 0; clear_view_history(debugger_view_pc);
+                    }
+                }
+
+                if (movie_player.movie) {
+                    if (nes_sys.frame_ready) movie_end_frame(&movie_player, &nes_sys);
+                    if (movie_step || movie_player.frame == movie_player.movie->count) {
+                        paused = true; movie_step = movie_seeking = false;
+                    } else if (movie_seeking && movie_player.frame == movie_seek_target) movie_seeking = false;
                 }
 
                 if (nametable_viewer_enabled) nametable_view_finish_frame(&nametable_view);
@@ -1817,12 +2006,19 @@ static void app_frame(void) {
                 debug_emu_ticks += emu_ticks;
 
                 // Feed the device before texture upload/presentation can block.
-                if (nes_sys.frame_ready) queue_game_audio();
+                if (nes_sys.frame_ready && !movie_seeking && playback_rate == 1) queue_game_audio();
+                else nes_sys.apu.audio_buffer_idx = 0;
                 cycles = nes_sys.cpu.cycle_count - frame_start_cycles;
                 double now = host_time();
+                if (movie_player.movie && (movie_seeking || !playback_rate)) {
+                    if ((paused && !movie_seeking) || !nes_sys.frame_ready || catch_up >= 31 ||
+                        now - (double)frame_start_tick / host_frequency() >= 0.025) break;
+                    continue;
+                }
+                if (movie_player.movie && paused) break;
                 if (debugger_active || !nes_sys.frame_ready || catch_up >= 2 ||
-                    !frame_scheduler_catch_up(&frame_scheduler, now, cycles, nes_region_cpu_hz(nes_sys.apu.region))) break;
-                frame_scheduler_advance_rate(&frame_scheduler, now, cycles, nes_region_cpu_hz(nes_sys.apu.region));
+                    !frame_scheduler_catch_up(&frame_scheduler, now, cycles, pacing_hz)) break;
+                frame_scheduler_advance_rate(&frame_scheduler, now, cycles, pacing_hz);
                 diagnostics_frame(&nes_sys, cycles, now - diagnostic_last_time,
                     (double)emu_ticks * 1000 / host_frequency(), audio_monitor.queue_samples * 1000.0 / AUDIO_RATE);
                 diagnostic_last_time = now;
@@ -1852,9 +2048,9 @@ static void app_frame(void) {
             draw_debug_panel();
             desktop_present(renderer);
 
-            if (nes_sys.frame_ready) {
+            if (nes_sys.frame_ready && !movie_seeking && playback_rate && !paused) {
                 double wait = frame_scheduler_advance_rate(&frame_scheduler, host_time(), cycles,
-                    nes_region_cpu_hz(nes_sys.apu.region));
+                    pacing_hz);
                 while (wait > 0) {
                     host_delay(wait >= 0.001 ? (uint32_t)(wait * 1000) : 0);
                     wait = frame_scheduler.deadline - host_time();
@@ -2102,7 +2298,7 @@ static void app_frame(void) {
 
     if (!nes_sys.cart || debugger_active || paused || desktop_menu.active || help_page || file_browser.active || !focused)
         clear_host_input();
-    nes_sys.controller_state[0] = host_input_value(&host_input);
+    if (!movie_player.movie) nes_sys.controller_state[0] = host_input_value(&host_input);
     if (nes_sys.cart && focused && !debugger_active && !paused && !desktop_menu.active && !help_page && !file_browser.active && nes_sys.zapper_enabled) {
         int mx, my;
         float lx, ly;
@@ -2137,6 +2333,7 @@ static void app_frame(void) {
 }
 
 static void app_cleanup(void) {
+    movie_stop(&movie_player, &nes_sys);
     save_debugger_breakpoints();
     execution_destroy(nes_sys.execution);
     save_emulator_settings();

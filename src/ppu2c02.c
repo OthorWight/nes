@@ -791,7 +791,7 @@ void ppu_step(NES *nes) {
     }
 
     if (ppu->scanline == ppu_vblank_line(ppu) && ppu->cycle == 1) {
-        if (!ppu->nmi_suppressed) {
+        if (!ppu->nmi_suppressed && !nes->movie_startup_frames) {
             ppu->nmi_occurred = true;
             ppu->ppu_status |= 0x80;
             ppu_update_nmi(ppu, nes);
@@ -872,10 +872,14 @@ void ppu_step(NES *nes) {
 
             if (ppu->scanline == ppu_vblank_line(ppu)) {
                 ppu->frame_complete = true;
-                nes->frame_ready = true;
+                if (!nes->movie_frame_timing) nes->frame_ready = true;
             } else if (ppu->scanline > SCANLINE_PRERENDER) {
                 ppu->scanline = 0;
                 ppu->odd_frame = !ppu->odd_frame;
+            }
+            if (nes->movie_frame_timing && ppu->scanline == 240) {
+                nes->frame_ready = true;
+                if (nes->movie_startup_frames) --nes->movie_startup_frames;
             }
         }
     }

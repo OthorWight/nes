@@ -64,6 +64,8 @@ static uint8_t cpu_bus_read_value(NES *nes, uint16_t addr) {
     if (addr == 0x4015) return apu_read_reg(nes, addr);
     if (addr >= 0x4000 && addr < 0x4015) return nes->cpu_open_bus;
 
+    if ((addr == 0x4016 || addr == 0x4017) &&
+        (nes->movie_disconnected & (1u << (addr - 0x4016)))) return nes->cpu_open_bus & 0xE0;
     if (addr == 0x4016) {
         uint8_t val = 0;
         if (nes->controller_strobe) {

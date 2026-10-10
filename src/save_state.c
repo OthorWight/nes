@@ -473,6 +473,7 @@ const char *nes_state_message(NES_StateResult result) {
         case NES_STATE_VERSION_ERROR: return "UNSUPPORTED STATE VERSION";
         case NES_STATE_LEGACY: return "OLD STATE: CREATE A NEW SAVE";
         case NES_STATE_WRONG_ROM: return "STATE IS FOR A DIFFERENT ROM";
+        case NES_STATE_WRONG_MOVIE: return "STATE IS FOR A DIFFERENT MOVIE";
         case NES_STATE_MEMORY: return "NOT ENOUGH MEMORY FOR STATE";
         case NES_STATE_BUSY: return "FINISH CURRENT INSTRUCTION FIRST";
         default: return "INVALID OR DAMAGED STATE";

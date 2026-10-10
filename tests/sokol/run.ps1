@@ -5,7 +5,7 @@ $root = (Get-Location).Path
 $testDir = Join-Path $root ('build/tests/sokol-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testDir | Out-Null
 $sources = @(Get-ChildItem src/*.c | Where-Object Name -ne 'gui_main.c' | ForEach-Object FullName)
-foreach ($name in @('frontend_integration','menu_mouse')) {
+foreach ($name in @('frontend_integration','menu_mouse','movie_playback')) {
     & gcc -Wall -Wextra -std=c11 -O3 -flto -Isrc "tests/sokol/$name.c" @sources -o "$testDir/$name.exe" -static -luser32 -lgdi32 -lwinmm -lole32 -lshell32 -ld3d11 -ldxgi
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $name" }
 }
@@ -20,10 +20,10 @@ $priorFrames = $env:NES_SOKOL_AUDIO_FRAMES
 $priorDisable = $env:NES_DISABLE_AUDIO
 try {
     $env:NES_SOKOL_AUDIO_FRAMES = "$AudioFrames"
-    foreach ($mode in @('rendering','mouse','audio','muted','unavailable')) {
+    foreach ($mode in @('rendering','mouse','movie','audio','muted','unavailable')) {
         $dir = Join-Path $testDir $mode
         New-Item -ItemType Directory -Path $dir | Out-Null
-        $name = if ($mode -eq 'mouse') { 'menu_mouse' } elseif ($mode -eq 'rendering') { 'rendering' } else { 'frontend_integration' }
+        $name = if ($mode -eq 'mouse') { 'menu_mouse' } elseif ($mode -eq 'movie') { 'movie_playback' } elseif ($mode -eq 'rendering') { 'rendering' } else { 'frontend_integration' }
         Copy-Item -LiteralPath "$testDir/$name.exe" -Destination $dir
         $env:NES_DISABLE_AUDIO = if ($mode -eq 'unavailable') { '1' } else { $null }
         $process = Start-Process -FilePath "$dir/$name.exe" -ArgumentList $mode -WorkingDirectory $dir -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir/stdout.log" -RedirectStandardError "$dir/stderr.log"

@@ -10,6 +10,25 @@ game code, filenames, ROM hashes, or game-specific timing workarounds. Save suit
 also check application reliability using generated cartridge data in temporary
 subdirectories under `build/tests/`, removed on success.
 
+## Optional FM2 replay
+
+With a matching ROM and FM2 already available:
+
+```sh
+bash tests/roms/fm2.sh ROM.nes movie.fm2 build/tests/final.ppm
+```
+
+This boots cleanly, replays every input record, reports progress and RAM CRCs,
+and optionally captures the final frame. Reaching EOF alone does not prove TAS
+synchronization; compare game progression with the recording emulator. The
+local 72,250-frame SMB movie reached the end of 8-4 with final WRAM identical
+to FCEUX 2.6.5, and 62,251 successive gameplay snapshots matched from frame
+10,000 onward. No game code or ROM-specific playback adjustment is embedded.
+
+The Sokol runner also exercises movie keyboard shortcuts, input isolation,
+paused frame advance/back, save/load, seek entry/completion, speed changes,
+end-of-movie pause, restart/stop and FM2 browsing, using a generated ROM/movie.
+
 ## AccuracyCoin integration
 
 With an AccuracyCoin ROM already available, run:
@@ -49,6 +68,7 @@ save/load commands. Alt activates menus; F10 steps the debugger.
 
 | Suite | Behaviors checked |
 | --- | --- |
+| `movie_playback.c` | MD5 vectors and split buffers; text/binary FM2, inputs and metadata; malformed/unsupported recordings; real CPU reads of both pads; disconnected ports; NTSC/PAL and startup phase; reset/power/RAM settings; exact rewind/restart; partial-frame saves; rejection of wrong movie/native/corrupt states; pre-playback restoration with and without the execution worker |
 | `system_clock.c` | Three PPU dots and one mapper M2 tick per CPU cycle; APU advancement; dummy/read-modify-write cycles; indexed-read and branch penalties; seven-cycle reset without stack writes |
 | `dma_timing.c` | 513/514-cycle OAM DMA plus the initiating instruction; full copy and OAM address wrap; CPU/APU/PPU advancement during DMA; deferred NMI service; DMC cartridge reads, address wrap, CPU stalls, final-byte IRQ and acknowledgement |
 | `interrupt_connections.c` | PPU-generated NMI, seven-cycle entry and six-cycle RTI, saved PC/status, edge behavior and NMI priority; NMI and MMC3/TxSROM IRQ poll boundaries across all three PPU dots, both mapper pattern-table layouts, and deferred PPUCTRL enable; independent APU/mapper IRQ acknowledgements; actual APU and rendering-driven mapper IRQ delivery to CPU |

@@ -85,6 +85,11 @@ struct NES {
     NES_ZapperWatchdog zapper_watchdog;
 
     bool       frame_ready;
+    // FM2 playback's host frame boundary and FCEUX's two silent startup frames.
+    // Zero during normal emulation; the movie wrapper owns/saves these fields.
+    bool       movie_frame_timing;
+    uint8_t    movie_startup_frames;
+    uint8_t    movie_disconnected; // FM2's SI_NONE ports; zero otherwise.
     NESDiagnostics *diagnostics; // Host observation only; excluded from save states.
     NametableView *nametable_view; // Optional background-fetch observer; not saved.
     SpriteView *sprite_view; // Optional extra-sprite display; not saved.
