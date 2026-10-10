@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-10 — Namco 163 graphics routing
+
+- Honor `$E800` bits 6 and 7 when choosing CHR storage versus internal nametable
+  RAM for pattern banks `$E0–$FF`. Retain the low six bits for PRG banking and
+  keep nametable routing independent of the two pattern controls.
+- Preserve the complete register across save/load using its existing state
+  byte. Add synthetic coverage of bank boundaries, both pattern-table halves,
+  ROM/RAM writes, nametables and reset.
+- Validation: all 31 core suites and the Linux build passed. Captured the local
+  Namco Classic II title, menu and course tutorial screens after normal
+  controller input; title/menu output matches with extra sprites on and off.
+
 ## 2026-10-09 — Optional extra sprites
 
 - Add View > Remove Sprite Limit, off by default and saved globally. Draw extra

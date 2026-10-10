@@ -8,7 +8,7 @@
 typedef struct {
     uint8_t  chr_banks[8];
     uint8_t  nt_banks[4];
-    uint8_t  prg_banks[3];
+    uint8_t  prg_banks[3]; // Slot 1 also retains $E800's pattern CIRAM controls.
     uint16_t irq_counter;
     bool     irq_enabled;
 } Namco163Data;
@@ -73,7 +73,7 @@ static uint8_t m019_cpu_read(Cartridge *c, uint16_t addr, bool *handled) {
         if (addr <= 0x9FFF) {
             bank = d->prg_banks[0];
         } else if (addr <= 0xBFFF) {
-            bank = d->prg_banks[1];
+            bank = d->prg_banks[1] & 0x3F;
         } else if (addr <= 0xDFFF) {
             bank = d->prg_banks[2];
         } else {
@@ -128,7 +128,7 @@ static void m019_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 
     if (addr >= 0xE800 && addr <= 0xEFFF) {
-        d->prg_banks[1] = val & 0x3F;
+        d->prg_banks[1] = val;
         return;
     }
 
@@ -138,15 +138,22 @@ static void m019_cpu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     }
 }
 
+static bool m019_pattern_ciram(const Namco163Data *d, uint16_t addr, uint8_t bank) {
+    /* $E800.6 disables CIRAM in $0000-$0FFF; .7 does so in $1000-$1FFF.
+       With the respective bit set, even banks $E0-$FF select CHR storage.
+       Nametable slots do not use these controls. */
+    uint8_t disable = addr < 0x1000 ? 0x40 : 0x80;
+    return bank >= 0xE0 && !(d->prg_banks[1] & disable);
+}
+
 static uint8_t m019_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
     Namco163Data *d = (Namco163Data*)c->mapper_data;
-    if (addr >= 0x2000 || c->chr_rom_size == 0) return 0;
+    if (addr >= 0x2000) return 0;
 
     uint8_t slot = (addr / 1024) & 0x07;
     uint8_t bank = d->chr_banks[slot];
 
-    // Bank values >= $E0 map pattern tables to internal CIRAM
-    if (bank >= 0xE0) {
+    if (m019_pattern_ciram(d, addr, bank)) {
         *handled = true;
         return c->nes->ciram[(bank & 1) * 1024 + (addr & 0x03FF)];
     }
@@ -161,11 +168,11 @@ static uint8_t m019_ppu_read(Cartridge *c, uint16_t addr, bool *handled) {
 
 static void m019_ppu_write(Cartridge *c, uint16_t addr, uint8_t val) {
     Namco163Data *d = (Namco163Data*)c->mapper_data;
-    if (addr >= 0x2000 || c->chr_rom_size == 0) return;
+    if (addr >= 0x2000) return;
 
     uint8_t slot = (addr / 1024) & 0x07;
     uint8_t bank = d->chr_banks[slot];
-    if (bank >= 0xE0) {
+    if (m019_pattern_ciram(d, addr, bank)) {
         c->nes->ciram[(bank & 1) * 1024 + (addr & 0x03FF)] = val;
         return;
     }
@@ -203,6 +210,8 @@ static void mapper_019_state(Cartridge *c, StateIO *io) {
     Namco163Data *d = (Namco163Data *)c->mapper_data;
     state_bytes(io, d->chr_banks, sizeof(d->chr_banks));
     state_bytes(io, d->nt_banks, sizeof(d->nt_banks));
+    /* Retain the full $E800 register in its existing byte, preserving the
+       payload layout. Old files have zero in the formerly discarded bits. */
     state_bytes(io, d->prg_banks, sizeof(d->prg_banks));
     d->irq_counter = state_u16(io, d->irq_counter);
     d->irq_enabled = state_bool(io, d->irq_enabled);

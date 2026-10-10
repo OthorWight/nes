@@ -11,6 +11,11 @@ history belongs to the host and is excluded from the state format.
 
 ## Compatibility
 
+Mapper 19 retains the complete `$E800` register in its existing PRG-bank byte,
+including the pattern CIRAM disable bits. This does not change the file layout.
+Older builds discarded those two bits, so an old state cannot reconstruct them;
+power-cycle the game if a restored old state retains graphics corruption.
+
 New saves use version 5, adding region selection, delayed APU register changes,
 resampler/filter history, and every expansion sound unit, including pointer-free
 VRC7 FM state. Version 4 added pending OAM/DMC DMA. Versions 1–4 still load;

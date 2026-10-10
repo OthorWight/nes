@@ -100,8 +100,13 @@ collisions remain separate compatibility work.
 - MMC5 resolves PRG reads and writes through one bank calculation in every PRG
   mode; selecting absent RAM floats instead of exposing ROM. CHR RAM writes use
   the same bank mapping as reads.
-- Namco 163 pattern banks routed to CIRAM now read/write that RAM rather than
-  falling through to zero. Its broader register variants remain unvalidated.
+- Namco 163 pattern banks routed to CIRAM read/write that RAM. `$E800` bits 6
+  and 7 independently disable CIRAM for the lower and upper pattern-table
+  halves, allowing banks `$E0–$FF` to select CHR storage instead. Nametable
+  routing is independent of these controls. `tests/mapper_namco163.c` covers
+  both halves, ROM/RAM writes, nametable independence, reset and save/load.
+  The local Namco Classic II dump exposed the missing controls through title
+  and menu corruption. Its broader register variants remain unvalidated.
 - Save version 1 remains readable, but CHR ROM bytes in a state must match the
   loaded ROM. A state that contains modified CHR ROM is rejected without changing
   the running machine; loading never writes over cartridge ROM.

@@ -68,6 +68,7 @@ save/load commands. Alt activates menus; F10 steps the debugger.
 | `controller_input.c` | Controller serial reads/strobe behavior; explicit Zapper selection, light, trigger and offscreen behavior |
 | `cartridge_loading.c` | iNES/NES 2.0 metadata, extended IDs and sizes, invalid/unsupported/truncated images, ROM padding, absent/small RAM, trainers, CHR NVRAM, mapper 78 header/submapper wiring and reset |
 | `cartridge_bus.c` | External CPU open bus and partial reads, all-mapper ROM protection/RAM writes, RAM enable/protection, MMC3/TxSROM mirroring and bank modes, MMC5 read/write agreement; GxROM bank wrapping, CHR RAM, reset and state restoration |
+| `mapper_namco163.c` | Independent `$E800` CIRAM disable controls in both pattern-table halves, `$DF/$E0/$E1/$FE/$FF` boundaries, CHR ROM/RAM write routing, unchanged nametable routing, PRG-bank masking, reset and save-state restoration |
 | `save_states.c` | All 23 mapper IDs: full in-memory restore, fixed-input replay, frame/audio agreement, partial serial writes and IRQ state; wrong-ROM/version/corrupt/legacy rejection, atomic file replacement and failure checks |
 | `battery_saves.c` | Canonical/legacy paths, reset/reload and ROM switching, MMC5 full RAM allocation, invalid-file preservation, non-battery behavior |
 | `zapper_watchdog.c` | Application-level hang heuristic: sustained polling, recovery, and selected false-positive exclusions |
