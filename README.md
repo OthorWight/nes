@@ -52,7 +52,11 @@ Text and binary FM2 version 3, up to two standard gamepads or disconnected
 ports, reset/power commands, and RAM initialization options 0/1/2 are supported.
 Movies using Four Score, Zapper/expansion devices, microphone, FDS/VS commands,
 seeded random RAM or embedded FCEUX save states are rejected with an explanation.
-Recording/rerecording is not implemented.
+Recording/rerecording in the GUI is not implemented. The
+[offline FM2 editor](docs/TAS_RETIMING.md) can insert/remove input frames and
+adjust button holds in a new movie copy without changing emulator timing.
+The local SMB3 100% conversion was verified through the final “THE END” screen;
+see its [reproduction recipe and synchronization-pause seek frames](docs/TAS_RETIMING.md#smb3-100-conversion).
 
 FM2 playback uses FCEUX's post-render input boundary and two silent startup
 frames. These timing settings apply only while a movie is open; normal play and
