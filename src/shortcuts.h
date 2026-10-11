@@ -3,7 +3,7 @@
 #include "host.h"
 #include "menu_bar.h"
 
-/* One exact chord per application action. Shared by dispatch and menu labels. */
+/* Default chords and menu labels. Save/load resolve the configured base keys. */
 #define APP_SHORTCUTS(X) \
     X(OPEN, 'o', HOST_MOD_CTRL, MENU_OPEN, "Ctrl+O") \
     X(MOVIE_OPEN, 'm', HOST_MOD_CTRL, MENU_MOVIE_OPEN, "Ctrl+M") \
@@ -45,5 +45,7 @@ typedef struct AppShortcut { HostKey key; int modifiers; MenuCommand command; co
 extern const AppShortcut app_shortcuts[];
 extern const unsigned app_shortcut_count;
 bool shortcut_match(const HostEvent *, MenuCommand *);
+bool shortcut_match_bindings(const HostEvent *, HostKey save, HostKey load, MenuCommand *);
 bool shortcut_binding_key_allowed(HostKey);
+bool shortcut_state_key_allowed(HostKey);
 #endif

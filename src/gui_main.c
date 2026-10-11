@@ -27,9 +27,9 @@
 #include "rom_preferences.h"
 #include "movie.h"
 #include "shortcuts.h"
+#include "controller_bindings.h"
 
 static void normalize_control_mappings(void);
-static bool assign_control_mapping(HostKey key, int modifiers, HostButton button);
 
 NES nes_sys;
 static CPUBus cpu_bus_bridge;
@@ -75,7 +75,7 @@ static char last_rom_directory[BROWSER_PATH];
 static char loaded_rom_path[BROWSER_PATH];
 static FileBrowser file_browser;
 static int browser_mode; /* 0 ROM, 1 load state, 2 save state */
-static int control_selection;
+static BindingEditor binding_editor;
 static char recent_labels[4][29] = {"(Empty)", "(Empty)", "(Empty)", "(Empty)"};
 static int recent_count;
 static void update_recent_labels(void);
@@ -150,7 +150,7 @@ static void queue_game_audio(void) {
     nes_sys.apu.audio_buffer_idx = 0;
 }
 
-#define CONTROL_COUNT 10
+#define CONTROL_COUNT BINDING_COUNT
 
 static HostKey control_mappings[CONTROL_COUNT] = {
     HOST_KEY_z,
@@ -164,6 +164,13 @@ static HostKey control_mappings[CONTROL_COUNT] = {
     HOST_KEY_F5,
     HOST_KEY_F8
 };
+static char state_shortcut_labels[4][48] = {"F5", "Shift+F5", "F8", "Shift+F8"};
+static void refresh_state_shortcuts(void) {
+    snprintf(state_shortcut_labels[0],sizeof(state_shortcut_labels[0]),"%s",host_key_name(control_mappings[8]));
+    snprintf(state_shortcut_labels[1],sizeof(state_shortcut_labels[1]),"Shift+%s",host_key_name(control_mappings[8]));
+    snprintf(state_shortcut_labels[2],sizeof(state_shortcut_labels[2]),"%s",host_key_name(control_mappings[9]));
+    snprintf(state_shortcut_labels[3],sizeof(state_shortcut_labels[3]),"Shift+%s",host_key_name(control_mappings[9]));
+}
 
 static HostButton controller_button_mappings[CONTROL_COUNT] = {
     HOST_CONTROLLER_BUTTON_A,
@@ -177,22 +184,6 @@ static HostButton controller_button_mappings[CONTROL_COUNT] = {
     HOST_CONTROLLER_BUTTON_X,
     HOST_CONTROLLER_BUTTON_Y
 };
-
-static const HostButton default_controller_mappings[CONTROL_COUNT] = {
-    HOST_CONTROLLER_BUTTON_A,
-    HOST_CONTROLLER_BUTTON_B,
-    HOST_CONTROLLER_BUTTON_BACK,
-    HOST_CONTROLLER_BUTTON_START,
-    HOST_CONTROLLER_BUTTON_DPAD_UP,
-    HOST_CONTROLLER_BUTTON_DPAD_DOWN,
-    HOST_CONTROLLER_BUTTON_DPAD_LEFT,
-    HOST_CONTROLLER_BUTTON_DPAD_RIGHT,
-    HOST_CONTROLLER_BUTTON_X,
-    HOST_CONTROLLER_BUTTON_Y
-};
-
-static bool control_mode_keyboard = true;
-static char binding_error[64];
 
 static uint8_t cpu_bridge_read(void *ctx, uint16_t addr) {
     return nes_cpu_bus_read((NES*)ctx, addr);
@@ -363,6 +354,7 @@ static void apply_rom_preferences(void) {
 }
 
 static void save_emulator_settings(void) {
+    refresh_state_shortcuts();
     char filepath[1024];
     get_settings_filepath(filepath, sizeof(filepath));
 
@@ -549,34 +541,23 @@ static void clear_view_history(uint16_t initial_pc) {
 static uint64_t debug_emu_ticks = 0;
 static uint64_t debug_total_ticks = 0;
 
-static bool rebinding = false;
-static const HostKey default_control_mappings[CONTROL_COUNT] = {
-    HOST_KEY_z, HOST_KEY_x, HOST_KEY_SPACE, HOST_KEY_RETURN, HOST_KEY_UP, HOST_KEY_DOWN, HOST_KEY_LEFT, HOST_KEY_RIGHT, HOST_KEY_F5, HOST_KEY_F8
-};
-static const char *button_names[CONTROL_COUNT] = {
-    "Button A", "Button B", "Select", "Start",
-    "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
-    "Quick Save", "Quick Load"
-};
-
 static bool mapping_used(const int32_t *keys, int count, int32_t key, int except) {
     for (int i = 0; i < count; ++i) if (i != except && keys[i] == key) return true;
     return false;
 }
 static void normalize_control_mappings(void) {
-    bool changed = control_mappings[8] != HOST_KEY_F5 || control_mappings[9] != HOST_KEY_F8;
-    control_mappings[8] = HOST_KEY_F5;
-    control_mappings[9] = HOST_KEY_F8;
-    for (int i = 0; i < 8; ++i) {
-        if (!shortcut_binding_key_allowed(control_mappings[i]) ||
+    bool changed = false;
+    for (int i = 0; i < CONTROL_COUNT; ++i) {
+        bool allowed = i >= 8 ? shortcut_state_key_allowed(control_mappings[i]) : shortcut_binding_key_allowed(control_mappings[i]);
+        if (!allowed ||
             mapping_used(control_mappings, i, control_mappings[i], -1)) {
             control_mappings[i] = -1; changed = true;
         }
     }
-    for (int i = 0; i < 8; ++i) if (control_mappings[i] == -1) {
-        HostKey key = default_control_mappings[i];
-        if (mapping_used(control_mappings, 8, key, i)) {
-            for (key = 'a'; key <= 'z'; ++key) if (!mapping_used(control_mappings, 8, key, i)) break;
+    for (int i = 0; i < CONTROL_COUNT; ++i) if (control_mappings[i] == -1) {
+        HostKey key = binding_default_keys[i];
+        if (mapping_used(control_mappings, CONTROL_COUNT, key, i)) {
+            for (key = 'a'; key <= 'z'; ++key) if (!mapping_used(control_mappings, CONTROL_COUNT, key, i)) break;
         }
         control_mappings[i] = key;
     }
@@ -587,36 +568,16 @@ static void normalize_control_mappings(void) {
         }
     }
     for (int i = 0; i < CONTROL_COUNT; ++i) if (controller_button_mappings[i] == -1) {
-        HostButton button = default_controller_mappings[i];
+        HostButton button = binding_default_buttons[i];
         if (mapping_used(controller_button_mappings, CONTROL_COUNT, button, i)) {
             for (button = 0; button <= HOST_CONTROLLER_BUTTON_DPAD_RIGHT; ++button)
                 if (!mapping_used(controller_button_mappings, CONTROL_COUNT, button, i)) break;
         }
         controller_button_mappings[i] = button;
     }
+    refresh_state_shortcuts();
     if (changed) show_notification("CONFLICTING BINDINGS REPAIRED");
 }
-static bool assign_control_mapping(HostKey key, int modifiers, HostButton button) {
-    int selected = control_selection - 1;
-    if (selected < 0 || selected >= CONTROL_COUNT) return false;
-    const char *error = NULL;
-    if (control_mode_keyboard) {
-        if (selected >= 8) error = "Save/load keys are fixed: F5 / F8";
-        else if (modifiers) error = "Use an unmodified key";
-        else if (!shortcut_binding_key_allowed(key)) error = "Key reserved for shortcuts/navigation";
-        else if (mapping_used(control_mappings, CONTROL_COUNT, key, selected)) error = "Key already assigned";
-        if (!error) control_mappings[selected] = key;
-    } else {
-        if (button < 0 || button > HOST_CONTROLLER_BUTTON_DPAD_RIGHT) error = "Unsupported controller button";
-        else if (mapping_used(controller_button_mappings, CONTROL_COUNT, button, selected)) error = "Button already assigned";
-        if (!error) controller_button_mappings[selected] = button;
-    }
-    snprintf(binding_error, sizeof(binding_error), "%s", error ? error : "");
-    if (error) return false;
-    save_emulator_settings();
-    return true;
-}
-
 static const uint8_t font8x8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00},
@@ -1192,8 +1153,8 @@ static const MenuItem movie_items[] = {
 static const Menu movie_menu = {"TAS Movie", movie_items, COUNT(movie_items)};
 static const MenuItem file_items[] = {
     ITEM("Open ROM...", shortcut_OPEN, MENU_OPEN), SUB("Recent ROMs", recent_menu),
-    ITEM("Save State", shortcut_SAVE, MENU_SAVE), ITEM("Load State", shortcut_LOAD, MENU_LOAD),
-    ITEM("Save State As...", shortcut_SAVE_AS, MENU_SAVE_AS), ITEM("Load State From...", shortcut_LOAD_FROM, MENU_LOAD_FROM),
+    ITEM("Save State", state_shortcut_labels[0], MENU_SAVE), ITEM("Load State", state_shortcut_labels[2], MENU_LOAD),
+    ITEM("Save State As...", state_shortcut_labels[1], MENU_SAVE_AS), ITEM("Load State From...", state_shortcut_labels[3], MENU_LOAD_FROM),
     SUB("TAS Movie", movie_menu), SEPARATOR, ITEM("Exit", NULL, MENU_EXIT)
 };
 static const MenuItem audio_items[] = {
@@ -1505,7 +1466,8 @@ static void desktop_command(MenuCommand command) {
         case MENU_GLOBAL_DEFAULTS:
             global_preferences = (RomPreferences){(unsigned)window_scale, fullscreen, zapper_enabled};
             save_emulator_settings(); show_notification("GLOBAL DEFAULTS UPDATED"); break;
-        case MENU_BINDINGS: help_page = 3; control_selection = 0; rebinding = false; break;
+        case MENU_BINDINGS:
+            help_page = 3; binding_editor_open(&binding_editor,control_mappings,controller_button_mappings); break;
         case MENU_CONTROLS: help_page = 1; break;
         case MENU_ABOUT: help_page = 2; break;
         default: break;
@@ -1516,23 +1478,6 @@ static void chrome_fill(void *context, MenuRect r, uint32_t color) {
 }
 static void chrome_text(void *context, const char *text, int x, int y, uint32_t color) {
     (void)context; host_ui_text(text, x, y, color);
-}
-static MenuRect controls_bounds(int w, int h) {
-    int width = w < 416 ? w - 16 : 400;
-    int height = h - MENU_BAR_HEIGHT - STATUS_BAR_HEIGHT - 16;
-    if (height > 260) height = 260;
-    return (MenuRect){(w-width)/2, MENU_BAR_HEIGHT+8, width, height};
-}
-static void controls_activate(void) {
-    binding_error[0] = 0;
-    if (!control_selection) control_mode_keyboard = !control_mode_keyboard;
-    else if (control_selection == CONTROL_COUNT+1) {
-        memcpy(control_mappings, default_control_mappings, sizeof(control_mappings));
-        memcpy(controller_button_mappings, default_controller_mappings, sizeof(controller_button_mappings));
-        save_emulator_settings();
-    } else if (control_mode_keyboard && control_selection >= 9)
-        snprintf(binding_error, sizeof(binding_error), "Save/load keys are fixed: F5 / F8");
-    else rebinding = true;
 }
 static void desktop_draw(void) {
     int w, h; host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
@@ -1595,29 +1540,15 @@ static void desktop_draw(void) {
         chrome_text(NULL, "Enter: seek   Esc: cancel", r.x+8, r.y+64, 0x000000);
     }
     if (help_page == 3) {
-        MenuRect r = controls_bounds(w, h);
-        chrome_fill(NULL, r, 0xD4D0C8);
-        chrome_fill(NULL, (MenuRect){r.x,r.y,r.w,20}, 0x0A246A);
-        chrome_text(NULL, "Controller Bindings", r.x+8,r.y+6,0xFFFFFF);
-        int row_height = (r.h-46)/(CONTROL_COUNT+2);
-        for (int i = 0; i < CONTROL_COUNT+2; ++i) {
-            char line[96];
-            if (!i) snprintf(line,sizeof(line),"Input: %s",control_mode_keyboard ? "Keyboard" : "Controller");
-            else if (i == CONTROL_COUNT+1) snprintf(line,sizeof(line),"Restore Defaults");
-            else if (rebinding && i == control_selection) snprintf(line,sizeof(line),"%s: Press a %s...",button_names[i-1],control_mode_keyboard ? "key" : "button");
-            else if (control_mode_keyboard) snprintf(line,sizeof(line),"%s: %s%s",button_names[i-1],host_key_name(control_mappings[i-1]),i>=9 ? " (fixed)" : "");
-            else snprintf(line,sizeof(line),"%s: Button %d",button_names[i-1],controller_button_mappings[i-1]);
-            int y = r.y+26+i*row_height;
-            if (i == control_selection) chrome_fill(NULL,(MenuRect){r.x+4,y-2,r.w-8,row_height},0x0A246A);
-            int chars = (r.w-16)/8; if (chars >= 0 && chars < (int)sizeof(line)) line[chars] = 0;
-            chrome_text(NULL,line,r.x+8,y,i == control_selection ? 0xFFFFFF : 0x202020);
-        }
-        chrome_text(NULL,*binding_error ? binding_error : "Enter: Change  Esc: Close",r.x+8,r.y+r.h-16,0x202020);
+        binding_editor_resize(&binding_editor,w,h);
+        binding_editor_draw(&binding_editor,&painter,host_key_name,game_controller >= 0);
     } else if (help_page) {
         int x = w > 352 ? (w - 336) / 2 : 8, y = MENU_BAR_HEIGHT + 12;
         chrome_fill(NULL, (MenuRect){x, y, 336, 180}, 0x808080);
         chrome_fill(NULL, (MenuRect){x + 1, y + 1, 334, 178}, 0xF0EEE8);
-        static const char *controls[] = {"Controls / Shortcuts", "F1: Pause   F5/F8: Save/Load", "F6: Frame   Shift+F6: Back", "F9: Debugger   F10: Instruction", "Ctrl+Left/Right: TAS Back/Frame", "F2/F3: Panels   F4: Capture", "Ctrl+F4: Trace  Shift+F4: Log", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Alt: Menus   Escape: Close"};
+        char state_help[41];
+        snprintf(state_help,sizeof(state_help),"Save: %.12s  Load: %.12s",state_shortcut_labels[0],state_shortcut_labels[2]);
+        const char *controls[] = {"Controls / Shortcuts", "F1: Pause", state_help, "F6: Frame   Shift+F6: Back", "F9: Debugger   F10: Instruction", "Ctrl+Left/Right: TAS Back/Frame", "F2/F3: Panels   F4: Capture", "Ctrl+F4: Trace  Shift+F4: Log", "F7: Breakpoint   F11: Fullscreen", "Enter: Controller bindings", "Alt: Menus   Escape: Close"};
         static const char *about[] = {"NES Emulator", "Custom Sokol desktop interface", "8x8 bitmap font", "Windows / Linux / macOS", "", "Escape, Enter or click: Close"};
         const char **lines = help_page == 1 ? controls : about;
         int count = help_page == 1 ? COUNT(controls) : COUNT(about);
@@ -1825,7 +1756,7 @@ static bool desktop_event(const HostEvent *event) {
     float scale = host_chrome_layout(sapp_width(), sapp_height(), &w, &h);
     menu_bar_resize(&desktop_menu, w, h);
     if (event->type == HOST_WINDOWEVENT && event->window.event == HOST_WINDOWEVENT_FOCUS_LOST) {
-        e.type = MENU_BLUR; menu_bar_event(&desktop_menu, &e, &command); help_page = 0; rebinding = false; return false;
+        e.type = MENU_BLUR; menu_bar_event(&desktop_menu, &e, &command); help_page = 0; binding_editor.listening = false; return false;
     }
     if (!focused) return false;
     if (movie_seek_dialog) {
@@ -1886,35 +1817,27 @@ static bool desktop_event(const HostEvent *event) {
             (event->type >= HOST_MOUSEMOTION && event->type <= HOST_MOUSEWHEEL);
     }
     if (help_page == 3) {
-        if (rebinding) {
-            if (event->type == HOST_KEYDOWN && !event->key.repeat) {
-                if (event->key.keysym.sym == HOST_KEY_ESCAPE) { rebinding = false; binding_error[0] = 0; }
-                else if (control_mode_keyboard) {
-                    if (assign_control_mapping(event->key.keysym.sym, event->key.keysym.mod, 0)) rebinding = false;
-                }
-            } else if (!control_mode_keyboard && event->type == HOST_CONTROLLERBUTTONDOWN && event->cbutton.which == game_controller) {
-                if (assign_control_mapping(0, 0, event->cbutton.button)) rebinding = false;
-            }
-        } else if (event->type == HOST_KEYDOWN) {
-            if (event->key.keysym.sym == HOST_KEY_ESCAPE) help_page = 0;
-            else if (event->key.keysym.sym == HOST_KEY_UP) control_selection = (control_selection+CONTROL_COUNT+1)%(CONTROL_COUNT+2);
-            else if (event->key.keysym.sym == HOST_KEY_DOWN) control_selection = (control_selection+1)%(CONTROL_COUNT+2);
-            else if (event->key.keysym.sym == HOST_KEY_RETURN && !event->key.repeat) controls_activate();
-        } else if (event->type == HOST_MOUSEBUTTONDOWN && event->button.button == HOST_BUTTON_LEFT && event->window_mouse.valid) {
-            MenuRect r = controls_bounds(w,h);
-            int x = (int)(event->window_mouse.x / scale), y = (int)(event->window_mouse.y / scale);
-            int row_height = (r.h-46)/(CONTROL_COUNT+2);
-            if (row_height > 0 && x >= r.x && x < r.x+r.w && y >= r.y+24 && y < r.y+24+(CONTROL_COUNT+2)*row_height) {
-                control_selection = (y-r.y-24)/row_height; controls_activate();
-            } else if (y >= r.y+r.h-22 && y < r.y+r.h) help_page = 0;
-            desktop_menu.swallow_release = true;
+        HostEvent input = *event;
+        if (event->window_mouse.valid) {
+            input.window_mouse.x = (int)floorf(event->window_mouse.x / scale);
+            input.window_mouse.y = (int)floorf(event->window_mouse.y / scale);
         }
+        binding_editor_resize(&binding_editor,w,h);
+        BindingResult result = binding_editor_event(&binding_editor,&input,game_controller);
+        if (result == BINDING_CHANGED) save_emulator_settings();
+        if (result == BINDING_CLOSED) {
+            help_page = 0; binding_editor.listening = false;
+            clear_host_input(); runtime_reset_pending = true;
+            desktop_menu.swallow_release = event->type == HOST_MOUSEBUTTONDOWN;
+        }
+        if (event->type >= HOST_MOUSEMOTION && event->type <= HOST_MOUSEWHEEL)
+            last_mouse_activity = host_ticks();
         return event->type != HOST_QUIT && event->type != HOST_WINDOWEVENT &&
             event->type != HOST_CONTROLLERDEVICEADDED && event->type != HOST_CONTROLLERDEVICEREMOVED;
     }
     if (!movie_player.movie && !desktop_menu.active && !help_page && debugger_event(event, -1, -1)) return true;
     MenuCommand shortcut;
-    if (!help_page && shortcut_match(event, &shortcut) &&
+    if (!help_page && shortcut_match_bindings(event, control_mappings[8], control_mappings[9], &shortcut) &&
         (!desktop_menu.active || shortcut == MENU_DEBUG_BACK)) {
         if (!event->key.repeat || shortcut == MENU_DEBUG_UP || shortcut == MENU_DEBUG_DOWN) {
             if (shortcut == MENU_DEBUG_BACK) menu_bar_close(&desktop_menu);
@@ -1944,7 +1867,7 @@ static bool desktop_event(const HostEvent *event) {
     } else return false;
     if (help_page && !desktop_menu.active) {
         if ((e.type == MENU_KEY_PRESS && !e.repeat && (e.key == MENU_KEY_ESCAPE || e.key == MENU_KEY_ENTER)) || e.type == MENU_PRESS) {
-            if (help_page == 1 && e.key == MENU_KEY_ENTER) { help_page = 3; control_selection = 0; }
+            if (help_page == 1 && e.key == MENU_KEY_ENTER) { desktop_command(MENU_BINDINGS); }
             else help_page = 0;
             desktop_menu.swallow_release = e.type == MENU_PRESS;
         }
@@ -1952,7 +1875,7 @@ static bool desktop_event(const HostEvent *event) {
     }
     bool active = desktop_menu.active;
     bool consumed = menu_bar_event(&desktop_menu, &e, &command);
-    if (desktop_menu.active != active) { clear_host_input(); runtime_reset_pending = true; rebinding = false; }
+    if (desktop_menu.active != active) { clear_host_input(); runtime_reset_pending = true; binding_editor.listening = false; }
     if (command) desktop_command(command);
     /* Panel clicks must not reach the legacy right-click/resume or Zapper paths. */
     if (!consumed && event->window_mouse.valid &&

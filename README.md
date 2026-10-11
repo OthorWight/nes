@@ -1,7 +1,8 @@
 ## Controls
 
-See the [complete Action - Key shortcut list](docs/SHORTCUTS.md). F5/F8 are
-reserved for save/load in gameplay, the debugger, and TAS playback.
+See the [complete Action - Key shortcut list](docs/SHORTCUTS.md). Save/load default
+to F5/F8 and can be changed in **Emulation > Controller Bindings**, including
+for the debugger and TAS playback.
 
 ### Keyboard Layout (Mappable)
 *   **D-Pad**: `Arrow Keys`
@@ -16,7 +17,7 @@ reserved for save/load in gameplay, the debugger, and TAS playback.
 * **Ctrl+O** opens the ROM file browser. Double-click a folder or ROM, or select it and press Enter / Open.
 * **Backspace / Alt+Up** goes to the parent folder; click **Home** to go to your home folder. Up / Down select entries. At a Windows drive root, going to the parent lists drives.
 * **Ctrl+L** edits the location; enter a folder or a ROM path. Mouse wheel and Page Up / Down scroll the list.
-* **Emulation > Audio** provides mute and volume controls. **Controller Bindings** edits keyboard/gamepad mappings.
+* **Emulation > Audio** provides mute and volume controls. **Controller Bindings** has Keyboard / Gamepad tabs: click a binding, then choose a key or named button with the mouse, or press the input directly. Occupied inputs swap bindings when both actions can use the keys. Changes save automatically; **Cancel** leaves the pending binding unchanged, **Reset defaults** resets the current tab, and **Done** closes the editor. Quick save/load are editable too; F5/F8 are defaults. Shift plus the selected save/load key opens the named-state file browser.
 * **Emulation > Region** selects Auto, NTSC, PAL, or Dendy. Auto uses the ROM header and defaults dual-region images to NTSC. Changing regions resets the game.
 * **View > Nametable Viewer** shows all four live background nametables beside the playable game, with address labels and the current mirroring mode. The grid is `$2000 / $2400` above `$2800 / $2C00`: vertical mirroring gives `A B / A B`, horizontal gives `A A / B B`. It also supports one-screen, four-screen, and mapper-controlled routing. The choice is saved globally and can be used alongside the debug panel. The viewer uses the actual background tile fetches for visible regions, preserving gameplay and status-bar bank/palette splits together. Unfetched tiles use a snapshot near visible scanline 120. Mirrored aliases share the most recently fetched row. Pausing retains that capture; enabling it while paused requires resuming to capture a frame. Sprites remain in the game view. A nametable row reused in multiple raster regions can show only its latest observed appearance.
 * **View > CRT Shader** toggles lightly rounded contour corners, narrow color transitions, gentle scanlines, and a tiny bright-pixel glow. Solid black outlines, pixel centers, and menus stay sharp. Off by default; the choice is saved globally.
@@ -31,7 +32,8 @@ power-on memory using the movie's NTSC/PAL and RAM settings. Recorded input
 owns both controller ports; keyboard/gamepad input cannot change the run.
 
 * **F1** plays/pauses; **Ctrl+Right** advances one frame; **Ctrl+Left** goes back
-  one frame. **F5/F8** save/load movie states, including while paused.
+  one frame. Your save/load keys (default **F5/F8**) save/load movie states,
+  including while paused.
 * **Go to Frame...** (`Ctrl+J`) seeks to a completed-frame count; zero is power-on. Seeking
   replays recorded inputs from a checkpoint and remains cancellable with F1.
   The UI stays responsive and playback pauses at the requested frame.
@@ -79,8 +81,11 @@ In **Emulation**, set **Port 2** to **Zapper** for light-gun games. Aim with the
 If a game repeatedly polls the light gun on a black screen for about three seconds, an OSD warning suggests switching Port 2 back to Controller. This detects suspected polling hangs such as Armadillo's boot loop; it does not automatically change the selected device.
 
 ### Quick Save & Quick Load
-*   **Quick Save**: Press `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
-*   **Quick Load**: Press `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
+*   **Quick Save**: Defaults to `F5` on keyboard or `X` on gamepad. (Overwrites the oldest of 10 rolling save files).
+*   **Quick Load**: Defaults to `F8` on keyboard or `Y` on gamepad. (Loads the newest available rolling save file).
+
+Change either binding under **Emulation > Controller Bindings**. Menu labels
+follow your selected keys; Shift adds the named save/load variant.
 
 ### Performance and captures
 

@@ -42,5 +42,24 @@ int main(void) {
     extra.key.keysym.sym='l';assert(!shortcut_match(&extra,&command));
     extra.key.keysym.sym=HOST_KEY_UP;extra.key.keysym.mod=HOST_MOD_ALT;
     assert(!shortcut_match(&extra,&command));
-    puts("Shortcut chords/actions are unique, F5/F8 are state-only, and modifiers match exactly");
+    const struct {HostKey key;int modifiers;MenuCommand action;} custom[] = {
+        {'k',0,MENU_SAVE},{'k',HOST_MOD_SHIFT,MENU_SAVE_AS},
+        {'l',0,MENU_LOAD},{'l',HOST_MOD_SHIFT,MENU_LOAD_FROM},
+        {HOST_KEY_F5,0,MENU_NONE},{HOST_KEY_F8,0,MENU_NONE},
+        {HOST_KEY_F5,HOST_MOD_SHIFT,MENU_NONE},{HOST_KEY_F8,HOST_MOD_SHIFT,MENU_NONE},
+        {'k',HOST_MOD_CTRL,MENU_NONE},{'l',HOST_MOD_CTRL|HOST_MOD_SHIFT,MENU_NONE},
+        {HOST_KEY_F6,0,MENU_STEP_FRAME},{HOST_KEY_F1,0,MENU_PAUSE}
+    };
+    for (unsigned i=0;i<sizeof(custom)/sizeof(*custom);++i) {
+        extra=(HostEvent){.type=HOST_KEYDOWN,.key.keysym={custom[i].key,custom[i].modifiers}};
+        assert(shortcut_match_bindings(&extra,'k','l',&command) == (custom[i].action != MENU_NONE));
+        assert(command == custom[i].action);
+    }
+    extra=(HostEvent){.type=HOST_KEYDOWN,.key.keysym={HOST_KEY_F8,0}};
+    assert(shortcut_match_bindings(&extra,HOST_KEY_F8,HOST_KEY_F5,&command) && command==MENU_SAVE);
+    extra.key.keysym.sym=HOST_KEY_F5;extra.key.keysym.mod=HOST_MOD_SHIFT;
+    assert(shortcut_match_bindings(&extra,HOST_KEY_F8,HOST_KEY_F5,&command) && command==MENU_LOAD_FROM);
+    assert(shortcut_state_key_allowed(HOST_KEY_F5) && shortcut_state_key_allowed(HOST_KEY_F8));
+    assert(shortcut_state_key_allowed('k') && !shortcut_state_key_allowed(HOST_KEY_F6));
+    puts("Default/custom state shortcuts, retired default keys, exact modifiers and reserved keys passed");
 }

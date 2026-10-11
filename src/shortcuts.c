@@ -9,16 +9,25 @@ const AppShortcut app_shortcuts[] = { APP_SHORTCUTS(ENTRY) };
 const unsigned app_shortcut_count = sizeof(app_shortcuts) / sizeof(app_shortcuts[0]);
 
 bool shortcut_match(const HostEvent *event, MenuCommand *command) {
+    return shortcut_match_bindings(event,HOST_KEY_F5,HOST_KEY_F8,command);
+}
+bool shortcut_match_bindings(const HostEvent *event, HostKey save, HostKey load, MenuCommand *command) {
     *command = MENU_NONE;
     if (event->type != HOST_KEYDOWN) return false;
     for (unsigned i = 0; i < app_shortcut_count; ++i) {
-        if (event->key.keysym.sym == app_shortcuts[i].key &&
+        HostKey key = app_shortcuts[i].key;
+        if (app_shortcuts[i].command == MENU_SAVE || app_shortcuts[i].command == MENU_SAVE_AS) key = save;
+        if (app_shortcuts[i].command == MENU_LOAD || app_shortcuts[i].command == MENU_LOAD_FROM) key = load;
+        if (event->key.keysym.sym == key &&
             event->key.keysym.mod == app_shortcuts[i].modifiers) {
             *command = app_shortcuts[i].command;
             return true;
         }
     }
     return false;
+}
+bool shortcut_state_key_allowed(HostKey key) {
+    return key == HOST_KEY_F5 || key == HOST_KEY_F8 || shortcut_binding_key_allowed(key);
 }
 bool shortcut_binding_key_allowed(HostKey key) {
     if (key <= 0 || (key >= HOST_KEY_F1 && key <= HOST_KEY_F12) ||

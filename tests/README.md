@@ -61,7 +61,12 @@ remain readable, with defaults for timing state absent from older files.
 `menu_bar.c` checks desktop menu navigation, disabled items, separators,
 submenus, command dispatch, pointer event ownership, resize placement, and
 drawing callbacks without a window. `file_browser.c` checks folder traversal,
-file filters, paths with spaces, failed navigation, and cancellation. Sokol integration also exercises the
+file filters, paths with spaces, failed navigation, and cancellation.
+`controller_bindings.c` checks mouse key/button selection, unique bindings after
+conflict swaps, editable save/load keys, direct capture, cancellation, device
+filtering, and scrolling at small window sizes. The Sokol bindings test exercises
+the actual window-coordinate mouse path and reloads settings to verify persistence.
+Sokol integration also exercises the
 window-coordinate menu path, captures `desktop-menu.bmp` on Windows, checks
 the reserved viewport bands and constant DPI scale across 1x through 4K sizes, and verifies pause/reset/power/recent-ROM and
 save/load commands. Alt activates menus; F10 steps the debugger.

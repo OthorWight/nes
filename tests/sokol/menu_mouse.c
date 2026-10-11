@@ -47,11 +47,14 @@ static bool scripted_poll(HostEvent *e) {
         case 5: assert(file_browser.editing); key(e,HOST_KEY_ESCAPE); break;
         case 6: assert(file_browser.active && !file_browser.editing); key(e,HOST_KEY_ESCAPE); break;
         case 7:
-            assert(!file_browser.active); desktop_command(MENU_BINDINGS); key(e,HOST_KEY_DOWN); break;
-        case 8: assert(help_page==3 && control_selection==1); key(e,HOST_KEY_RETURN); break;
-        case 9: assert(rebinding); key(e,'k'); break;
-        case 10:
-            assert(!rebinding && control_mappings[0]=='k'); capture_window("controls.bmp"); key(e,HOST_KEY_ESCAPE); break;
+            assert(!file_browser.active); desktop_command(MENU_BINDINGS); key(e,HOST_KEY_RETURN); break;
+        case 8:
+            assert(help_page==3 && binding_editor.listening);
+            capture_window("keyboard-picker.bmp"); key(e,'k'); break;
+        case 9:
+            assert(!binding_editor.listening && control_mappings[0]=='k');
+            capture_window("controls.bmp"); key(e,HOST_KEY_ESCAPE); break;
+        case 10: assert(!help_page); break;
         case 11:
             assert(!remove_sprite_limit && !desktop_state(NULL, MENU_REMOVE_SPRITE_LIMIT));
             desktop_command(MENU_REMOVE_SPRITE_LIMIT);

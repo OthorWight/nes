@@ -1,10 +1,10 @@
 # Shortcuts
 
 Each application shortcut has one action and matches its modifiers exactly.
-F5/F8 are reserved for saving/loading in gameplay, the debugger, and TAS
-playback. Shift adds the named-file variant. Keyboard state shortcuts are fixed;
-the eight NES inputs and gamepad buttons remain configurable under
-**Emulation > Controller Bindings**.
+Save/load default to F5/F8 in gameplay, the debugger, and TAS playback.
+Change them, the eight NES inputs, or gamepad buttons under
+**Emulation > Controller Bindings**. Shift plus your selected save/load key
+opens the named-file variant. Menu labels follow the current bindings.
 
 Panels and diagnostics occupy F2–F4. Debugger frame controls use F6,
 breakpoints F7, and execution controls F9–F10; Shift reverses a frame or steps
@@ -14,7 +14,7 @@ movie. Escape dismisses UI and never pauses or opens a ROM.
 
 ## All shortcuts: Action - Key
 
-This is the complete shortcut list. NES/gamepad rows show defaults. Standard
+This is the complete shortcut list. NES, save/load, and gamepad rows show defaults. Standard
 UI navigation applies while a menu, browser, dialog, or command bar owns input;
 application shortcuts are consumed there. Mouse actions are included below the
 keyboard/gamepad entries.
@@ -76,7 +76,9 @@ keyboard/gamepad entries.
 | File browser: open parent folder | Alt+Up / Backspace (outside text entry) |
 | Edit location, filename, or debugger command | Printable text; Backspace erases |
 | Go to Frame: edit completed-frame count | Digits 0–9; Backspace erases |
-| Controller bindings: activate row / capture input | Enter, then an unmodified key or gamepad button |
+| Controller bindings: select action | Up / Down |
+| Controller bindings: switch Keyboard / Gamepad tab | Left / Right / Tab |
+| Controller bindings: open picker / capture input | Enter, then an unmodified key or gamepad button |
 | Controller bindings: cancel input capture | Escape |
 | Controls help: open controller bindings | Enter |
 | About: close | Enter / Escape |
@@ -91,14 +93,19 @@ keyboard/gamepad entries.
 | Debugger: open command bar | Click command area |
 | Debugger: prefill RAM edit | Click editable Memory byte |
 | Debugger: prefill breakpoint enable/disable | Click Breaks entry |
-| Controller bindings: activate row / capture input | Click row |
+| Controller bindings: change binding | Click binding, then click a key/button choice or press the input |
+| Controller bindings: switch input type | Click Keyboard / Gamepad tab |
+| Controller bindings: cancel pending edit | Click Cancel |
+| Controller bindings: restore current input defaults | Click Reset defaults |
+| Controller bindings: close editor | Click Done / X |
+| Controller bindings: scroll actions or choices | Mouse wheel / click scroll arrows |
 | Controls help / About: close | Click dialog |
 | APU viewer: mute/unmute voice | Click channel name |
 | Zapper: aim / fire | Mouse movement / left mouse button |
 
 ## Availability and behavior
 
-- **Save/load:** F5/F8 work with a loaded ROM, including when paused, inspecting
+- **Save/load:** your selected keys (default F5/F8) work with a loaded ROM, including when paused, inspecting
   the debugger, or playing a movie. Movie states also retain the input position.
   Gamepad X/Y require running playback with menus/dialogs and the debugger closed.
 - **Pause:** F1 requires a loaded ROM. During a movie it cancels pending seeks
@@ -132,17 +139,24 @@ or debugger-command actions without dedicated keyboard shortcuts.
 
 ## Preventing conflicts
 
-The application map and menu labels share [shortcuts.h](../src/shortcuts.h),
-with exact dispatch in [shortcuts.c](../src/shortcuts.c). Unknown modifier
+The default application map lives in [shortcuts.h](../src/shortcuts.h),
+with exact dispatch and configured save/load keys in [shortcuts.c](../src/shortcuts.c). Unknown modifier
 combinations do nothing: Ctrl+F8 does not load, and Ctrl+Shift+F10 does not select
 an arbitrary debugger action. Modified keys do not also press NES buttons.
 
-Keyboard capture rejects modified chords, reserved shortcut/navigation keys,
-and duplicates. F5/F8 cannot be reassigned. Gamepad capture rejects duplicate
-buttons. Existing settings retain valid custom bindings; reserved or duplicate
-entries are repaired to available defaults (or free keys/buttons), and old
-custom keyboard quickstate keys are restored to F5/F8. A notification reports
-repairs. Binding rows show why a new assignment is rejected.
+The Controller Bindings editor has clickable Keyboard / Gamepad tabs and mouse
+pickers for keys and named gamepad buttons. You can also press the input directly.
+Assigning an occupied input swaps the two bindings when both actions can use
+the keys, so an input never has two jobs. Keyboard capture rejects modified
+chords and other application shortcut/navigation keys. F5/F8 are available only
+for save/load. If a swap would move F5/F8 to a NES button, rebind that button
+first. Existing settings retain valid custom bindings, including save/load;
+reserved or duplicate entries are repaired to available defaults (or free
+keys/buttons). A notification reports repairs. The editor explains rejected assignments, saves changes automatically,
+and provides Cancel, Reset defaults (current tab), Done, and a close button.
+Mouse wheel and scroll arrows reach bindings and picker choices in small windows.
+Up/Down select actions, Left/Right or Tab switch input tabs, and Enter opens a
+picker. Escape cancels a pending edit, then closes the editor.
 
 The earlier collisions are resolved: debugger frame stepping moved from F8
 to F6, run-to-cursor moved to Ctrl+F9, TAS frame controls moved to Ctrl+arrows,
@@ -152,9 +166,10 @@ preserves pending text.
 
 ## Verification
 
-Headless shortcut tests check unique chords/actions, exclusive F5/F8 state
-commands, exact modifiers, and reserved keys. Real Sokol frontend tests cover
+Headless shortcut tests check unique chords/actions, default and custom state
+commands, retired default keys, exact modifiers, and reserved keys. Real Sokol frontend tests cover
 state loading in gameplay/debugger/TAS, instruction and frame stepping, movie
-navigation, command-text preservation, duplicate/reserved binding rejection,
+navigation, command-text preservation, mouse binding pickers, conflict swaps,
+reserved binding rejection, persistence, cancellation and tab-specific resets,
 legacy settings repair, and removal of old aliases. See
 [debugger commands](DEBUGGER.md) and [frontend tests](../tests/sokol/run.sh).

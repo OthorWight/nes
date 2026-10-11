@@ -34,6 +34,25 @@ static void capture_window(const char *path) {
     ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)staging, 0);
     ID3D11Texture2D_Release(staging); ID3D11Resource_Release(resource);
 }
+#elif defined(__linux__)
+#include <GL/gl.h>
+static void capture_window(const char *path) {
+    int width=sapp_width(), height=sapp_height();
+    size_t bytes=(size_t)width*height*3;
+    unsigned char *pixels=malloc(bytes); assert(pixels);
+    GLint previous, alignment; glGetIntegerv(GL_READ_BUFFER,&previous);
+    glGetIntegerv(GL_PACK_ALIGNMENT,&alignment);
+    /* The frontend has drawn this frame; Sokol swaps after the callback returns. */
+    glReadBuffer(GL_BACK); glPixelStorei(GL_PACK_ALIGNMENT,1);
+    glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,pixels);
+    glReadBuffer((GLenum)previous);
+    glPixelStorei(GL_PACK_ALIGNMENT,alignment);
+    FILE *file=fopen(path,"wb"); assert(file);
+    assert(fprintf(file,"P6\n%d %d\n255\n",width,height)>0);
+    for (int y=height-1;y>=0;--y)
+        assert(fwrite(pixels+(size_t)y*width*3,3,width,file)==(size_t)width);
+    assert(!fclose(file)); free(pixels);
+}
 #else
 static void capture_window(const char *path) { (void)path; }
 #endif

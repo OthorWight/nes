@@ -30,7 +30,8 @@ static bool scripted_poll(HostEvent*e) {
     if(delivered){delivered=false;++iteration;return false;}delivered=true;host_zero(*e);
     switch(iteration) {
         case 0:
-            movie_fixture();assert(frontend_load_movie("synthetic.fm2"));
+            movie_fixture();control_mappings[8]='k';control_mappings[9]='l';save_emulator_settings();
+            assert(frontend_load_movie("synthetic.fm2"));
             assert(!paused && movie_player.frame==0 && !nes_sys.zapper_enabled);key(e,HOST_KEY_F1);break;
         case 1:
             assert(paused && !movie_player.frame);paused_cycles=nes_sys.cpu.cycle_count;key(e,'z');break;
@@ -39,11 +40,11 @@ static bool scripted_poll(HostEvent*e) {
             key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 3:
             assert(paused && movie_player.frame==1 && nes_sys.controller_state[0]==0x42 && nes_sys.controller_state[1]==1);
-            key(e,HOST_KEY_F5);break;
+            key(e,'k');break;
         case 4:
             assert(paused && movie_player.frame==1);key(e,HOST_KEY_RIGHT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 5:
-            assert(movie_player.frame==2);key(e,HOST_KEY_F8);break;
+            assert(movie_player.frame==2);key(e,'l');break;
         case 6:
             assert(paused && movie_player.frame==1);key(e,HOST_KEY_LEFT);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 7:
@@ -67,7 +68,7 @@ static bool scripted_poll(HostEvent*e) {
             key(e,HOST_KEY_F10);e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 15:
             assert(paused && !debugger_active && movie_player.frame==30);
-            key(e,HOST_KEY_F8);e->key.keysym.mod=HOST_MOD_CTRL;break;
+            key(e,'l');e->key.keysym.mod=HOST_MOD_CTRL;break;
         case 16:
             assert(paused && movie_player.frame==30);
             desktop_command(MENU_MOVIE_TURBO);assert(!movie_speed);key(e,HOST_KEY_F1);break;

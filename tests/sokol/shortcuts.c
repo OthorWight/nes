@@ -29,29 +29,60 @@ static void fixture(void) {
 }
 static void binding_checks(void) {
     desktop_command(MENU_BINDINGS);
-    control_mode_keyboard=true; control_selection=1; controls_activate();
-    HostEvent e={0};key(&e,HOST_KEY_F8,0);assert(desktop_event(&e));
-    assert(rebinding && control_mappings[0]=='z' && *binding_error);
-    key(&e,'x',0);assert(desktop_event(&e));assert(rebinding && control_mappings[0]=='z');
-    key(&e,'k',HOST_MOD_CTRL);assert(desktop_event(&e));assert(rebinding && control_mappings[0]=='z');
-    key(&e,'k',0);assert(desktop_event(&e));assert(!rebinding && control_mappings[0]=='k');
-    control_selection=9;controls_activate();assert(!rebinding && control_mappings[8]==HOST_KEY_F5);
-    control_mode_keyboard=false;control_selection=1;controls_activate();
-    e=(HostEvent){.type=HOST_CONTROLLERBUTTONDOWN,.cbutton={game_controller,HOST_CONTROLLER_BUTTON_Y}};
-    assert(desktop_event(&e));assert(rebinding && controller_button_mappings[0]==HOST_CONTROLLER_BUTTON_A);
-    key(&e,HOST_KEY_ESCAPE,0);assert(desktop_event(&e));assert(!rebinding);
+    HostEvent e={0};key(&e,HOST_KEY_RETURN,0);assert(desktop_event(&e));
+    key(&e,HOST_KEY_F8,0);assert(desktop_event(&e));
+    assert(binding_editor.listening && control_mappings[0]=='z' && *binding_editor.message);
+    key(&e,'k',HOST_MOD_CTRL);assert(desktop_event(&e));assert(binding_editor.listening && control_mappings[0]=='z');
+    key(&e,'x',0);assert(desktop_event(&e));
+    assert(!binding_editor.listening && control_mappings[0]=='x' && control_mappings[1]=='z');
+    key(&e,HOST_KEY_RETURN,0);assert(desktop_event(&e));
+    key(&e,'k',0);assert(desktop_event(&e));assert(!binding_editor.listening && control_mappings[0]=='k');
+    binding_editor.selected=8;
+    key(&e,HOST_KEY_RETURN,0);assert(desktop_event(&e));
+    assert(binding_editor.listening);
+    key(&e,HOST_KEY_F8,0);assert(desktop_event(&e));
+    assert(!binding_editor.listening && control_mappings[8]==HOST_KEY_F8 && control_mappings[9]==HOST_KEY_F5);
+    binding_editor.keyboard=false;binding_editor.selected=0;
+    key(&e,HOST_KEY_RETURN,0);assert(desktop_event(&e));
+    int saved_controller=game_controller;game_controller=7;
+    e=(HostEvent){.type=HOST_CONTROLLERBUTTONDOWN,.cbutton={7,HOST_CONTROLLER_BUTTON_Y}};
+    assert(desktop_event(&e));
+    assert(!binding_editor.listening && controller_button_mappings[0]==HOST_CONTROLLER_BUTTON_Y &&
+        controller_button_mappings[9]==HOST_CONTROLLER_BUTTON_A);
+    game_controller=saved_controller;
     control_mappings[0]=HOST_KEY_F8;control_mappings[1]='z';control_mappings[2]='z';
-    control_mappings[8]='k';control_mappings[9]=HOST_KEY_F10;
+    control_mappings[8]='p';control_mappings[9]=HOST_KEY_F10;
     controller_button_mappings[0]=HOST_CONTROLLER_BUTTON_Y;
     normalize_control_mappings();
-    assert(control_mappings[8]==HOST_KEY_F5 && control_mappings[9]==HOST_KEY_F8);
+    assert(control_mappings[8]=='p' && control_mappings[9]==HOST_KEY_F8);
     for(int i=0;i<8;++i) {
         assert(shortcut_binding_key_allowed(control_mappings[i]));
         assert(!mapping_used(control_mappings,CONTROL_COUNT,control_mappings[i],i));
     }
     for(int i=0;i<CONTROL_COUNT;++i) assert(!mapping_used(controller_button_mappings,CONTROL_COUNT,controller_button_mappings[i],i));
-    control_mode_keyboard=true;control_selection=CONTROL_COUNT+1;controls_activate();
+    memcpy(control_mappings,binding_default_keys,sizeof(control_mappings));
+    memcpy(controller_button_mappings,binding_default_buttons,sizeof(controller_button_mappings));
+    save_emulator_settings();
     key(&e,HOST_KEY_ESCAPE,0);assert(desktop_event(&e));assert(!help_page);
+    control_mappings[8]='k';control_mappings[9]='l';save_emulator_settings();
+    control_mappings[8]=HOST_KEY_F5;control_mappings[9]=HOST_KEY_F8;load_emulator_settings();
+    assert(control_mappings[8]=='k' && control_mappings[9]=='l');
+    assert(!strcmp(file_items[2].shortcut,"K") && !strcmp(file_items[3].shortcut,"L"));
+    assert(!strcmp(file_items[4].shortcut,"Shift+K") && !strcmp(file_items[5].shortcut,"Shift+L"));
+    uint8_t saved=nes_sys.cpu.accumulator;
+    key(&e,'k',0);assert(desktop_event(&e));nes_sys.cpu.accumulator=0x55;
+    key(&e,HOST_KEY_F8,0);assert(!desktop_event(&e));assert(nes_sys.cpu.accumulator==0x55);
+    key(&e,'l',0);assert(desktop_event(&e));assert(nes_sys.cpu.accumulator==saved);
+    desktop_command(MENU_RUN);assert(debugger_active);
+    key(&e,'k',0);assert(desktop_event(&e));nes_sys.cpu.accumulator=0x33;
+    key(&e,'l',0);assert(desktop_event(&e));assert(nes_sys.cpu.accumulator==saved);
+    desktop_command(MENU_RUN);assert(!debugger_active);
+    key(&e,'k',HOST_MOD_SHIFT);assert(desktop_event(&e));assert(file_browser.active && browser_mode==2);
+    key(&e,HOST_KEY_ESCAPE,0);assert(desktop_event(&e));assert(!file_browser.active);
+    key(&e,'l',HOST_MOD_SHIFT);assert(desktop_event(&e));assert(file_browser.active && browser_mode==1);
+    key(&e,HOST_KEY_ESCAPE,0);assert(desktop_event(&e));assert(!file_browser.active);
+    memcpy(control_mappings,binding_default_keys,sizeof(control_mappings));save_emulator_settings();
+    paused=true;
 }
 static bool scripted_poll(HostEvent *e) {
     if(delivered){delivered=false;++iteration;return false;}
