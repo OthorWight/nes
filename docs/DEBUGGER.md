@@ -32,7 +32,7 @@ Enter applies it.
 F5/F8 always save/load states, including during debugger inspection.
 Shift+F5/Shift+F8 open named save/load browsers. Shift+F4 toggles instruction
 logging; Ctrl+Up/Down select disassembly rows. Escape closes UI; F1 pauses
-ordinary gameplay or TAS, while F9 leaves debugger inspection to resume.
+ordinary gameplay, while F9 leaves debugger inspection to resume.
 See the [complete Action - Key list](SHORTCUTS.md).
 
 The menu also offers a nominal scanline duration (341 dots). A nominal frame
@@ -138,8 +138,7 @@ native call stack. A direct save-state API call inside an instruction returns
 
 Held `input` masks apply during debugger stepping and seeking. Bits from low to
 high are A, B, Select, Start, Up, Down, Left, Right. These explicit inputs are
-separate from keyboard events consumed by the debugger. Future TAS playback can
-use the same execution interface and provide its own input source.
+separate from keyboard events consumed by the debugger.
 
 Symbols support ca65/VICE `.lbl` lines (`al 008000 .Reset`) and simple
 `8000 Reset` lines. Failed imports preserve the existing symbol table. Symbol
@@ -150,7 +149,7 @@ Breakpoint definitions save automatically per ROM identity under the emulator's
 restart at zero when definitions are loaded. Imports are bounded, checksummed,
 and applied atomically. Explicit `savebp`/`loadbp` commands support sharing files.
 
-## Reverse history and TAS foundation
+## Execution and reverse history
 
 Execution owns the machine only during `execution_pump()`. Its worker parks
 before handing ownership back to the UI, including when paused inside CPU
@@ -177,9 +176,7 @@ checkpoint or input history has been evicted, reverse reports unavailable rather
 than guessing. Frame reverse restores a prior safe frame checkpoint; its CPU
 instruction boundary may be a few dots after the frame starts.
 
-History is deliberately bounded and is not a TAS movie or project format.
-The next TAS layer can add a persistent input timeline, longer-lived checkpoints,
-branching, seeking, and file formats on top of these execution/input primitives.
+History is deliberately bounded.
 Changing state externally must call `execution_invalidate()` after synchronization.
 Call stacks start when execution attaches or history resets; older calls are
 unknown, and deliberately manipulated stacks can exceed automatic tracking.

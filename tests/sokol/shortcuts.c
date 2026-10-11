@@ -28,6 +28,11 @@ static void fixture(void) {
     nes_sys.cpu.accumulator=0x20;
 }
 static void binding_checks(void) {
+    /* Isolate custom-key saves from the earlier default-key fixture: rolling
+       saves compare timestamps in seconds, and this test can finish within one. */
+    char previous_state[1024];
+    snprintf(previous_state,sizeof(previous_state),"%s/quick_0.state",save_state_dir);
+    assert(!remove(previous_state));
     desktop_command(MENU_BINDINGS);
     HostEvent e={0};key(&e,HOST_KEY_RETURN,0);assert(desktop_event(&e));
     key(&e,HOST_KEY_F8,0);assert(desktop_event(&e));

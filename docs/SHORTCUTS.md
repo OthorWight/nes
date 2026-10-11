@@ -1,16 +1,15 @@
 # Shortcuts
 
 Each application shortcut has one action and matches its modifiers exactly.
-Save/load default to F5/F8 in gameplay, the debugger, and TAS playback.
+Save/load default to F5/F8 in gameplay and the debugger.
 Change them, the eight NES inputs, or gamepad buttons under
 **Emulation > Controller Bindings**. Shift plus your selected save/load key
 opens the named-file variant. Menu labels follow the current bindings.
 
 Panels and diagnostics occupy F2–F4. Debugger frame controls use F6,
 breakpoints F7, and execution controls F9–F10; Shift reverses a frame or steps
-over an instruction. TAS navigation uses the adjacent Ctrl+Left/Right pair,
-with Ctrl+Home/End for restart/stop. F1 always pauses/resumes gameplay or a
-movie. Escape dismisses UI and never pauses or opens a ROM.
+over an instruction. F1 pauses/resumes gameplay. Escape dismisses UI and never
+pauses or opens a ROM.
 
 ## All shortcuts: Action - Key
 
@@ -30,8 +29,7 @@ keyboard/gamepad entries.
 | NES Left | Left / gamepad D-pad Left or left stick left |
 | NES Right | Right / gamepad D-pad Right or left stick right |
 | Open ROM | Ctrl+O |
-| Open FM2 TAS movie | Ctrl+M |
-| Pause/resume gameplay or TAS; cancel active movie seek | F1 |
+| Pause/resume gameplay | F1 |
 | Toggle metrics panel | F2 |
 | Toggle debug information panel | F3 |
 | Capture diagnostics | F4 |
@@ -61,11 +59,6 @@ keyboard/gamepad entries.
 | Debugger: select Trace workspace | Ctrl+4 |
 | Debugger: select PPU workspace | Ctrl+5 |
 | Debugger: select Help workspace | Ctrl+6 |
-| TAS: rewind one movie frame | Ctrl+Left |
-| TAS: advance one movie frame | Ctrl+Right |
-| TAS: restart at frame zero, paused | Ctrl+Home |
-| TAS: stop playback and restore the previous game | Ctrl+End |
-| TAS: Go to Frame | Ctrl+J |
 | Activate/dismiss desktop menu bar | Alt |
 | Navigate UI entries/menus/submenus | Arrow keys |
 | Activate selected UI item / submit text | Enter |
@@ -75,7 +68,6 @@ keyboard/gamepad entries.
 | File browser: edit location | Ctrl+L |
 | File browser: open parent folder | Alt+Up / Backspace (outside text entry) |
 | Edit location, filename, or debugger command | Printable text; Backspace erases |
-| Go to Frame: edit completed-frame count | Digits 0–9; Backspace erases |
 | Controller bindings: select action | Up / Down |
 | Controller bindings: switch Keyboard / Gamepad tab | Left / Right / Tab |
 | Controller bindings: open picker / capture input | Enter, then an unmodified key or gamepad button |
@@ -105,21 +97,16 @@ keyboard/gamepad entries.
 
 ## Availability and behavior
 
-- **Save/load:** your selected keys (default F5/F8) work with a loaded ROM, including when paused, inspecting
-  the debugger, or playing a movie. Movie states also retain the input position.
+- **Save/load:** your selected keys (default F5/F8) work with a loaded ROM, including when paused or inspecting
+  the debugger.
   Gamepad X/Y require running playback with menus/dialogs and the debugger closed.
-- **Pause:** F1 requires a loaded ROM. During a movie it cancels pending seeks
-  or frame steps; at movie end it restarts playback. While the debugger owns
+- **Pause:** F1 requires a loaded ROM. While the debugger owns
   execution, use F9 to leave inspection and resume ordinary playback.
-- **Debugger:** execution/editing shortcuts are unavailable while a movie is
-  open. F9 opens inspection without stepping; F10 always executes an instruction,
+- **Debugger:** F9 opens inspection without stepping; F10 always executes an instruction,
   entering the debugger if needed. F6 advances a nominal region-sized frame;
   reverse actions require retained history. F7 and Ctrl+Up/Down require active
   inspection. Page Up/Down page Calls, Memory, Breaks, Trace, or PPU, not Help.
   Shift+F4 can toggle logging during ordinary gameplay or inspection.
-- **TAS:** Ctrl+Left/Right, Ctrl+Home/End, and Ctrl+J require an open movie.
-  Recorded controller input owns both ports. Live keyboard/gamepad input cannot
-  change the run. The first digit in Go to Frame replaces the prefilled count.
 - **Command bar:** text entry consumes other shortcuts. Reopening with Ctrl+G
   preserves the pending command, and holding Ctrl+G does not erase it. Enter
   executes and closes; Escape closes without executing.
@@ -133,7 +120,7 @@ keyboard/gamepad entries.
   shortcuts wait until UI is closed. Focus loss pauses and clears held inputs.
 
 CRT, sprite-limit removal, nametable/APU viewers, audio volume/mute, region,
-port selection, power cycle, window sizes, movie speed, help, exit, additional
+port selection, power cycle, window sizes, help, exit, additional
 clock/raster/interrupt steps, and execution-trace export remain menu/toolbar
 or debugger-command actions without dedicated keyboard shortcuts.
 
@@ -159,17 +146,16 @@ Up/Down select actions, Left/Right or Tab switch input tabs, and Enter opens a
 picker. Escape cancels a pending edit, then closes the editor.
 
 The earlier collisions are resolved: debugger frame stepping moved from F8
-to F6, run-to-cursor moved to Ctrl+F9, TAS frame controls moved to Ctrl+arrows,
-and logging moved to Shift+F4. The bare F fullscreen alias, Escape pause/ROM-open
-behavior, and broken +/- memory paging aliases were removed. Ctrl+G now
+to F6, run-to-cursor moved to Ctrl+F9, and logging moved to Shift+F4. The bare F
+fullscreen alias, Escape pause/ROM-open behavior, and broken +/- memory paging aliases were removed. Ctrl+G now
 preserves pending text.
 
 ## Verification
 
 Headless shortcut tests check unique chords/actions, default and custom state
 commands, retired default keys, exact modifiers, and reserved keys. Real Sokol frontend tests cover
-state loading in gameplay/debugger/TAS, instruction and frame stepping, movie
-navigation, command-text preservation, mouse binding pickers, conflict swaps,
+state loading in gameplay and the debugger, instruction and frame stepping,
+command-text preservation, mouse binding pickers, conflict swaps,
 reserved binding rejection, persistence, cancellation and tab-specific resets,
 legacy settings repair, and removal of old aliases. See
 [debugger commands](DEBUGGER.md) and [frontend tests](../tests/sokol/run.sh).

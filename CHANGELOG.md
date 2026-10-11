@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-11 — Remove TAS support
+
+- Remove FM2/BK2 playback, movie UI and states, recording-core timing hooks,
+  retiming tools, and their tests and dependencies. Keep ordinary gameplay,
+  save states, and debugger stepping and reverse history.
+
 ## 2026-10-10 — FM2 TAS playback
 
 - Add File > TAS Movie with FM2 opening, play/pause, frame advance/back,

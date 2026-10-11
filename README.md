@@ -2,7 +2,7 @@
 
 See the [complete Action - Key shortcut list](docs/SHORTCUTS.md). Save/load default
 to F5/F8 and can be changed in **Emulation > Controller Bindings**, including
-for the debugger and TAS playback.
+for the debugger.
 
 ### Keyboard Layout (Mappable)
 *   **D-Pad**: `Arrow Keys`
@@ -23,49 +23,6 @@ for the debugger and TAS playback.
 * **View > CRT Shader** toggles lightly rounded contour corners, narrow color transitions, gentle scanlines, and a tiny bright-pixel glow. Solid black outlines, pixel centers, and menus stay sharp. Off by default; the choice is saved globally.
 * **View > Remove Sprite Limit** draws up to all 64 OAM sprites on a scanline instead of displaying only eight. Off by default; the choice is saved globally. This is a visual enhancement: hardware sprite evaluation, overflow and sprite-zero flags, mapper timing, save files, and Zapper sensing retain the normal eight-sprite behavior. Extra sprites use an OAM/CHR snapshot at the end of each sprite-fetch window; unusual OAM writes or CHR bank changes within that window can produce visual differences. It reduces flicker caused by the eight-sprite limit, but cannot restore sprites the game omits from OAM. Enabling while paused takes effect as pixels are rendered after resuming or stepping.
 * **File > Save State As / Load State From** provides named-state file browsers; quicksave shortcuts remain available.
-
-### TAS Movie Playback (FM2)
-
-Load the matching ROM, then choose **File > TAS Movie > Open FM2...**
-(`Ctrl+M`). Playback validates the ROM's PRG/CHR MD5 and starts from clean
-power-on memory using the movie's NTSC/PAL and RAM settings. Recorded input
-owns both controller ports; keyboard/gamepad input cannot change the run.
-
-* **F1** plays/pauses; **Ctrl+Right** advances one frame; **Ctrl+Left** goes back
-  one frame. Your save/load keys (default **F5/F8**) save/load movie states,
-  including while paused.
-* **Go to Frame...** (`Ctrl+J`) seeks to a completed-frame count; zero is power-on. Seeking
-  replays recorded inputs from a checkpoint and remains cancellable with F1.
-  The UI stays responsive and playback pauses at the requested frame.
-* **Speed** offers 0.5x, 1x, 2x, 4x and unthrottled playback. Audio plays at 1x;
-  other speeds and seeking are muted.
-* **Restart** (`Ctrl+Home`) returns to frame zero, paused. Playback pauses at the end; F1
-  starts it again. The status bar shows progress, speed and both pads; subtitles
-  appear over the game.
-* Save/load commands retain the movie identity and input position along with
-  the game state. Rolling movie saves use `movie_quick_0.state` through
-  `movie_quick_9.state`, separate from ordinary quicksaves. Load them with the
-  same FM2 open. Native/FCEUX states cannot replace a movie checkpoint.
-* **Stop Playback** (`Ctrl+End`) restores the game as it was before playback, paused.
-  Playback does not overwrite battery saves. Ordinary reset, power, region,
-  controller changes and debugger editing/stepping are disabled during playback.
-
-Text and binary FM2 version 3, up to two standard gamepads or disconnected
-ports, reset/power commands, and RAM initialization options 0/1/2 are supported.
-Movies using Four Score, Zapper/expansion devices, microphone, FDS/VS commands,
-seeded random RAM or embedded FCEUX save states are rejected with an explanation.
-Recording/rerecording in the GUI is not implemented. The
-[offline FM2 editor](docs/TAS_RETIMING.md) can insert/remove input frames and
-adjust button holds in a new movie copy without changing emulator timing.
-The local SMB3 100% conversion was verified through the final “THE END” screen;
-see its [reproduction recipe and synchronization-pause seek frames](docs/TAS_RETIMING.md#smb3-100-conversion).
-
-FM2 playback uses FCEUX's post-render input boundary and two silent startup
-frames. These timing settings apply only while a movie is open; normal play and
-native state formats retain their existing behavior. Other TASes can still
-depend on recording-emulator quirks. The local 72,250-frame Super Mario Bros.
-movie was verified through 8-4 against FCEUX, including identical final game RAM.
-See the [FM2 format](https://fceux.com/web/help/fm2.html).
 
 ### Gamepad Layout (Windows: XInput-compatible controllers)
 *   **D-Pad / Left Stick**: NES Directional Pad
@@ -222,7 +179,7 @@ interrupt and raster targets, and instruction/frame rewind. Its workspace has
 memory, breakpoint, call, trace and PPU tabs. Use **Ctrl+G** for conditional
 watchpoints, symbols, memory search, register/RAM edits, explicit controller
 inputs and trace export. Breakpoints persist per ROM. See the
-[debugger guide](docs/DEBUGGER.md) for shortcuts, commands and TAS extension points.
+[debugger guide](docs/DEBUGGER.md) for shortcuts and commands.
 
 ```
 NES DEBUGGER - PAUSED
@@ -249,7 +206,7 @@ F7:BRK | Ctrl+UP/DN:Nav | Alt:Menu
 *   **Shift+F4**: Toggle writing continuous execution logs to `step_trace.log` (logs include full register maps, cycles, scanlines, mapped PRG-banks, and active IRQ lines).
 *   **Ctrl+Up / Ctrl+Down**: Navigate instruction view.
 *   **F12**: Reset the loaded game. Use Emulation > Power Cycle to reload the ROM and initialize the system.
-*   **F1**: Pause/resume gameplay or TAS. **Escape** closes UI. Use F9 to leave debugger inspection.
+*   **F1**: Pause/resume gameplay. **Escape** closes UI. Use F9 to leave debugger inspection.
 
 ---
 

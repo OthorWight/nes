@@ -96,7 +96,7 @@ bool execution_save_breakpoints(const NESExecution *, const char *path);
 bool execution_load_breakpoints(NESExecution *, const char *path);
 void execution_enable_history(NESExecution *, bool);
 /* Reverse to a previous instruction boundary or frame checkpoint. Checkpoints
-   and input stamps are bounded host history, independent of movie-file formats. */
+   and input stamps are bounded host history. */
 bool execution_reverse(NESExecution *, bool frame);
 const char *execution_stop_name(ExecutionStop);
 #endif
